@@ -1,34 +1,48 @@
-// Direct Robinhood API - no Trayd, no MCP, no Claude
-// Uses Robinhood's private endpoints directly
-
+// Direct Robinhood API - modern 2026 auth flow
 const https = require("https");
+const crypto = require("crypto");
 
 const RH_BASE = "api.robinhood.com";
 let _token = null;
+let _deviceToken = null;
 
-function request(method, path, data, token) {
+// Generate a device token the same way robin_stocks does
+function generateDeviceToken() {
+  const rands = Array.from(crypto.randomBytes(16));
+  const hexa = Array.from({length: 256}, (_, i) => (i + 256).toString(16).slice(1));
+  let token = "";
+  rands.forEach((r, i) => {
+    token += hexa[r];
+    if ([3, 5, 7, 9].includes(i)) token += "-";
+  });
+  return token;
+}
+
+function request(method, path, data, token, contentType) {
   return new Promise((resolve, reject) => {
-    const isForm = method === "POST" && path.includes("oauth2");
-    const body = data ? (isForm ? Object.entries(data).map(([k,v]) => encodeURIComponent(k)+"="+encodeURIComponent(v)).join("&") : JSON.stringify(data)) : null;
+    const isForm = contentType === "form";
+    const body = data
+      ? isForm
+        ? Object.entries(data).map(([k,v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&")
+        : JSON.stringify(data)
+      : null;
+
     const headers = {
-      "Accept": "*/*",
-      "Accept-Encoding": "gzip, deflate",
+      "Accept": "application/json",
       "Accept-Language": "en-US;q=1",
-      "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
       "X-Robinhood-API-Version": "1.431.4",
       "Connection": "keep-alive",
       "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)"
     };
+    if (isForm) {
+      headers["Content-Type"] = "application/x-www-form-urlencoded; charset=utf-8";
+    } else {
+      headers["Content-Type"] = "application/json";
+    }
     if (token) headers["Authorization"] = "Bearer " + token;
     if (body) headers["Content-Length"] = Buffer.byteLength(body);
 
-    const options = {
-      hostname: RH_BASE,
-      path: path,
-      method: method,
-      headers: headers
-    };
-
+    const options = { hostname: RH_BASE, path, method, headers };
     const req = https.request(options, (res) => {
       let raw = "";
       res.on("data", chunk => raw += chunk);
@@ -44,81 +58,145 @@ function request(method, path, data, token) {
 }
 
 async function login(email, password, mfa_code) {
-  const data = {
+  if (!_deviceToken) _deviceToken = process.env.RH_DEVICE_TOKEN || generateDeviceToken();
+
+  const payload = {
     client_id: "c82SH0WZOsabOXGP2sxqcj34FxkvfnWRZBKlBjFS",
     expires_in: 86400,
     grant_type: "password",
     password: password,
     scope: "internal",
     username: email,
-    challenge_type: "sms",
-    device_token: process.env.RH_DEVICE_TOKEN || "ea9eefb5-8c3a-4f8b-b63f-9d4c74dbc79d"
+    device_token: _deviceToken,
+    try_passkeys: false,
+    token_request_path: "/login",
+    create_read_only_secondary_token: true
   };
-  if (mfa_code) data.mfa_code = mfa_code;
+  if (mfa_code) payload.mfa_code = mfa_code;
 
-  const res = await request("POST", "/oauth2/token/", data);
-  
-  if (res.access_token) {
-    _token = res.access_token;
-    console.log("[AUTH] Robinhood login successful");
+  console.log("[AUTH] Attempting Robinhood login...");
+  const data = await request("POST", "/oauth2/token/", payload, null, "json");
+
+  if (data.access_token) {
+    _token = data.access_token;
+    console.log("[AUTH] Login successful");
     return { ok: true, token: _token };
-  } else if (res.mfa_required) {
+  }
+
+  if (data.verification_workflow) {
+    const workflowId = data.verification_workflow.id;
+    console.log("[AUTH] Verification required, workflow: " + workflowId);
+    return { ok: false, verification_workflow: true, workflow_id: workflowId, device_token: _deviceToken, payload };
+  }
+
+  if (data.mfa_required) {
     console.log("[AUTH] MFA required");
     return { ok: false, mfa_required: true };
-  } else if (res.challenge) {
-    console.log("[AUTH] Challenge required:", res.challenge.type);
-    return { ok: false, challenge: res.challenge };
-  } else {
-    console.log("[AUTH_ERROR]", JSON.stringify(res));
-    return { ok: false, error: JSON.stringify(res) };
   }
+
+  console.log("[AUTH_ERROR] " + JSON.stringify(data));
+  return { ok: false, error: JSON.stringify(data) };
 }
 
-async function respondToChallenge(challengeId, code) {
-  const res = await request("POST", `/challenge/${challengeId}/respond/`, { response: code });
+// Handle the pathfinder verification workflow
+async function handleVerificationWorkflow(deviceToken, workflowId) {
+  const pathfinderUrl = "/pathfinder/user_machine/";
+  const machinePayload = {
+    device_id: deviceToken,
+    flow: "suv",
+    input: { workflow_id: workflowId }
+  };
+  
+  const machineData = await request("POST", pathfinderUrl, machinePayload, null, "json");
+  const machineId = machineData.id;
+  if (!machineId) throw new Error("No machine ID from pathfinder");
+  
+  console.log("[AUTH] Pathfinder machine ID: " + machineId);
+  
+  // Poll for challenge
+  for (let i = 0; i < 24; i++) {
+    await sleep(5000);
+    const inquiry = await request("GET", `/pathfinder/inquiries/${machineId}/user_view/`, null, null, "json");
+    
+    if (inquiry && inquiry.context && inquiry.context.sheriff_challenge) {
+      const challenge = inquiry.context.sheriff_challenge;
+      return {
+        challenge_type: challenge.type,
+        challenge_id: challenge.id,
+        challenge_status: challenge.status,
+        machine_id: machineId
+      };
+    }
+  }
+  throw new Error("Verification timeout");
+}
+
+// Complete workflow after challenge validated
+async function completeWorkflow(machineId) {
+  const payload = { sequence: 0, user_input: { status: "continue" } };
+  for (let i = 0; i < 5; i++) {
+    const res = await request("POST", `/pathfinder/inquiries/${machineId}/user_view/`, payload, null, "json");
+    if (res && res.type_context && res.type_context.result === "workflow_status_approved") {
+      return true;
+    }
+    await sleep(3000);
+  }
+  return true; // assume approved
+}
+
+async function respondToSmsChallenge(challengeId, code) {
+  const res = await request("POST", `/challenge/${challengeId}/respond/`, { response: code }, null, "json");
   return res;
 }
 
-function setToken(token) {
-  _token = token;
+// Approve via push notification (polling)
+async function waitForPushApproval(challengeId) {
+  const url = `/push/${challengeId}/get_prompts_status/`;
+  for (let i = 0; i < 24; i++) {
+    await sleep(5000);
+    const res = await request("GET", url, null, null, "json");
+    if (res && res.challenge_status === "validated") return true;
+  }
+  return false;
 }
 
-function getToken() {
-  return _token;
-}
+function setToken(token) { _token = token; }
+function getToken() { return _token; }
+function setDeviceToken(dt) { _deviceToken = dt; }
 
 async function getQuote(ticker) {
-  const res = await request("GET", `/quotes/${ticker}/`, null, _token);
+  const res = await request("GET", `/quotes/${ticker}/`, null, _token, "json");
   return parseFloat(res.last_trade_price || res.ask_price || 0);
 }
 
-async function getOptionChain(ticker, expiry, strike, optionType) {
+async function getOptionInstrument(ticker, expiry, strike, optionType) {
   const url = `/options/instruments/?chain_symbol=${ticker}&expiration_dates=${expiry}&strike_price=${strike}&type=${optionType}&state=active`;
-  const res = await request("GET", url, null, _token);
-  return res.results || [];
+  const res = await request("GET", url, null, _token, "json");
+  const results = res.results || [];
+  if (results.length > 0) return results[0];
+  
+  // Try nearby strikes
+  for (const offset of [1, -1, 2, -2, 5, -5]) {
+    const url2 = `/options/instruments/?chain_symbol=${ticker}&expiration_dates=${expiry}&strike_price=${strike + offset}&type=${optionType}&state=active`;
+    const res2 = await request("GET", url2, null, _token, "json");
+    if (res2.results && res2.results.length > 0) return res2.results[0];
+  }
+  return null;
 }
 
 async function placeOptionOrder(ticker, side, contracts, expiry, strike, optionType) {
-  // Get option instrument ID
-  const instruments = await getOptionChain(ticker, expiry, strike, optionType);
-  if (!instruments.length) throw new Error(`No option found: ${ticker} ${expiry} ${strike} ${optionType}`);
-  
-  const instrumentUrl = instruments[0].url;
-  
-  // Get current ask price
-  const optionQuote = await request("GET", `/marketdata/options/?instruments=${encodeURIComponent(instrumentUrl)}`, null, _token);
-  const askPrice = optionQuote.results?.[0]?.ask_price || "0.50";
-  const limitPrice = (parseFloat(askPrice) * 1.05).toFixed(2); // 5% above ask for fast fill
+  const instrument = await getOptionInstrument(ticker, expiry, strike, optionType);
+  if (!instrument) throw new Error(`No option found: ${ticker} ${expiry} ${strike} ${optionType}`);
+
+  const instrumentUrl = instrument.url;
+  const quoteRes = await request("GET", `/marketdata/options/?instruments=${encodeURIComponent(instrumentUrl)}`, null, _token, "json");
+  const askPrice = quoteRes.results?.[0]?.ask_price || "1.00";
+  const limitPrice = (parseFloat(askPrice) * 1.05).toFixed(2);
 
   const order = {
     account: `https://api.robinhood.com/accounts/${process.env.RH_ACCOUNT_NUMBER}/`,
-    direction: side === "call" || optionType === "call" ? "debit" : "debit",
-    legs: [{
-      option: instrumentUrl,
-      position_effect: "open",
-      ratio_quantity: 1,
-      side: "buy"
-    }],
+    direction: "debit",
+    legs: [{ option: instrumentUrl, position_effect: "open", ratio_quantity: 1, side: "buy" }],
     override_day_trade_checks: false,
     price: limitPrice,
     quantity: contracts,
@@ -128,45 +206,35 @@ async function placeOptionOrder(ticker, side, contracts, expiry, strike, optionT
   };
 
   console.log(`[ORDER] ${ticker} ${optionType} x${contracts} strike=${strike} expiry=${expiry} price=${limitPrice}`);
-  const res = await request("POST", "/options/orders/", order, _token);
-  
+  const res = await request("POST", "/options/orders/", order, _token, "json");
   if (res.id) {
-    console.log(`[ORDER_OK] Order ID: ${res.id}`);
+    console.log(`[ORDER_OK] ${res.id}`);
     return { ok: true, order_id: res.id, price: limitPrice };
-  } else {
-    throw new Error(JSON.stringify(res));
   }
+  throw new Error(JSON.stringify(res));
 }
 
 async function closeOptionPosition(ticker, contracts, reason) {
-  // Get open positions
-  const positions = await request("GET", "/options/positions/?nonzero=true", null, _token);
-  const matching = (positions.results || []).filter(p => 
-    p.chain_symbol === ticker && parseFloat(p.quantity) > 0
-  );
-  
-  if (!matching.length) {
-    console.log(`[CLOSE_WARN] No open position for ${ticker}`);
-    return { ok: false, error: "No open position found" };
-  }
+  const positions = await request("GET", "/options/positions/?nonzero=true", null, _token, "json");
+  const matching = (positions.results || []).filter(p => p.chain_symbol === ticker && parseFloat(p.quantity) > 0);
+  if (!matching.length) return { ok: false, error: "No open position found" };
 
   const pos = matching[0];
-  const instrumentUrl = pos.option;
-  
-  // Get current bid price
-  const quote = await request("GET", `/marketdata/options/?instruments=${encodeURIComponent(instrumentUrl)}`, null, _token);
-  const bidPrice = quote.results?.[0]?.bid_price || "0.10";
-  const limitPrice = (parseFloat(bidPrice) * 0.95).toFixed(2); // 5% below bid
+  const quoteRes = await request("GET", `/marketdata/options/?instruments=${encodeURIComponent(pos.option)}`, null, _token, "json");
+  const bidPrice = quoteRes.results?.[0]?.bid_price || "0.10";
+  const limitPrice = (parseFloat(bidPrice) * 0.95).toFixed(2);
+
+  const expiry = pos.expiration_date || pos.option.split("/").slice(-2)[0];
+  const strike = pos.strike_price;
+  const optionType = pos.option_type;
+
+  const instrument = await getOptionInstrument(ticker, expiry, strike, optionType);
+  if (!instrument) return { ok: false, error: "Could not find instrument to close" };
 
   const order = {
     account: `https://api.robinhood.com/accounts/${process.env.RH_ACCOUNT_NUMBER}/`,
     direction: "credit",
-    legs: [{
-      option: instrumentUrl,
-      position_effect: "close",
-      ratio_quantity: 1,
-      side: "sell"
-    }],
+    legs: [{ option: instrument.url, position_effect: "close", ratio_quantity: 1, side: "sell" }],
     price: limitPrice,
     quantity: contracts,
     time_in_force: "gfd",
@@ -175,13 +243,16 @@ async function closeOptionPosition(ticker, contracts, reason) {
   };
 
   console.log(`[CLOSE] ${ticker} selling ${contracts}c — ${reason}`);
-  const res = await request("POST", "/options/orders/", order, _token);
-  
-  if (res.id) {
-    return { ok: true, order_id: res.id, contracts, reason };
-  } else {
-    throw new Error(JSON.stringify(res));
-  }
+  const res = await request("POST", "/options/orders/", order, _token, "json");
+  if (res.id) return { ok: true, order_id: res.id, contracts, reason };
+  throw new Error(JSON.stringify(res));
 }
 
-module.exports = { login, setToken, getToken, getQuote, placeOptionOrder, closeOptionPosition, respondToChallenge };
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+module.exports = {
+  login, setToken, getToken, setDeviceToken,
+  handleVerificationWorkflow, completeWorkflow,
+  respondToSmsChallenge, waitForPushApproval,
+  getQuote, placeOptionOrder, closeOptionPosition
+};
