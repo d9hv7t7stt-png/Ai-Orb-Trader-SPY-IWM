@@ -8,12 +8,16 @@ let _token = null;
 
 function request(method, path, data, token) {
   return new Promise((resolve, reject) => {
-    const body = data ? JSON.stringify(data) : null;
+    const isForm = method === "POST" && path.includes("oauth2");
+    const body = data ? (isForm ? Object.entries(data).map(([k,v]) => encodeURIComponent(k)+"="+encodeURIComponent(v)).join("&") : JSON.stringify(data)) : null;
     const headers = {
-      "Accept": "application/json",
-      "Content-Type": "application/json",
-      "User-Agent": "Robinhood/823 (iPhone; iOS 7.1.2; Scale/2.00)",
-      "X-Robinhood-API-Version": "1.0.0"
+      "Accept": "*/*",
+      "Accept-Encoding": "gzip, deflate",
+      "Accept-Language": "en-US;q=1",
+      "Content-Type": "application/x-www-form-urlencoded; charset=utf-8",
+      "X-Robinhood-API-Version": "1.431.4",
+      "Connection": "keep-alive",
+      "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)"
     };
     if (token) headers["Authorization"] = "Bearer " + token;
     if (body) headers["Content-Length"] = Buffer.byteLength(body);
@@ -48,11 +52,11 @@ async function login(email, password, mfa_code) {
     scope: "internal",
     username: email,
     challenge_type: "sms",
-    device_token: "ea9eefb5-8c3a-4f8b-b63f-9d4c74dbc79d"
+    device_token: process.env.RH_DEVICE_TOKEN || "ea9eefb5-8c3a-4f8b-b63f-9d4c74dbc79d"
   };
   if (mfa_code) data.mfa_code = mfa_code;
 
-  const res = await request("POST", "/api-token-auth/", data);
+  const res = await request("POST", "/oauth2/token/", data);
   
   if (res.access_token) {
     _token = res.access_token;
