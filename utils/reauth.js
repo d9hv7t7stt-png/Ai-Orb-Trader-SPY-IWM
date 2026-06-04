@@ -1,70 +1,40 @@
+var rh = require("./robinhood");
 var stateModule = require("./state");
-var MCP_URL = "https://mcp.trayd.ai/mcp";
-
-function getCreds() {
-  var email = process.env.RH_EMAIL;
-  var password = process.env.RH_PASSWORD;
-  if (!email || !password) throw new Error("RH_EMAIL and RH_PASSWORD env vars must be set");
-  return { email: email, password: password };
-}
-
-async function callTrayd(message) {
-  var apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error("ANTHROPIC_API_KEY env var not set");
-  var res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01"
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1000,
-      messages: [{ role: "user", content: message }],
-      mcp_servers: [{ type: "url", url: MCP_URL, name: "trayd" }]
-    })
-  });
-  var data = await res.json();
-  var block = data.content && data.content.find(function(b) { return b.type === "mcp_tool_result"; });
-  if (block && block.content && block.content[0] && block.content[0].text) {
-    try { return JSON.parse(block.content[0].text); } catch(e) { return { raw: block.content[0].text }; }
-  }
-  return { message: "no result" };
-}
 
 async function ensureLoggedIn() {
-  try {
-    var status = await callTrayd("Check Robinhood login status using check_login_status.");
-    if (status && (status.logged_in === true || status.status === "logged_in")) {
-      stateModule.logEvent("AUTH", "Robinhood session active");
-      return true;
-    }
-    return await linkRobinhood();
-  } catch(err) {
-    stateModule.logEvent("AUTH_ERROR", err.message);
-    return false;
-  }
-}
+  var email = process.env.RH_EMAIL;
+  var password = process.env.RH_PASSWORD;
+  var mfa = process.env.RH_MFA_CODE;
+  var token = process.env.RH_TOKEN;
 
-async function linkRobinhood() {
-  var creds = getCreds();
-  stateModule.logEvent("AUTH", "Re-linking Robinhood...");
-  try {
-    var link = await callTrayd('Link Robinhood using link_robinhood with email="' + creds.email + '" and password="' + creds.password + '".');
-    if (link && link.status === "awaiting_approval") {
-      stateModule.logEvent("AUTH", "Phone notification sent, waiting 20s...");
-      await new Promise(function(r) { setTimeout(r, 20000); });
-      var complete = await callTrayd('Complete link using complete_robinhood_link with email="' + creds.email + '" and password="' + creds.password + '".');
-      if (complete && complete.status === "logged_in") {
-        stateModule.logEvent("AUTH", "Re-link successful");
-        return true;
-      }
-    }
-    stateModule.logEvent("AUTH_ERROR", "Re-link failed: " + JSON.stringify(link));
+  // If we already have a token stored in env, use it
+  if (token && !rh.getToken()) {
+    rh.setToken(token);
+    stateModule.logEvent("AUTH", "Using stored RH_TOKEN");
+    return true;
+  }
+
+  // If already logged in
+  if (rh.getToken()) {
+    stateModule.logEvent("AUTH", "Already logged in");
+    return true;
+  }
+
+  // Login fresh
+  stateModule.logEvent("AUTH", "Logging into Robinhood...");
+  var result = await rh.login(email, password, mfa);
+  
+  if (result.ok) {
+    stateModule.logEvent("AUTH", "Robinhood login successful");
+    return true;
+  } else if (result.mfa_required) {
+    stateModule.logEvent("AUTH_ERROR", "MFA required — set RH_MFA_CODE in Railway variables");
     return false;
-  } catch(err) {
-    stateModule.logEvent("AUTH_ERROR", err.message);
+  } else if (result.challenge) {
+    stateModule.logEvent("AUTH_CHALLENGE", "Challenge required: " + result.challenge.type + " — ID: " + result.challenge.id);
+    return false;
+  } else {
+    stateModule.logEvent("AUTH_ERROR", "Login failed: " + result.error);
     return false;
   }
 }
@@ -89,7 +59,4 @@ function scheduleDailyReauth() {
   scheduleNext();
 }
 
-module.exports = {
-  ensureLoggedIn: ensureLoggedIn,
-  scheduleDailyReauth: scheduleDailyReauth
-};
+module.exports = { ensureLoggedIn: ensureLoggedIn, scheduleDailyReauth: scheduleDailyReauth };
