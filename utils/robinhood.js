@@ -75,7 +75,7 @@ async function login(email, password, mfa_code) {
   if (mfa_code) payload.mfa_code = mfa_code;
 
   console.log("[AUTH] Attempting Robinhood login...");
-  const data = await request("POST", "/oauth2/token/", payload, null, "json");
+  const data = await request("POST", "/oauth2/token/", payload, null, "form");
 
   if (data.access_token) {
     _token = data.access_token;
@@ -250,8 +250,33 @@ async function closeOptionPosition(ticker, contracts, reason) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+async function refreshToken(refreshTokenValue) {
+  var payload = {
+    client_id: "c82SH0WZOsabOXGP2sxqcj34FxkvfnWRZBKlBjFS",
+    expires_in: 86400,
+    grant_type: "refresh_token",
+    refresh_token: refreshTokenValue,
+    scope: "internal"
+  };
+  try {
+    var data = await request("POST", "/oauth2/token/", payload, null, "form");
+    if (data.access_token) {
+      _token = data.access_token;
+      // Update refresh token if a new one is provided
+      if (data.refresh_token) {
+        process.env.RH_REFRESH_TOKEN = data.refresh_token;
+      }
+      console.log("[AUTH] Token refreshed successfully");
+      return { ok: true, token: _token };
+    }
+    return { ok: false, error: JSON.stringify(data) };
+  } catch(err) {
+    return { ok: false, error: err.message };
+  }
+}
+
 module.exports = {
-  login, setToken, getToken, setDeviceToken,
+  login, setToken, getToken, setDeviceToken, refreshToken,
   handleVerificationWorkflow, completeWorkflow,
   respondToSmsChallenge, waitForPushApproval,
   getQuote, placeOptionOrder, closeOptionPosition
