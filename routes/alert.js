@@ -1,4 +1,21 @@
 var stateModule = require("../utils/state");
+var fs = require("fs");
+
+function logTradePnL(ticker, side, entryPrice, exitPrice, contracts) {
+  try {
+    var pnlFile = "/tmp/orb-pnl.json";
+    var data = { trades: [] };
+    if (fs.existsSync(pnlFile)) {
+      data = JSON.parse(fs.readFileSync(pnlFile, "utf8"));
+    }
+    var pnl = (parseFloat(exitPrice) - parseFloat(entryPrice)) * contracts * 100;
+    data.trades.push({ time: new Date().toISOString(), ticker, side, entryPrice, exitPrice, contracts, pnl });
+    // Keep last 365 days only
+    var yearAgo = new Date(); yearAgo.setFullYear(yearAgo.getFullYear() - 1);
+    data.trades = data.trades.filter(function(t) { return new Date(t.time) >= yearAgo; });
+    fs.writeFileSync(pnlFile, JSON.stringify(data));
+  } catch(e) { console.log("[PNL_ERROR]", e.message); }
+}
 var trayd = require("../utils/trayd");
 
 /*
@@ -49,6 +66,7 @@ async function handleAlert(payload) {
     if (!payload.close) throw new Error("bar_close requires close price");
     var close = parseFloat(payload.close);
     var optPrice = payload.option_price ? parseFloat(payload.option_price) : null;
+    if (optPrice) discord.updateLastKnownPrice(ticker, optPrice);
     var s = stateModule.getState();
     var orb = s.orb[ticker];
     if (!orb.set) return { ok: true, message: ticker + " ORB not set yet" };
