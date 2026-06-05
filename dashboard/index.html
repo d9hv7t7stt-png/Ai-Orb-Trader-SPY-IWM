@@ -159,7 +159,7 @@
   /* Top metrics row */
   .metrics-row {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 1px;
     border: 1px solid var(--border);
     margin-bottom: 1.5rem;
@@ -577,6 +577,19 @@
   .text-red { color: var(--red); }
   .text-amber { color: var(--amber); }
   .gap-8 { display: flex; gap: 8px; align-items: center; }
+
+@media (max-width: 768px) {
+  .metrics-row { grid-template-columns: repeat(2, 1fr) !important; }
+  .grid-2 { grid-template-columns: 1fr !important; }
+  .grid-3 { grid-template-columns: 1fr !important; }
+  .ticker-grid { grid-template-columns: 1fr !important; }
+  .main { padding: 1rem !important; }
+  .header { padding: 0 1rem !important; }
+  .template-tabs { flex-wrap: wrap; }
+  .settings-grid { grid-template-columns: 1fr !important; }
+  .pricing-cards { grid-template-columns: 1fr !important; }
+  nav { padding: 16px 24px !important; }
+}
 </style>
 </head>
 <body>
