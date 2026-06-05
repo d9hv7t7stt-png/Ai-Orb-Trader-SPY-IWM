@@ -2,7 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="ORB Trader">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#00e5a0">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>ORB Trader</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap" rel="stylesheet">
@@ -385,6 +392,10 @@
   .log-type.DAY_RESET { color: var(--text-dim); }
   .log-type.CONTRACTS { color: var(--amber); }
   .log-type.SKIP { color: var(--text-dim); }
+
+
+
+
   .log-type.ENTRY { color: var(--green); }
   .log-type.POSITION_OPEN { color: var(--green); }
   .log-type.POSITION_ADD { color: var(--green); }
@@ -600,6 +611,12 @@
         <div class="metric-value" id="val-buying-power">—</div>
         <div class="metric-sub">Claude account</div>
       </div>
+      </div>
+      <div class="metric" id="m-license">
+        <div class="metric-label">License</div>
+        <div class="metric-value" id="val-license" style="font-size:16px">—</div>
+        <div class="metric-sub" id="val-license-sub">checking...</div>
+      </div>
       <div class="metric" id="m-spy-c">
         <div class="metric-label">SPY Contracts</div>
         <div class="metric-value" id="val-spy-c">—</div>
@@ -628,6 +645,16 @@
           </div>
           <button onclick="saveContractSize()" style="margin-top:16px;font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:0.08em;text-transform:uppercase;background:var(--green);color:var(--bg);border:none;padding:6px 12px;cursor:pointer">Set</button>
         </div>
+      </div>
+    </div>
+
+        </div>
+
+    <div id="license-banner" style="display:none;margin-bottom:12px;padding:14px 18px;background:var(--red-dim);border:1px solid var(--red);border-radius:4px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+      <span style="font-size:12px;color:var(--red);font-family:var(--mono)">⚠ No valid license — trading is disabled. Enter your Whop license key below.</span>
+      <div style="display:flex;gap:8px;align-items:center;flex-shrink:0">
+        <input type="text" id="license-input" placeholder="MEM-XXXXXX-XXXXXXXX-XXXXXXX" style="font-family:var(--mono);font-size:11px;background:var(--bg);border:1px solid var(--red);color:var(--text);padding:6px 10px;outline:none;width:260px">
+        <button onclick="activateLicense()" style="font-family:var(--mono);font-size:10px;font-weight:500;letter-spacing:0.08em;text-transform:uppercase;background:var(--red);color:var(--bg);border:none;padding:7px 14px;cursor:pointer">Activate</button>
       </div>
     </div>
 
@@ -936,6 +963,8 @@ function updateWebhookURL() {
   document.getElementById('webhook-url-text').textContent = val ? val + '/webhook' : 'https://your-app.up.railway.app/webhook';
 }
 
+
+
 async function loadState() {
   try {
     const res = await fetch(BASE + '/api/state');
@@ -1016,6 +1045,27 @@ function renderState(s) {
   } else {
     tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-dim);padding:20px">No trades placed today</td></tr>';
   }
+}
+
+async function activateLicense() {
+  const key = document.getElementById('license-input').value.trim();
+  if (!key) { toast('Enter your Whop license key', 'red'); return; }
+  toast('Validating license...', 'amber');
+  try {
+    const res = await fetch(BASE + '/api/license', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ licenseKey: key })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      toast('License activated!');
+      document.getElementById('license-banner').style.display = 'none';
+      loadState();
+    } else {
+      toast('Invalid license: ' + (data.error || 'check your key'), 'red');
+    }
+  } catch(e) { toast('Error activating license', 'red'); }
 }
 
 async function saveContractSize() {
@@ -1124,6 +1174,17 @@ async function checkAuth() {
 }
 checkAuth();
 setInterval(checkAuth, 30000);
+</script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('/sw.js').then(function(reg) {
+      console.log('SW registered');
+    }).catch(function(err) {
+      console.log('SW failed:', err);
+    });
+  });
+}
 </script>
 </body>
 </html>
