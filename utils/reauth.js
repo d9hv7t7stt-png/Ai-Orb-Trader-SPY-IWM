@@ -3,9 +3,44 @@ var stateModule = require("./state");
 
 var pendingWorkflow = null; // stores workflow state waiting for user approval
 
+async function refreshAccessToken() {
+  var refreshToken = process.env.RH_REFRESH_TOKEN;
+  if (!refreshToken) return false;
+  try {
+    stateModule.logEvent("AUTH", "Refreshing access token...");
+    var result = await rh.refreshToken(refreshToken);
+    if (result.ok) {
+      stateModule.logEvent("AUTH", "Token refreshed successfully");
+      return true;
+    }
+    stateModule.logEvent("AUTH_ERROR", "Token refresh failed: " + result.error);
+    return false;
+  } catch(err) {
+    stateModule.logEvent("AUTH_ERROR", "Token refresh error: " + err.message);
+    return false;
+  }
+}
+
+
+
 async function ensureLoggedIn() {
   if (rh.getToken()) {
     stateModule.logEvent("AUTH", "Already logged in");
+    return true;
+  }
+
+  // Try refresh token first (never expires, best option)
+  var refreshToken = process.env.RH_REFRESH_TOKEN;
+  if (refreshToken) {
+    var refreshed = await refreshAccessToken();
+    if (refreshed) return true;
+  }
+
+  // Fall back to stored access token
+  var storedToken = process.env.RH_TOKEN;
+  if (storedToken) {
+    rh.setToken(storedToken);
+    stateModule.logEvent("AUTH", "Using stored RH_TOKEN — connected");
     return true;
   }
 
