@@ -6,7 +6,7 @@ app.use(express.static(path.join(__dirname, "dashboard")));
 
 const { handleAlert } = require("./routes/alert");
 const { getState, setContractSize } = require("./utils/state");
-const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth, validateWhopLicense } = require("./utils/reauth");
+const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth } = require("./utils/reauth");
 const rh = require("./utils/robinhood");
 
 app.get("/manifest.json", (req, res) => {
@@ -24,11 +24,9 @@ app.get("/health", (req, res) => {
   res.json({ status: "running", time: new Date().toISOString(), auth: rh.getToken() ? "connected" : "disconnected" });
 });
 
-app.get("/api/state", async (req, res) => {
+app.get("/api/state", (req, res) => {
   var s = getState();
   s.auth = { logged_in: !!rh.getToken(), pending: !!getPendingWorkflow() };
-  var licenseKey = process.env.WHOP_LICENSE_KEY;
-  s.license = { valid: !!licenseKey && licenseKey.length > 5, error: licenseKey ? null : "No license key set" };
   res.json(s);
 });
 
@@ -39,12 +37,6 @@ app.post("/api/reauth", async (req, res) => {
   res.json({ ok: ok, pending_type: pending ? pending.challenge_type : null, message: ok ? "Connected to Robinhood" : pending ? "Check phone or enter SMS code" : "Login failed — check Railway logs" });
 });
 
-app.post("/api/license", async (req, res) => {
-  var { licenseKey } = req.body;
-  if (!licenseKey) return res.status(400).json({ error: "licenseKey required" });
-  process.env.WHOP_LICENSE_KEY = licenseKey;
-  var valid = await validateWhopLicense();
-  res.json({ ok: valid, error: valid ? null : "Invalid or expired license" });
 });
 
 app.post("/api/sms", async (req, res) => {
@@ -63,11 +55,6 @@ app.post("/api/contracts", (req, res) => {
 
 app.post("/webhook", async (req, res) => {
   console.log("[WEBHOOK]", JSON.stringify(req.body));
-  // Validate Whop license before every trade
-  var licenseValid = await validateWhopLicense();
-  if (!licenseValid) {
-    return res.status(403).json({ error: "Invalid or expired license. Visit whop.com to manage your subscription." });
-  }
   if (!rh.getToken()) {
     var ok = await ensureLoggedIn();
     if (!ok) return res.status(403).json({ error: "Not connected to Robinhood" });
