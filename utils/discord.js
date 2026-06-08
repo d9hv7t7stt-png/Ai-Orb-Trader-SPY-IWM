@@ -1,12 +1,10 @@
-// Discord Paper Trading Bot
-// Tracks a virtual account and posts all signals to Discord
+// Discord - Argus ORB Trader
 
 const https = require("https");
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
 const STARTING_BALANCE = 50000;
 const CONTRACTS_PER_TRADE = 10;
 
-// Use native https instead of fetch
 async function httpPost(url, data) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(data);
@@ -31,8 +29,7 @@ async function httpPost(url, data) {
   });
 }
 
-// Paper trading state
-var paperState = {
+var accountState = {
   balance: STARTING_BALANCE,
   startingBalance: STARTING_BALANCE,
   positions: { SPY: null, IWM: null },
@@ -43,7 +40,7 @@ var paperState = {
 };
 
 function resetDailyState() {
-  paperState.dailyTrades = [];
+  accountState.dailyTrades = [];
 }
 
 async function sendDiscord(embed) {
@@ -65,6 +62,10 @@ function formatPct(n) {
   return (n >= 0 ? "+" : "") + n.toFixed(1) + "%";
 }
 
+function accountFooter() {
+  return "Argus ORB Trader 50K: " + formatMoney(accountState.balance);
+}
+
 async function postEntry(ticker, side, optionPrice, orbHigh, orbLow) {
   var contracts = CONTRACTS_PER_TRADE;
   var posValue = optionPrice * contracts * 100;
@@ -73,7 +74,7 @@ async function postEntry(ticker, side, optionPrice, orbHigh, orbLow) {
   var emoji = side === "call" ? "🟢" : "🔴";
   var color = side === "call" ? 0x00e5a0 : 0xff4d6a;
 
-  paperState.positions[ticker] = {
+  accountState.positions[ticker] = {
     side: side,
     contracts: contracts,
     totalContracts: contracts,
@@ -87,7 +88,7 @@ async function postEntry(ticker, side, optionPrice, orbHigh, orbLow) {
     lastProfitTier: 0
   };
 
-  paperState.dailyTrades.push({ ticker, side, entryPrice: optionPrice, contracts });
+  accountState.dailyTrades.push({ ticker, side, entryPrice: optionPrice, contracts });
 
   await sendDiscord({
     color: color,
@@ -100,13 +101,13 @@ async function postEntry(ticker, side, optionPrice, orbHigh, orbLow) {
       { name: "ORB Low", value: "$" + parseFloat(orbLow).toFixed(2), inline: true },
       { name: "Stop (Mid)", value: "$" + stop, inline: true }
     ],
-    footer: { text: "Paper Account: " + formatMoney(paperState.balance) },
+    footer: { text: accountFooter() },
     timestamp: new Date().toISOString()
   });
 }
 
 async function postAdd(ticker, optionPrice) {
-  var pos = paperState.positions[ticker];
+  var pos = accountState.positions[ticker];
   if (!pos) return;
   var addContracts = CONTRACTS_PER_TRADE;
   pos.contracts += addContracts;
@@ -123,13 +124,13 @@ async function postAdd(ticker, optionPrice) {
       { name: "Total", value: String(pos.contracts) + " contracts", inline: true },
       { name: "Avg Entry", value: "$" + avgEntry, inline: true }
     ],
-    footer: { text: "Paper Account: " + formatMoney(paperState.balance) },
+    footer: { text: accountFooter() },
     timestamp: new Date().toISOString()
   });
 }
 
 async function postBreakeven(ticker) {
-  var pos = paperState.positions[ticker];
+  var pos = accountState.positions[ticker];
   if (!pos) return;
 
   await sendDiscord({
@@ -140,13 +141,13 @@ async function postBreakeven(ticker) {
       { name: "Contracts", value: String(pos.contracts), inline: true },
       { name: "Status", value: "Gains protected ✅", inline: true }
     ],
-    footer: { text: "Paper Account: " + formatMoney(paperState.balance) },
+    footer: { text: accountFooter() },
     timestamp: new Date().toISOString()
   });
 }
 
 async function postProfitTier(ticker, tierNum, sellContracts, currentPrice, gainPct) {
-  var pos = paperState.positions[ticker];
+  var pos = accountState.positions[ticker];
   if (!pos) return;
 
   var proceeds = sellContracts * currentPrice * 100;
@@ -154,7 +155,7 @@ async function postProfitTier(ticker, tierNum, sellContracts, currentPrice, gain
   var tierPnl = proceeds - cost;
   pos.realizedPnl += tierPnl;
   pos.contracts -= sellContracts;
-  paperState.balance += tierPnl;
+  accountState.balance += tierPnl;
 
   var emoji = tierNum === 1 ? "💰" : tierNum === 2 ? "💰💰" : "🎯";
   var title = tierNum === 3
@@ -171,31 +172,31 @@ async function postProfitTier(ticker, tierNum, sellContracts, currentPrice, gain
       { name: "Remaining", value: String(pos.contracts) + " contracts", inline: true },
       { name: "Realized P&L", value: formatMoney(pos.realizedPnl), inline: true }
     ],
-    footer: { text: "Paper Account: " + formatMoney(paperState.balance) },
+    footer: { text: accountFooter() },
     timestamp: new Date().toISOString()
   });
 }
 
 async function postStopLoss(ticker, currentPrice, reason) {
-  var pos = paperState.positions[ticker];
+  var pos = accountState.positions[ticker];
   if (!pos) return;
 
   var proceeds = pos.contracts * currentPrice * 100;
   var cost = pos.contracts * pos.entryPrice * 100;
   var pnl = proceeds - cost + pos.realizedPnl;
   var pct = ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100;
-  paperState.balance += (proceeds - cost);
+  accountState.balance += (proceeds - cost);
 
-  if (pnl < 0) paperState.losses++;
-  else paperState.wins++;
-  paperState.totalTrades++;
+  if (pnl < 0) accountState.losses++;
+  else accountState.wins++;
+  accountState.totalTrades++;
 
-  paperState.dailyTrades.push({
+  accountState.dailyTrades.push({
     ticker, side: pos.side, exitPrice: currentPrice,
     pnl: pnl, pct: pct, reason: reason, closed: true
   });
 
-  paperState.positions[ticker] = null;
+  accountState.positions[ticker] = null;
 
   await sendDiscord({
     color: 0xff4d6a,
@@ -205,26 +206,26 @@ async function postStopLoss(ticker, currentPrice, reason) {
       { name: "P&L", value: formatMoney(pnl) + " (" + formatPct(pct) + ")", inline: true },
       { name: "Reason", value: reason, inline: true }
     ],
-    footer: { text: "Paper Account: " + formatMoney(paperState.balance) },
+    footer: { text: accountFooter() },
     timestamp: new Date().toISOString()
   });
 }
 
 async function postFullClose(ticker, currentPrice) {
-  var pos = paperState.positions[ticker];
+  var pos = accountState.positions[ticker];
   if (!pos || pos.contracts <= 0) return;
 
   var proceeds = pos.contracts * currentPrice * 100;
   var cost = pos.contracts * pos.entryPrice * 100;
   var finalPnl = proceeds - cost + pos.realizedPnl;
   var totalPct = (finalPnl / (pos.totalContracts * pos.entryPrice * 100)) * 100;
-  paperState.balance += (proceeds - cost);
+  accountState.balance += (proceeds - cost);
 
-  if (finalPnl > 0) paperState.wins++;
-  else paperState.losses++;
-  paperState.totalTrades++;
+  if (finalPnl > 0) accountState.wins++;
+  else accountState.losses++;
+  accountState.totalTrades++;
 
-  paperState.positions[ticker] = null;
+  accountState.positions[ticker] = null;
 
   await sendDiscord({
     color: 0x00e5a0,
@@ -232,20 +233,20 @@ async function postFullClose(ticker, currentPrice) {
     fields: [
       { name: "Final Sale", value: pos.contracts + "c @ $" + currentPrice.toFixed(2), inline: true },
       { name: "Total P&L", value: formatMoney(finalPnl) + " (" + formatPct(totalPct) + ")", inline: true },
-      { name: "Paper Account", value: formatMoney(paperState.balance), inline: true }
+      { name: "Account", value: formatMoney(accountState.balance), inline: true }
     ],
     timestamp: new Date().toISOString()
   });
 }
 
 async function postDailySummary() {
-  var netPnl = paperState.balance - paperState.startingBalance;
-  var netPct = (netPnl / paperState.startingBalance) * 100;
+  var netPnl = accountState.balance - accountState.startingBalance;
+  var netPct = (netPnl / accountState.startingBalance) * 100;
   var color = netPnl >= 0 ? 0x00e5a0 : 0xff4d6a;
   var emoji = netPnl >= 0 ? "📈" : "📉";
 
   var tradeLines = "";
-  paperState.dailyTrades.forEach(function(t) {
+  accountState.dailyTrades.forEach(function(t) {
     if (t.closed) {
       var e = t.pnl >= 0 ? "✅" : "🔴";
       tradeLines += e + " " + t.ticker + " " + t.side.toUpperCase() + ": " + formatMoney(t.pnl) + " (" + formatPct(t.pct) + ")\n";
@@ -259,10 +260,10 @@ async function postDailySummary() {
     fields: [
       { name: "Trades", value: tradeLines, inline: false },
       { name: "Net P&L", value: formatMoney(netPnl) + " (" + formatPct(netPct) + ")", inline: true },
-      { name: "Wins / Losses", value: paperState.wins + " / " + paperState.losses, inline: true },
-      { name: "Account Balance", value: formatMoney(paperState.balance), inline: true }
+      { name: "Wins / Losses", value: accountState.wins + " / " + accountState.losses, inline: true },
+      { name: "Account Balance", value: formatMoney(accountState.balance), inline: true }
     ],
-    footer: { text: "Starting Balance: " + formatMoney(paperState.startingBalance) },
+    footer: { text: "Argus ORB Trader 50K | Starting Balance: " + formatMoney(accountState.startingBalance) },
     timestamp: new Date().toISOString()
   });
 
@@ -288,7 +289,7 @@ function scheduleDailySummary() {
 }
 
 async function postOpenPositions(label) {
-  var positions = Object.entries(paperState.positions).filter(function(e) { return e[1] && !e[1].stopped; });
+  var positions = Object.entries(accountState.positions).filter(function(e) { return e[1] && !e[1].stopped; });
   if (positions.length === 0) return;
 
   var fields = positions.map(function(e) {
@@ -309,14 +310,14 @@ async function postOpenPositions(label) {
     color: 0x4da6ff,
     title: "📋 " + label + " — Open Positions",
     fields: fields,
-    footer: { text: "Paper Balance: " + formatMoney(paperState.balance) },
+    footer: { text: accountFooter() },
     timestamp: new Date().toISOString()
   });
 }
 
 function updateLastKnownPrice(ticker, optionPrice) {
-  if (paperState.positions[ticker] && optionPrice) {
-    paperState.positions[ticker].lastKnownPrice = optionPrice;
+  if (accountState.positions[ticker] && optionPrice) {
+    accountState.positions[ticker].lastKnownPrice = optionPrice;
   }
 }
 
@@ -439,16 +440,17 @@ function scheduleMarketOpenMessages() {
 
 module.exports = {
   postEntry,
-  updateLastKnownPrice,
-  postOpenPositions,
-  schedulePositionUpdates,
   postAdd,
   postBreakeven,
   postProfitTier,
   postStopLoss,
   postFullClose,
   postDailySummary,
+  postOpenPositions,
+  postGoodMorning,
+  updateLastKnownPrice,
   scheduleDailySummary,
   scheduleMarketOpenMessages,
-  getPaperState: function() { return paperState; }
+  schedulePositionUpdates,
+  getAccountState: function() { return accountState; }
 };
