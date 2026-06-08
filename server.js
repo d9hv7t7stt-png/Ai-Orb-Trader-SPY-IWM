@@ -8,6 +8,7 @@ const { handleAlert } = require("./routes/alert");
 const { getState, setContractSize } = require("./utils/state");
 const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth } = require("./utils/reauth");
 const rh = require("./utils/robinhood");
+const discord = require("./utils/discord");
 
 app.get("/manifest.json", (req, res) => {
   res.sendFile(require("path").join(__dirname, "dashboard", "manifest.json"));
