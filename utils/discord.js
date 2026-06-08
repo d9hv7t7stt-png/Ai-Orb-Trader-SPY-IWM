@@ -290,9 +290,8 @@ function scheduleDailySummary() {
 
 async function postOpenPositions(label) {
   var positions = Object.entries(accountState.positions).filter(function(e) { return e[1] && !e[1].stopped; });
-  if (positions.length === 0) return;
 
-  var fields = positions.map(function(e) {
+  var fields = positions.length > 0 ? positions.map(function(e) {
     var ticker = e[0]; var pos = e[1];
     var currentEst = pos.lastKnownPrice || pos.entryPrice;
     var pnl = (currentEst - pos.entryPrice) * pos.contracts * 100;
@@ -304,11 +303,11 @@ async function postOpenPositions(label) {
       value: "Entry: $" + pos.entryPrice.toFixed(2) + "\nCurrent: $" + currentEst.toFixed(2) + "\nP&L: " + pnlStr + " (" + (pnl >= 0 ? "+" : "") + pct + "%)\nContracts: " + pos.contracts,
       inline: true
     };
-  });
+  }) : [{ name: "No Open Positions", value: "Watching for signals 👁️", inline: false }];
 
   await sendDiscord({
     color: 0x4da6ff,
-    title: "📋 " + label + " — Open Positions",
+    title: "📋 " + label + " — Position Update",
     fields: fields,
     footer: { text: accountFooter() },
     timestamp: new Date().toISOString()
