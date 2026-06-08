@@ -1,9 +1,35 @@
 // Discord Paper Trading Bot
 // Tracks a virtual account and posts all signals to Discord
 
+const https = require("https");
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
 const STARTING_BALANCE = 50000;
 const CONTRACTS_PER_TRADE = 10;
+
+// Use native https instead of fetch
+async function httpPost(url, data) {
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(data);
+    const urlObj = new URL(url);
+    const options = {
+      hostname: urlObj.hostname,
+      path: urlObj.pathname + urlObj.search,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body)
+      }
+    };
+    const req = https.request(options, (res) => {
+      let raw = "";
+      res.on("data", c => raw += c);
+      res.on("end", () => resolve(raw));
+    });
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
 
 // Paper trading state
 var paperState = {
@@ -23,11 +49,7 @@ function resetDailyState() {
 async function sendDiscord(embed) {
   if (!DISCORD_WEBHOOK) return;
   try {
-    await fetch(DISCORD_WEBHOOK, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ embeds: [embed] })
-    });
+    await httpPost(DISCORD_WEBHOOK, { embeds: [embed] });
   } catch(err) {
     console.log("[DISCORD_ERROR]", err.message);
   }
@@ -366,19 +388,15 @@ async function postGoodMorning(minutesBefore) {
   if (!msg || !DISCORD_WEBHOOK) return;
 
   try {
-    await fetch(DISCORD_WEBHOOK, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        content: msg.content,
-        embeds: [{
-          color: msg.color,
-          title: msg.title,
-          description: msg.description,
-          footer: { text: msg.footer },
-          timestamp: new Date().toISOString()
-        }]
-      })
+    await httpPost(DISCORD_WEBHOOK, {
+      content: msg.content,
+      embeds: [{
+        color: msg.color,
+        title: msg.title,
+        description: msg.description,
+        footer: { text: msg.footer },
+        timestamp: new Date().toISOString()
+      }]
     });
     console.log("[DISCORD] Good morning message sent (" + minutesBefore + " min before open)");
     if (minutesBefore === 45) {
