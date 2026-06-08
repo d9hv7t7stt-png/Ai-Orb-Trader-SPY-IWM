@@ -10,19 +10,18 @@ const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth }
 const rh = require("./utils/robinhood");
 const discord = require("./utils/discord");
 
-app.get("/manifest.json", (req, res) => {
-  res.sendFile(require("path").join(__dirname, "dashboard", "manifest.json"));
-});
-app.get("/sw.js", (req, res) => {
-  res.setHeader("Service-Worker-Allowed", "/");
-  res.sendFile(require("path").join(__dirname, "dashboard", "sw.js"));
-});
-app.get("/icon.svg", (req, res) => {
-  res.sendFile(require("path").join(__dirname, "dashboard", "icon.svg"));
-});
+app.get("/manifest.json", (req, res) => res.sendFile(path.join(__dirname, "dashboard", "manifest.json")));
+app.get("/sw.js", (req, res) => { res.setHeader("Service-Worker-Allowed", "/"); res.sendFile(path.join(__dirname, "dashboard", "sw.js")); });
+app.get("/icon.svg", (req, res) => res.sendFile(path.join(__dirname, "dashboard", "icon.svg")));
 
 app.get("/health", (req, res) => {
   res.json({ status: "running", time: new Date().toISOString(), auth: rh.getToken() ? "connected" : "disconnected" });
+});
+
+app.get("/api/state", (req, res) => {
+  var s = getState();
+  s.auth = { logged_in: !!rh.getToken(), pending: !!getPendingWorkflow() };
+  res.json(s);
 });
 
 app.get("/api/buying-power", async (req, res) => {
@@ -37,26 +36,15 @@ app.get("/api/buying-power", async (req, res) => {
         headers: { "Authorization": "Bearer " + token, "Accept": "application/json" }
       };
       var req2 = https.request(options, (r) => {
-        var raw = "";
-        r.on("data", chunk => raw += chunk);
+        var raw = ""; r.on("data", c => raw += c);
         r.on("end", () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({}); } });
       });
-      req2.on("error", reject);
-      req2.end();
+      req2.on("error", reject); req2.end();
     });
     res.json({ buying_power: data.buying_power || data.cash || null });
-  } catch(e) {
-    res.json({ buying_power: null });
-  }
+  } catch(e) { res.json({ buying_power: null }); }
 });
 
-app.get("/api/state", (req, res) => {
-  var s = getState();
-  s.auth = { logged_in: !!rh.getToken(), pending: !!getPendingWorkflow() };
-  res.json(s);
-});
-
-// Live prices endpoint
 app.get("/api/prices", async (req, res) => {
   try {
     var token = rh.getToken();
@@ -65,8 +53,7 @@ app.get("/api/prices", async (req, res) => {
     var https = require("https");
     async function getQuote(sym) {
       return new Promise((resolve) => {
-        var path = "/quotes/" + sym + "/";
-        var options = { hostname: "api.robinhood.com", path, headers: { "Authorization": "Bearer " + token, "Accept": "application/json" } };
+        var options = { hostname: "api.robinhood.com", path: "/quotes/" + sym + "/", headers: { "Authorization": "Bearer " + token, "Accept": "application/json" } };
         var req2 = https.request(options, (r) => {
           var raw = ""; r.on("data", c => raw += c);
           r.on("end", () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({}); } });
@@ -82,7 +69,6 @@ app.get("/api/prices", async (req, res) => {
   } catch(e) { res.json({ prices: {} }); }
 });
 
-// P&L tracker endpoint — reads from persisted trade log
 app.get("/api/pnl", (req, res) => {
   try {
     var fs = require("fs");
@@ -90,11 +76,9 @@ app.get("/api/pnl", (req, res) => {
     if (!fs.existsSync(pnlFile)) return res.json({ daily: null, weekly: null, monthly: null, yearly: null });
     var data = JSON.parse(fs.readFileSync(pnlFile, "utf8"));
     var now = new Date();
-    var daily = 0, weekly = 0, monthly = 0, yearly = 0;
-    var hasData = false;
+    var daily = 0, weekly = 0, monthly = 0, yearly = 0, hasData = false;
     (data.trades || []).forEach(function(t) {
-      var d = new Date(t.time);
-      var pnl = parseFloat(t.pnl) || 0;
+      var d = new Date(t.time); var pnl = parseFloat(t.pnl) || 0;
       if (d.toDateString() === now.toDateString()) { daily += pnl; hasData = true; }
       var weekAgo = new Date(now); weekAgo.setDate(weekAgo.getDate() - 7);
       if (d >= weekAgo) { weekly += pnl; hasData = true; }
@@ -117,8 +101,7 @@ app.post("/api/reauth", async (req, res) => {
 app.post("/api/sms", async (req, res) => {
   var code = req.body.code;
   if (!code) return res.status(400).json({ error: "code required" });
-  var result = await submitSmsCode(code);
-  res.json(result);
+  res.json(await submitSmsCode(code));
 });
 
 app.post("/api/contracts", (req, res) => {
@@ -126,6 +109,21 @@ app.post("/api/contracts", (req, res) => {
   if (!spy || !iwm) return res.status(400).json({ error: "spy and iwm required" });
   setContractSize(spy, iwm);
   res.json({ ok: true, contracts: getState().contracts });
+});
+
+app.get("/test/discord/:type", async (req, res) => {
+  var type = req.params.type;
+  if (type === "60") await discord.postGoodMorning(60);
+  if (type === "45") await discord.postGoodMorning(45);
+  if (type === "30") await discord.postGoodMorning(30);
+  if (type === "5")  await discord.postGoodMorning(5);
+  if (type === "1")  await discord.postGoodMorning(1);
+  if (type === "summary") await discord.postDailySummary();
+  if (type === "positions") await discord.postOpenPositions("Test");
+  if (type === "entry") await discord.postEntry("SPY", "call", 2.40, 757.50, 754.25);
+  if (type === "stop") await discord.postStopLoss("SPY", 1.80, "Stop Loss — ORB Midpoint");
+  if (type === "profit") await discord.postProfitTier("SPY", 1, 5, 2.88, 20);
+  res.json({ ok: true, tested: type });
 });
 
 app.post("/webhook", async (req, res) => {
