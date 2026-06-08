@@ -2,8 +2,8 @@
 // Tracks a virtual account and posts all signals to Discord
 
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
-const STARTING_BALANCE = 20000;
-const CONTRACTS_PER_TRADE = 50;
+const STARTING_BALANCE = 50000;
+const CONTRACTS_PER_TRADE = 10;
 
 // Paper trading state
 var paperState = {
@@ -46,7 +46,7 @@ function formatPct(n) {
 async function postEntry(ticker, side, optionPrice, orbHigh, orbLow) {
   var contracts = CONTRACTS_PER_TRADE;
   var posValue = optionPrice * contracts * 100;
-  var stop = side === "call" ? ((orbHigh + orbLow) / 2).toFixed(2) : ((orbHigh + orbLow) / 2).toFixed(2);
+  var stop = ((orbHigh + orbLow) / 2).toFixed(2);
   var expiry = ticker === "SPY" ? "1DTE" : "0DTE";
   var emoji = side === "call" ? "🟢" : "🔴";
   var color = side === "call" ? 0x00e5a0 : 0xff4d6a;
@@ -75,7 +75,7 @@ async function postEntry(ticker, side, optionPrice, orbHigh, orbLow) {
       { name: "Entry Price", value: "$" + optionPrice.toFixed(2), inline: true },
       { name: "Position Value", value: formatMoney(posValue), inline: true },
       { name: "ORB High", value: "$" + parseFloat(orbHigh).toFixed(2), inline: true },
-      { name: "ORB Low",  value: "$" + parseFloat(orbLow).toFixed(2),  inline: true },
+      { name: "ORB Low", value: "$" + parseFloat(orbLow).toFixed(2), inline: true },
       { name: "Stop (Mid)", value: "$" + stop, inline: true }
     ],
     footer: { text: "Paper Account: " + formatMoney(paperState.balance) },
@@ -244,11 +244,9 @@ async function postDailySummary() {
     timestamp: new Date().toISOString()
   });
 
-  // Reset daily trades but keep running balance
   resetDailyState();
 }
 
-// Schedule daily summary at 4 PM ET (20:00 UTC)
 function scheduleDailySummary() {
   function msUntil4pmET() {
     var now = new Date();
@@ -267,7 +265,6 @@ function scheduleDailySummary() {
   console.log("[DISCORD] Daily summary scheduled for 4 PM ET");
 }
 
-// ── Open positions post ──────────────────────────────────────────────────────
 async function postOpenPositions(label) {
   var positions = Object.entries(paperState.positions).filter(function(e) { return e[1] && !e[1].stopped; });
   if (positions.length === 0) return;
@@ -277,7 +274,7 @@ async function postOpenPositions(label) {
     var currentEst = pos.lastKnownPrice || pos.entryPrice;
     var pnl = (currentEst - pos.entryPrice) * pos.contracts * 100;
     var pct = pos.entryPrice > 0 ? ((currentEst - pos.entryPrice) / pos.entryPrice * 100).toFixed(1) : "0.0";
-    var pnlStr = (pnl >= 0 ? "+" : "") + "$" + Math.abs(pnl).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
+    var pnlStr = (pnl >= 0 ? "+" : "") + "$" + Math.abs(pnl).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     var side = pos.side === "call" ? "CALL" : "PUT";
     return {
       name: ticker + " " + side,
@@ -286,13 +283,13 @@ async function postOpenPositions(label) {
     };
   });
 
-  await sendDiscord({ embeds: [{
+  await sendDiscord({
     color: 0x4da6ff,
     title: "📋 " + label + " — Open Positions",
     fields: fields,
     footer: { text: "Paper Balance: " + formatMoney(paperState.balance) },
     timestamp: new Date().toISOString()
-  }]});
+  });
 }
 
 function updateLastKnownPrice(ticker, optionPrice) {
@@ -301,32 +298,32 @@ function updateLastKnownPrice(ticker, optionPrice) {
   }
 }
 
-// Every 30 minutes during market hours
 function schedulePositionUpdates() {
   function isMarketHours() {
     var now = new Date();
     var utcTotal = now.getUTCHours() * 60 + now.getUTCMinutes();
-    return utcTotal >= 13*60+30 && utcTotal <= 20*60;
+    return utcTotal >= 13 * 60 + 30 && utcTotal <= 20 * 60;
   }
-  function msUntilNext30() {
+  function msUntilNext15() {
     var now = new Date();
     var m = now.getUTCMinutes();
-    var addMin = m < 30 ? (30 - m) : (60 - m);
+    var next15 = Math.ceil((m + 1) / 15) * 15;
+    var addMin = next15 - m;
+    if (addMin <= 0) addMin += 15;
     var next = new Date(now);
     next.setUTCMinutes(now.getUTCMinutes() + addMin, 0, 0);
     return next - now;
   }
   function scheduleNext() {
     setTimeout(async function() {
-      if (isMarketHours()) await postOpenPositions("30-Min Update");
+      if (isMarketHours()) await postOpenPositions("15-Min Update");
       scheduleNext();
-    }, msUntilNext30());
+    }, msUntilNext15());
   }
   scheduleNext();
-  console.log("[DISCORD] 30-min position updates scheduled");
+  console.log("[DISCORD] 15-min position updates scheduled");
 }
 
-// ── Market open countdown messages ──────────────────────────────────────────
 async function postGoodMorning(minutesBefore) {
   var messages = {
     45: {
@@ -384,20 +381,21 @@ async function postGoodMorning(minutesBefore) {
       })
     });
     console.log("[DISCORD] Good morning message sent (" + minutesBefore + " min before open)");
+    if (minutesBefore === 45) {
+      await postOpenPositions("Pre-Market 45 Min");
+    }
   } catch(err) {
     console.log("[DISCORD_ERROR]", err.message);
   }
 }
 
 function scheduleMarketOpenMessages() {
-  // Market opens 9:30 AM ET = 13:30 UTC (EDT)
-  // Messages at: 8:30 (60min), 9:00 (30min), 9:25 (5min), 9:29 (1min)
   var alerts = [
-    { utcHour: 12, utcMin: 45, minutesBefore: 45 },  // 8:45 AM ET
-    { utcHour: 12, utcMin: 30, minutesBefore: 60 },  // 8:30 AM ET
-    { utcHour: 13, utcMin: 0,  minutesBefore: 30 },  // 9:00 AM ET
-    { utcHour: 13, utcMin: 25, minutesBefore: 5  },  // 9:25 AM ET
-    { utcHour: 13, utcMin: 29, minutesBefore: 1  }   // 9:29 AM ET
+    { utcHour: 12, utcMin: 45, minutesBefore: 45 },
+    { utcHour: 12, utcMin: 30, minutesBefore: 60 },
+    { utcHour: 13, utcMin: 0,  minutesBefore: 30 },
+    { utcHour: 13, utcMin: 25, minutesBefore: 5  },
+    { utcHour: 13, utcMin: 29, minutesBefore: 1  }
   ];
 
   function msUntilNext(utcHour, utcMin) {
@@ -411,7 +409,7 @@ function scheduleMarketOpenMessages() {
   alerts.forEach(function(alert) {
     function scheduleNext() {
       var delay = msUntilNext(alert.utcHour, alert.utcMin);
-      console.log("[DISCORD] Argus " + alert.minutesBefore + "-min message in " + Math.round(delay/60000) + " min");
+      console.log("[DISCORD] Argus " + alert.minutesBefore + "-min message in " + Math.round(delay / 60000) + " min");
       setTimeout(async function() {
         await postGoodMorning(alert.minutesBefore);
         scheduleNext();
