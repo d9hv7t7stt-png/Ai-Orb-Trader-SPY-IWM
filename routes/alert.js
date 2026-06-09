@@ -17,14 +17,11 @@ function logTradePnL(ticker, side, entryPrice, exitPrice, contracts) {
 
 /*
   Pine Script sends these webhook messages:
-  {"ticker":"SPY","event":"orb_set"}           — 9:35 AM first candle closes
-  {"ticker":"SPY","event":"breakout_long"}      — 5-min bar closes above ORB high
-  {"ticker":"SPY","event":"breakout_short"}     — 5-min bar closes below ORB low
-  {"ticker":"SPY","event":"stop_long"}          — 5-min bar closes below ORB mid (long stop)
-  {"ticker":"SPY","event":"stop_short"}         — 5-min bar closes above ORB mid (short stop)
-
-  Optional fields (if available):
-  orb_high, orb_low, close, option_price
+  {"ticker":"SPY","event":"orb_set"}
+  {"ticker":"SPY","event":"breakout_long"}
+  {"ticker":"SPY","event":"breakout_short"}
+  {"ticker":"SPY","event":"stop_long"}
+  {"ticker":"SPY","event":"stop_short"}
 */
 
 async function handleAlert(payload) {
@@ -49,13 +46,12 @@ async function handleAlert(payload) {
       var orb = stateModule.getState().orb[ticker];
       stateModule.logEvent("ORB_SET", ticker + " High=" + orb.high + " Low=" + orb.low + " Mid=" + orb.mid);
     } else {
-      // Mark ORB as set even without levels — server will use chart data
       stateModule.logEvent("ORB_SET", ticker + " ORB candle closed — waiting for breakout");
     }
     return { ok: true, message: ticker + " ORB set" };
   }
 
-  // ── STOP LOSS — LONG (close below mid) ───────────────────────────────────
+  // ── STOP LOSS — LONG ─────────────────────────────────────────────────────
   if (event === "stop_long") {
     if (!pos || pos.stopped) return { ok: true, message: ticker + " no active long position" };
     if (pos.side !== "call") return { ok: true, message: ticker + " position is not a call" };
@@ -66,7 +62,7 @@ async function handleAlert(payload) {
     return { ok: true, message: ticker + " long stopped at ORB midpoint" };
   }
 
-  // ── STOP LOSS — SHORT (close above mid) ──────────────────────────────────
+  // ── STOP LOSS — SHORT ────────────────────────────────────────────────────
   if (event === "stop_short") {
     if (!pos || pos.stopped) return { ok: true, message: ticker + " no active short position" };
     if (pos.side !== "put") return { ok: true, message: ticker + " position is not a put" };
@@ -82,7 +78,6 @@ async function handleAlert(payload) {
     var total = s.contracts[ticker];
     var half  = Math.ceil(total / 2);
 
-    // If we have a short position open, close it first
     if (pos && !pos.stopped && pos.side === "put") {
       stateModule.logEvent("FLIP", ticker + " breakout long — closing put first");
       await trayd.closePartialPosition({ ticker: ticker, contracts: pos.contracts, reason: "ORB breakout flip to long" });
@@ -96,7 +91,6 @@ async function handleAlert(payload) {
       var order = await trayd.placeOrder({ ticker: ticker, side: "call", contracts: half });
       stateModule.openHalfPosition(ticker, "call", half, optPrice || close || 0);
 
-      // Cross-entry: IWM breaks before SPY
       var cross = null;
       var spyPos = stateModule.getPosition("SPY");
       if (ticker === "IWM" && (!spyPos || spyPos.stopped) && s.orb.SPY.set) {
@@ -108,7 +102,6 @@ async function handleAlert(payload) {
       return { ok: true, entry: order, cross: cross };
     }
 
-    // Already in a long — check for retest add
     if (pos.halfIn && !pos.stopped) {
       var addQty = pos.totalContracts;
       stateModule.logEvent("RETEST", ticker + " retest add " + addQty + "c");
@@ -125,7 +118,6 @@ async function handleAlert(payload) {
     var total2 = s.contracts[ticker];
     var half2  = Math.ceil(total2 / 2);
 
-    // If we have a long position open, close it first
     if (pos && !pos.stopped && pos.side === "call") {
       stateModule.logEvent("FLIP", ticker + " breakout short — closing call first");
       await trayd.closePartialPosition({ ticker: ticker, contracts: pos.contracts, reason: "ORB breakout flip to short" });
@@ -139,7 +131,6 @@ async function handleAlert(payload) {
       var order2 = await trayd.placeOrder({ ticker: ticker, side: "put", contracts: half2 });
       stateModule.openHalfPosition(ticker, "put", half2, optPrice || close || 0);
 
-      // Cross-entry: IWM breaks before SPY
       var cross2 = null;
       var spyPos2 = stateModule.getPosition("SPY");
       if (ticker === "IWM" && (!spyPos2 || spyPos2.stopped) && s.orb.SPY.set) {
@@ -151,7 +142,6 @@ async function handleAlert(payload) {
       return { ok: true, entry: order2, cross: cross2 };
     }
 
-    // Already in a short — check for retest add
     if (pos.halfIn && !pos.stopped) {
       var addQty2 = pos.totalContracts;
       stateModule.logEvent("RETEST", ticker + " retest add " + addQty2 + "c");
@@ -163,7 +153,7 @@ async function handleAlert(payload) {
     return { ok: true, message: ticker + " already in short position" };
   }
 
-  // ── BAR CLOSE — profit tier checks (optional, if sent) ───────────────────
+  // ── BAR CLOSE — profit tier checks ───────────────────────────────────────
   if (event === "bar_close") {
     if (!pos || pos.stopped || !optPrice || pos.entryPrice <= 0) {
       return { ok: true, message: ticker + " no action on bar_close" };
@@ -172,13 +162,11 @@ async function handleAlert(payload) {
     var gainPct = ((optPrice - pos.entryPrice) / pos.entryPrice) * 100;
     var tier = pos.lastProfitTier;
 
-    // Activate breakeven stop at +50%
     if (!pos.breakEvenActivated && gainPct >= 50) {
       stateModule.setBreakEven(ticker);
       stateModule.logEvent("BREAKEVEN", ticker + " +50% — stop moved to breakeven");
     }
 
-    // Every +20% → sell 10%
     var increments = Math.floor(gainPct / 20);
     if (increments > tier && gainPct < 100 && tier < 100) {
       var sell10 = Math.max(1, Math.floor(pos.contracts * 0.10));
@@ -188,7 +176,6 @@ async function handleAlert(payload) {
       return { ok: true, message: ticker + " +20% profit tier" };
     }
 
-    // +100% → sell 50%
     if (gainPct >= 100 && tier < 100) {
       var sell50 = Math.max(1, Math.floor(pos.contracts * 0.50));
       stateModule.logEvent("PROFIT_TIER_2", ticker + " +100% selling 50% (" + sell50 + "c)");
