@@ -75,17 +75,10 @@ async function postEntry(ticker, side, optionPrice, orbHigh, orbLow) {
   var color = side === "call" ? 0x00e5a0 : 0xff4d6a;
 
   accountState.positions[ticker] = {
-    side: side,
-    contracts: contracts,
-    totalContracts: contracts,
-    entryPrice: optionPrice,
-    posValue: posValue,
-    orbHigh: orbHigh,
-    orbLow: orbLow,
-    halfIn: true,
-    fullIn: false,
-    realizedPnl: 0,
-    lastProfitTier: 0
+    side: side, contracts: contracts, totalContracts: contracts,
+    entryPrice: optionPrice, posValue: posValue,
+    orbHigh: orbHigh, orbLow: orbLow,
+    halfIn: true, fullIn: false, realizedPnl: 0, lastProfitTier: 0
   };
 
   accountState.dailyTrades.push({ ticker, side, entryPrice: optionPrice, contracts });
