@@ -6,8 +6,9 @@ app.use(express.static(path.join(__dirname, "dashboard")));
 
 const { handleAlert } = require("./routes/alert");
 const { getState, setContractSize } = require("./utils/state");
-const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth, validateWhopLicense } = require("./utils/reauth");
+const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth } = require("./utils/reauth");
 const rh = require("./utils/robinhood");
+const discord = require("./utils/discord");
 
 app.get("/manifest.json", (req, res) => {
   res.sendFile(require("path").join(__dirname, "dashboard", "manifest.json"));
@@ -49,15 +50,12 @@ app.get("/api/buying-power", async (req, res) => {
   }
 });
 
-app.get("/api/state", async (req, res) => {
+app.get("/api/state", (req, res) => {
   var s = getState();
   s.auth = { logged_in: !!rh.getToken(), pending: !!getPendingWorkflow() };
-  var licenseKey = process.env.WHOP_LICENSE_KEY;
-  s.license = { valid: !!licenseKey && licenseKey.length > 5, error: licenseKey ? null : "No license key set" };
   res.json(s);
 });
 
-// Live prices endpoint
 app.get("/api/prices", async (req, res) => {
   try {
     var token = rh.getToken();
@@ -66,7 +64,7 @@ app.get("/api/prices", async (req, res) => {
     var https = require("https");
     async function getQuote(sym) {
       return new Promise((resolve) => {
-        var path = "/quotes/" + sym + "/";
+        var path = "/quotes/?symbols=" + sym;
         var options = { hostname: "api.robinhood.com", path, headers: { "Authorization": "Bearer " + token, "Accept": "application/json" } };
         var req2 = https.request(options, (r) => {
           var raw = ""; r.on("data", c => raw += c);
@@ -77,13 +75,13 @@ app.get("/api/prices", async (req, res) => {
     }
     var results = await Promise.all(tickers.map(async (t) => {
       var q = await getQuote(t);
-      return [t, { price: q.last_trade_price || q.ask_price, prev_close: q.previous_close || q.adjusted_previous_close }];
+      var r = q.results ? q.results[0] : q;
+      return [t, { price: r.last_trade_price || r.ask_price || r.last_extended_hours_trade_price, prev_close: r.previous_close || r.adjusted_previous_close }];
     }));
     res.json({ prices: Object.fromEntries(results) });
   } catch(e) { res.json({ prices: {} }); }
 });
 
-// P&L tracker endpoint — reads from persisted trade log
 app.get("/api/pnl", (req, res) => {
   try {
     var fs = require("fs");
@@ -115,14 +113,6 @@ app.post("/api/reauth", async (req, res) => {
   res.json({ ok: ok, pending_type: pending ? pending.challenge_type : null, message: ok ? "Connected to Robinhood" : pending ? "Check phone or enter SMS code" : "Login failed — check Railway logs" });
 });
 
-app.post("/api/license", async (req, res) => {
-  var { licenseKey } = req.body;
-  if (!licenseKey) return res.status(400).json({ error: "licenseKey required" });
-  process.env.WHOP_LICENSE_KEY = licenseKey;
-  var valid = await validateWhopLicense();
-  res.json({ ok: valid, error: valid ? null : "Invalid or expired license" });
-});
-
 app.post("/api/sms", async (req, res) => {
   var code = req.body.code;
   if (!code) return res.status(400).json({ error: "code required" });
@@ -137,13 +127,23 @@ app.post("/api/contracts", (req, res) => {
   res.json({ ok: true, contracts: getState().contracts });
 });
 
+app.get("/test/discord/:type", async (req, res) => {
+  var type = req.params.type;
+  if (type === "60") await discord.postGoodMorning(60);
+  if (type === "45") await discord.postGoodMorning(45);
+  if (type === "30") await discord.postGoodMorning(30);
+  if (type === "5")  await discord.postGoodMorning(5);
+  if (type === "1")  await discord.postGoodMorning(1);
+  if (type === "summary") await discord.postDailySummary();
+  if (type === "positions") await discord.postOpenPositions("Test");
+  if (type === "entry") await discord.postEntry("SPY", "call", 2.40, 757.50, 754.25);
+  if (type === "stop") await discord.postStopLoss("SPY", 1.80, "Stop Loss — ORB Midpoint");
+  if (type === "profit") await discord.postProfitTier("SPY", 1, 5, 2.88, 20);
+  res.json({ ok: true, tested: type });
+});
+
 app.post("/webhook", async (req, res) => {
   console.log("[WEBHOOK]", JSON.stringify(req.body));
-  // Validate Whop license before every trade
-  var licenseValid = await validateWhopLicense();
-  if (!licenseValid) {
-    return res.status(403).json({ error: "Invalid or expired license. Visit whop.com to manage your subscription." });
-  }
   if (!rh.getToken()) {
     var ok = await ensureLoggedIn();
     if (!ok) return res.status(403).json({ error: "Not connected to Robinhood" });
@@ -166,4 +166,7 @@ app.listen(PORT, async () => {
   console.log("ORB server listening on port " + PORT);
   await ensureLoggedIn();
   scheduleDailyReauth();
+  discord.scheduleDailySummary();
+  discord.scheduleMarketOpenMessages();
+  discord.schedulePositionUpdates();
 });
