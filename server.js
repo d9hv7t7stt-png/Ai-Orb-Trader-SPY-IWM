@@ -33,35 +33,39 @@ app.get("/health", (req, res) => {
 
 app.get("/api/buying-power", async (req, res) => {
   try {
-    var token = rh.getToken();
-    if (!token) return res.json({ buying_power: null });
-    var accountNum = process.env.RH_ACCOUNT_NUMBER || "";
-    var data = await new Promise((resolve) => {
+    var traydRes = await new Promise((resolve) => {
       var options = {
-        hostname: "api.robinhood.com",
-        path: "/accounts/" + accountNum + "/",
-        headers: {
-          "Authorization": "Bearer " + token,
-          "Accept": "application/json",
-          "X-Robinhood-API-Version": "1.431.4",
-          "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)"
-        }
+        hostname: "mcp.trayd.ai",
+        path: "/portfolio?account_number=" + (process.env.RH_ACCOUNT_NUMBER || ""),
+        headers: { "Accept": "application/json" }
       };
       var req2 = https.request(options, (r) => {
         var raw = "";
-        r.on("data", chunk => raw += chunk);
-        r.on("end", () => {
-          try {
-            var parsed = JSON.parse(raw);
-            console.log("[BUYING_POWER]", JSON.stringify(parsed).substring(0, 300));
-            resolve(parsed);
-          } catch(e) { resolve({}); }
-        });
+        r.on("data", c => raw += c);
+        r.on("end", () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({}); } });
       });
       req2.on("error", () => resolve({}));
       req2.end();
     });
-    var bp = data.buying_power || data.cash || data.margin_balances?.day_trade_buying_power || null;
+    var bp = traydRes.buying_power || traydRes.cash || null;
+    if (!bp) {
+      var token = rh.getToken();
+      if (token) {
+        var data = await new Promise((resolve) => {
+          var opts = {
+            hostname: "api.robinhood.com",
+            path: "/accounts/" + (process.env.RH_ACCOUNT_NUMBER || "") + "/",
+            headers: { "Authorization": "Bearer " + token, "Accept": "application/json", "X-Robinhood-API-Version": "1.431.4", "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)" }
+          };
+          var req3 = https.request(opts, (r) => {
+            var raw = ""; r.on("data", c => raw += c);
+            r.on("end", () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({}); } });
+          });
+          req3.on("error", () => resolve({})); req3.end();
+        });
+        bp = data.buying_power || data.cash || null;
+      }
+    }
     res.json({ buying_power: bp });
   } catch(e) {
     console.log("[BUYING_POWER_ERROR]", e.message);
@@ -77,50 +81,34 @@ app.get("/api/state", (req, res) => {
 
 app.get("/api/prices", async (req, res) => {
   try {
-    var token = rh.getToken();
-    if (!token) return res.json({ prices: {} });
-    var symbols = "SPY,IWM,QQQ,SPX";
-    var data = await new Promise((resolve) => {
-      var options = {
-        hostname: "api.robinhood.com",
-        path: "/quotes/?symbols=" + symbols,
-        headers: {
-          "Authorization": "Bearer " + token,
-          "Accept": "application/json",
-          "X-Robinhood-API-Version": "1.431.4",
-          "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)"
-        }
-      };
-      var req2 = https.request(options, (r) => {
-        var raw = "";
-        r.on("data", c => raw += c);
-        r.on("end", () => {
-          try {
-            var parsed = JSON.parse(raw);
-            console.log("[PRICES_RAW]", JSON.stringify(parsed).substring(0, 500));
-            resolve(parsed);
-          } catch(e) { resolve({}); }
+    var tickers = { "SPY": "SPY", "IWM": "IWM", "QQQ": "QQQ", "SPX": "^GSPC" };
+    async function getYahooPrice(display, symbol) {
+      return new Promise((resolve) => {
+        var options = {
+          hostname: "query1.finance.yahoo.com",
+          path: "/v8/finance/chart/" + encodeURIComponent(symbol) + "?interval=1d&range=1d",
+          headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" }
+        };
+        var req2 = https.request(options, (r) => {
+          var raw = "";
+          r.on("data", c => raw += c);
+          r.on("end", () => {
+            try {
+              var parsed = JSON.parse(raw);
+              var meta = parsed.chart && parsed.chart.result && parsed.chart.result[0] && parsed.chart.result[0].meta;
+              resolve([display, {
+                price: meta ? (meta.regularMarketPrice || meta.previousClose || null) : null,
+                prev_close: meta ? (meta.chartPreviousClose || meta.previousClose || null) : null
+              }]);
+            } catch(e) { resolve([display, { price: null, prev_close: null }]); }
+          });
         });
-      });
-      req2.on("error", () => resolve({}));
-      req2.end();
-    });
-    var results = {};
-    var tickers = ["SPY", "IWM", "QQQ", "SPX"];
-    if (data.results && data.results.length > 0) {
-      data.results.forEach(function(r) {
-        if (r && r.symbol) {
-          results[r.symbol] = {
-            price: r.last_trade_price || r.ask_price || r.last_extended_hours_trade_price || null,
-            prev_close: r.previous_close || r.adjusted_previous_close || null
-          };
-        }
+        req2.on("error", () => resolve([display, { price: null, prev_close: null }]));
+        req2.end();
       });
     }
-    tickers.forEach(function(t) {
-      if (!results[t]) results[t] = { price: null, prev_close: null };
-    });
-    res.json({ prices: results });
+    var results = await Promise.all(Object.entries(tickers).map(([d, s]) => getYahooPrice(d, s)));
+    res.json({ prices: Object.fromEntries(results) });
   } catch(e) {
     console.log("[PRICES_ERROR]", e.message);
     res.json({ prices: {} });
