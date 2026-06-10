@@ -6,7 +6,6 @@ const RH_BASE = "api.robinhood.com";
 let _token = null;
 let _deviceToken = null;
 
-// Generate a device token the same way robin_stocks does
 function generateDeviceToken() {
   const rands = Array.from(crypto.randomBytes(16));
   const hexa = Array.from({length: 256}, (_, i) => (i + 256).toString(16).slice(1));
@@ -98,58 +97,38 @@ async function login(email, password, mfa_code) {
   return { ok: false, error: JSON.stringify(data) };
 }
 
-// Handle the pathfinder verification workflow
 async function handleVerificationWorkflow(deviceToken, workflowId) {
   const pathfinderUrl = "/pathfinder/user_machine/";
-  const machinePayload = {
-    device_id: deviceToken,
-    flow: "suv",
-    input: { workflow_id: workflowId }
-  };
-  
+  const machinePayload = { device_id: deviceToken, flow: "suv", input: { workflow_id: workflowId } };
   const machineData = await request("POST", pathfinderUrl, machinePayload, null, "json");
   const machineId = machineData.id;
   if (!machineId) throw new Error("No machine ID from pathfinder");
-  
   console.log("[AUTH] Pathfinder machine ID: " + machineId);
-  
-  // Poll for challenge
   for (let i = 0; i < 24; i++) {
     await sleep(5000);
     const inquiry = await request("GET", `/pathfinder/inquiries/${machineId}/user_view/`, null, null, "json");
-    
     if (inquiry && inquiry.context && inquiry.context.sheriff_challenge) {
       const challenge = inquiry.context.sheriff_challenge;
-      return {
-        challenge_type: challenge.type,
-        challenge_id: challenge.id,
-        challenge_status: challenge.status,
-        machine_id: machineId
-      };
+      return { challenge_type: challenge.type, challenge_id: challenge.id, challenge_status: challenge.status, machine_id: machineId };
     }
   }
   throw new Error("Verification timeout");
 }
 
-// Complete workflow after challenge validated
 async function completeWorkflow(machineId) {
   const payload = { sequence: 0, user_input: { status: "continue" } };
   for (let i = 0; i < 5; i++) {
     const res = await request("POST", `/pathfinder/inquiries/${machineId}/user_view/`, payload, null, "json");
-    if (res && res.type_context && res.type_context.result === "workflow_status_approved") {
-      return true;
-    }
+    if (res && res.type_context && res.type_context.result === "workflow_status_approved") return true;
     await sleep(3000);
   }
-  return true; // assume approved
+  return true;
 }
 
 async function respondToSmsChallenge(challengeId, code) {
-  const res = await request("POST", `/challenge/${challengeId}/respond/`, { response: code }, null, "json");
-  return res;
+  return await request("POST", `/challenge/${challengeId}/respond/`, { response: code }, null, "json");
 }
 
-// Approve via push notification (polling)
 async function waitForPushApproval(challengeId) {
   const url = `/push/${challengeId}/get_prompts_status/`;
   for (let i = 0; i < 24; i++) {
@@ -174,8 +153,6 @@ async function getOptionInstrument(ticker, expiry, strike, optionType) {
   const res = await request("GET", url, null, _token, "json");
   const results = res.results || [];
   if (results.length > 0) return results[0];
-  
-  // Try nearby strikes
   for (const offset of [1, -1, 2, -2, 5, -5]) {
     const url2 = `/options/instruments/?chain_symbol=${ticker}&expiration_dates=${expiry}&strike_price=${strike + offset}&type=${optionType}&state=active`;
     const res2 = await request("GET", url2, null, _token, "json");
@@ -196,13 +173,20 @@ async function placeOptionOrder(ticker, side, contracts, expiry, strike, optionT
   const order = {
     account: `https://api.robinhood.com/accounts/${process.env.RH_ACCOUNT_NUMBER}/`,
     direction: "debit",
-    legs: [{ option: instrumentUrl, position_effect: "open", ratio_quantity: 1, side: "buy" }],
+    legs: [{
+      option: instrumentUrl,
+      position_effect: "open",
+      ratio_quantity: 1,
+      side: "buy"
+    }],
     override_day_trade_checks: false,
+    override_dtbp_checks: false,
     price: limitPrice,
-    quantity: contracts,
+    quantity: String(contracts),
     time_in_force: "gfd",
     trigger: "immediate",
-    type: "limit"
+    type: "limit",
+    ref_id: crypto.randomUUID()
   };
 
   console.log(`[ORDER] ${ticker} ${optionType} x${contracts} strike=${strike} expiry=${expiry} price=${limitPrice}`);
@@ -211,6 +195,7 @@ async function placeOptionOrder(ticker, side, contracts, expiry, strike, optionT
     console.log(`[ORDER_OK] ${res.id}`);
     return { ok: true, order_id: res.id, price: limitPrice };
   }
+  console.log("[ORDER_ERROR]", JSON.stringify(res));
   throw new Error(JSON.stringify(res));
 }
 
@@ -234,17 +219,24 @@ async function closeOptionPosition(ticker, contracts, reason) {
   const order = {
     account: `https://api.robinhood.com/accounts/${process.env.RH_ACCOUNT_NUMBER}/`,
     direction: "credit",
-    legs: [{ option: instrument.url, position_effect: "close", ratio_quantity: 1, side: "sell" }],
+    legs: [{
+      option: instrument.url,
+      position_effect: "close",
+      ratio_quantity: 1,
+      side: "sell"
+    }],
     price: limitPrice,
-    quantity: contracts,
+    quantity: String(contracts),
     time_in_force: "gfd",
     trigger: "immediate",
-    type: "limit"
+    type: "limit",
+    ref_id: crypto.randomUUID()
   };
 
   console.log(`[CLOSE] ${ticker} selling ${contracts}c — ${reason}`);
   const res = await request("POST", "/options/orders/", order, _token, "json");
   if (res.id) return { ok: true, order_id: res.id, contracts, reason };
+  console.log("[CLOSE_ERROR]", JSON.stringify(res));
   throw new Error(JSON.stringify(res));
 }
 
@@ -262,10 +254,7 @@ async function refreshToken(refreshTokenValue) {
     var data = await request("POST", "/oauth2/token/", payload, null, "form");
     if (data.access_token) {
       _token = data.access_token;
-      // Update refresh token if a new one is provided
-      if (data.refresh_token) {
-        process.env.RH_REFRESH_TOKEN = data.refresh_token;
-      }
+      if (data.refresh_token) process.env.RH_REFRESH_TOKEN = data.refresh_token;
       console.log("[AUTH] Token refreshed successfully");
       return { ok: true, token: _token };
     }
