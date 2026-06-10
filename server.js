@@ -1,5 +1,7 @@
 const express = require("express");
 const path = require("path");
+const https = require("https");
+const fs = require("fs");
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "dashboard")));
@@ -10,15 +12,20 @@ const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth }
 const rh = require("./utils/robinhood");
 const discord = require("./utils/discord");
 
+// Catch unhandled promise rejections so server never silently crashes
+process.on("unhandledRejection", (err) => {
+  console.error("[UNHANDLED_REJECTION]", err && err.message ? err.message : err);
+});
+
 app.get("/manifest.json", (req, res) => {
-  res.sendFile(require("path").join(__dirname, "dashboard", "manifest.json"));
+  res.sendFile(path.join(__dirname, "dashboard", "manifest.json"));
 });
 app.get("/sw.js", (req, res) => {
   res.setHeader("Service-Worker-Allowed", "/");
-  res.sendFile(require("path").join(__dirname, "dashboard", "sw.js"));
+  res.sendFile(path.join(__dirname, "dashboard", "sw.js"));
 });
 app.get("/icon.svg", (req, res) => {
-  res.sendFile(require("path").join(__dirname, "dashboard", "icon.svg"));
+  res.sendFile(path.join(__dirname, "dashboard", "icon.svg"));
 });
 
 app.get("/health", (req, res) => {
@@ -29,8 +36,7 @@ app.get("/api/buying-power", async (req, res) => {
   try {
     var token = rh.getToken();
     if (!token) return res.json({ buying_power: null });
-    var https = require("https");
-    var data = await new Promise((resolve, reject) => {
+    var data = await new Promise((resolve) => {
       var options = {
         hostname: "api.robinhood.com",
         path: "/accounts/" + process.env.RH_ACCOUNT_NUMBER + "/",
@@ -41,11 +47,12 @@ app.get("/api/buying-power", async (req, res) => {
         r.on("data", chunk => raw += chunk);
         r.on("end", () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({}); } });
       });
-      req2.on("error", reject);
+      req2.on("error", () => resolve({}));
       req2.end();
     });
     res.json({ buying_power: data.buying_power || data.cash || null });
   } catch(e) {
+    console.log("[BUYING_POWER_ERROR]", e.message);
     res.json({ buying_power: null });
   }
 });
@@ -61,30 +68,56 @@ app.get("/api/prices", async (req, res) => {
     var token = rh.getToken();
     if (!token) return res.json({ prices: {} });
     var tickers = ["SPY", "IWM", "QQQ", "SPX"];
-    var https = require("https");
+
     async function getQuote(sym) {
       return new Promise((resolve) => {
-        var path = "/quotes/?symbols=" + sym;
-        var options = { hostname: "api.robinhood.com", path, headers: { "Authorization": "Bearer " + token, "Accept": "application/json" } };
+        var lookupSym = sym === "SPX" ? "SPXW" : sym;
+        var options = {
+          hostname: "api.robinhood.com",
+          path: "/quotes/?symbols=" + lookupSym,
+          headers: {
+            "Authorization": "Bearer " + token,
+            "Accept": "application/json",
+            "X-Robinhood-API-Version": "1.431.4",
+            "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)"
+          }
+        };
         var req2 = https.request(options, (r) => {
-          var raw = ""; r.on("data", c => raw += c);
-          r.on("end", () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({}); } });
+          var raw = "";
+          r.on("data", c => raw += c);
+          r.on("end", () => {
+            try {
+              var parsed = JSON.parse(raw);
+              console.log("[QUOTE " + sym + "]", JSON.stringify(parsed).substring(0, 300));
+              resolve(parsed);
+            } catch(e) { resolve({}); }
+          });
         });
-        req2.on("error", () => resolve({})); req2.end();
+        req2.on("error", () => resolve({}));
+        req2.end();
       });
     }
+
     var results = await Promise.all(tickers.map(async (t) => {
-      var q = await getQuote(t);
-      var r = q.results ? q.results[0] : q;
-      return [t, { price: r.last_trade_price || r.ask_price || r.last_extended_hours_trade_price, prev_close: r.previous_close || r.adjusted_previous_close }];
+      try {
+        var q = await getQuote(t);
+        var r = (q.results && q.results.length > 0) ? q.results[0] : q;
+        var price = r.last_trade_price || r.ask_price || r.last_extended_hours_trade_price || null;
+        var prev = r.previous_close || r.adjusted_previous_close || null;
+        return [t, { price: price, prev_close: prev }];
+      } catch(e) {
+        return [t, { price: null, prev_close: null }];
+      }
     }));
     res.json({ prices: Object.fromEntries(results) });
-  } catch(e) { res.json({ prices: {} }); }
+  } catch(e) {
+    console.log("[PRICES_ERROR]", e.message);
+    res.json({ prices: {} });
+  }
 });
 
 app.get("/api/pnl", (req, res) => {
   try {
-    var fs = require("fs");
     var pnlFile = "/tmp/orb-pnl.json";
     if (!fs.existsSync(pnlFile)) return res.json({ daily: null, weekly: null, monthly: null, yearly: null });
     var data = JSON.parse(fs.readFileSync(pnlFile, "utf8"));
@@ -103,43 +136,62 @@ app.get("/api/pnl", (req, res) => {
       if (d >= yearAgo) { yearly += pnl; hasData = true; }
     });
     res.json(hasData ? { daily, weekly, monthly, yearly } : { daily: null, weekly: null, monthly: null, yearly: null });
-  } catch(e) { res.json({ daily: null, weekly: null, monthly: null, yearly: null }); }
+  } catch(e) {
+    console.log("[PNL_ERROR]", e.message);
+    res.json({ daily: null, weekly: null, monthly: null, yearly: null });
+  }
 });
 
 app.post("/api/reauth", async (req, res) => {
-  rh.setToken(null);
-  var ok = await ensureLoggedIn();
-  var pending = getPendingWorkflow();
-  res.json({ ok: ok, pending_type: pending ? pending.challenge_type : null, message: ok ? "Connected to Robinhood" : pending ? "Check phone or enter SMS code" : "Login failed — check Railway logs" });
+  try {
+    rh.setToken(null);
+    var ok = await ensureLoggedIn();
+    var pending = getPendingWorkflow();
+    res.json({ ok: ok, pending_type: pending ? pending.challenge_type : null, message: ok ? "Connected to Robinhood" : pending ? "Check phone or enter SMS code" : "Login failed — check Railway logs" });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post("/api/sms", async (req, res) => {
-  var code = req.body.code;
-  if (!code) return res.status(400).json({ error: "code required" });
-  var result = await submitSmsCode(code);
-  res.json(result);
+  try {
+    var code = req.body.code;
+    if (!code) return res.status(400).json({ error: "code required" });
+    var result = await submitSmsCode(code);
+    res.json(result);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post("/api/contracts", (req, res) => {
-  const { spy, iwm } = req.body;
-  if (!spy || !iwm) return res.status(400).json({ error: "spy and iwm required" });
-  setContractSize(spy, iwm);
-  res.json({ ok: true, contracts: getState().contracts });
+  try {
+    const { spy, iwm } = req.body;
+    if (!spy || !iwm) return res.status(400).json({ error: "spy and iwm required" });
+    setContractSize(spy, iwm);
+    res.json({ ok: true, contracts: getState().contracts });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get("/test/discord/:type", async (req, res) => {
-  var type = req.params.type;
-  if (type === "60") await discord.postGoodMorning(60);
-  if (type === "45") await discord.postGoodMorning(45);
-  if (type === "30") await discord.postGoodMorning(30);
-  if (type === "5")  await discord.postGoodMorning(5);
-  if (type === "1")  await discord.postGoodMorning(1);
-  if (type === "summary") await discord.postDailySummary();
-  if (type === "positions") await discord.postOpenPositions("Test");
-  if (type === "entry") await discord.postEntry("SPY", "call", 2.40, 757.50, 754.25);
-  if (type === "stop") await discord.postStopLoss("SPY", 1.80, "Stop Loss — ORB Midpoint");
-  if (type === "profit") await discord.postProfitTier("SPY", 1, 5, 2.88, 20);
-  res.json({ ok: true, tested: type });
+  try {
+    var type = req.params.type;
+    if (type === "60") await discord.postGoodMorning(60);
+    if (type === "45") await discord.postGoodMorning(45);
+    if (type === "30") await discord.postGoodMorning(30);
+    if (type === "5")  await discord.postGoodMorning(5);
+    if (type === "1")  await discord.postGoodMorning(1);
+    if (type === "summary") await discord.postDailySummary();
+    if (type === "positions") await discord.postOpenPositions("Test");
+    if (type === "entry") await discord.postEntry("SPY", "call", 2.40, 757.50, 754.25);
+    if (type === "stop") await discord.postStopLoss("SPY", 1.80, "Stop Loss — ORB Midpoint");
+    if (type === "profit") await discord.postProfitTier("SPY", 1, 5, 2.88, 20);
+    res.json({ ok: true, tested: type });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post("/webhook", async (req, res) => {
