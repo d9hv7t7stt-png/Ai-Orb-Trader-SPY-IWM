@@ -297,18 +297,18 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var gainPct = ((optPrice - pos.entryPrice) / pos.entryPrice) * 100;
     var tier = pos.lastProfitTier;
 
-    // Activate breakeven stop at +50%
-    if (!pos.breakEvenActivated && gainPct >= 50) {
+    // Activate breakeven stop at +30%
+    if (!pos.breakEvenActivated && gainPct >= 30) {
       stateModule.setBreakEven(ticker);
-      stateModule.logEvent("BREAKEVEN", ticker + " +50% — stop moved to breakeven");
+      stateModule.logEvent("BREAKEVEN", ticker + " +30% — stop moved to breakeven");
     }
 
-    // Every +20% → sell 10%
-    var increments = Math.floor(gainPct / 20);
+    // Every +10% → sell 10%
+    var increments = Math.floor(gainPct / 10);
     if (increments > tier && gainPct < 100 && tier < 100) {
       var sell10 = Math.max(1, Math.floor(pos.contracts * 0.10));
       stateModule.logEvent("PROFIT_TIER_1", ticker + " +" + gainPct.toFixed(1) + "% selling 10% (" + sell10 + "c)");
-      await trayd.closePartialPosition({ ticker: ticker, contracts: sell10, reason: "+20% tier sell 10%" });
+      await trayd.closePartialPosition({ ticker: ticker, contracts: sell10, reason: "+10% scale-out" });
       stateModule.markProfitTier(ticker, increments);
       return { ok: true, message: ticker + " +20% profit tier" };
     }
