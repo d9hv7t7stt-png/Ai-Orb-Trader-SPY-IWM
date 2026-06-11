@@ -49,7 +49,8 @@ function setORB(ticker, high, low) {
   var h = parseFloat(high);
   var l = parseFloat(low);
   var mid = parseFloat(((h + l) / 2).toFixed(4));
-  state.orb[ticker] = { high: h, low: l, mid: mid, set: true };
+  var etDate = new Date().toLocaleDateString("en-US", { timeZone: "America/New_York" });
+  state.orb[ticker] = { high: h, low: l, mid: mid, set: true, date: etDate };
   logEvent("ORB_SET", ticker + " High=" + h + " Low=" + l + " Mid=" + mid);
 }
 
