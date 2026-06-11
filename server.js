@@ -13,6 +13,7 @@ const rh = require("./utils/robinhood");
 const discord = require("./utils/discord");
 const profitManager = require("./utils/profitmanager");
 const orbUtil = require("./utils/orb");
+const settings = require("./utils/settings");
 
 // Catch unhandled promise rejections so server never silently crashes
 process.on("unhandledRejection", (err) => {
@@ -80,7 +81,19 @@ app.get("/api/buying-power", async (req, res) => {
 app.get("/api/state", (req, res) => {
   var s = getState();
   s.auth = { logged_in: !!rh.getToken(), pending: !!getPendingWorkflow() };
+  s.dte = settings.getAll().dte;
   res.json(s);
+});
+
+app.post("/api/settings/dte", (req, res) => {
+  try {
+    const { spy, iwm } = req.body || {};
+    if (spy !== undefined) settings.setDTE("SPY", spy);
+    if (iwm !== undefined) settings.setDTE("IWM", iwm);
+    res.json({ ok: true, dte: settings.getAll().dte, durable: settings.getAll().durable });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get("/api/orb/refresh", async (req, res) => {
