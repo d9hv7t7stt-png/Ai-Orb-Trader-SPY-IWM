@@ -13,6 +13,7 @@ const rh = require("./utils/robinhood");
 const discord = require("./utils/discord");
 const profitManager = require("./utils/profitmanager");
 
+// Catch unhandled promise rejections so server never silently crashes
 process.on("unhandledRejection", (err) => {
   console.error("[UNHANDLED_REJECTION]", err && err.message ? err.message : err);
 });
@@ -34,21 +35,14 @@ app.get("/health", (req, res) => {
 
 app.get("/api/buying-power", async (req, res) => {
   try {
-    var token = rh.getToken();
-    if (!token) return res.json({ buying_power: null });
-    var accountNum = process.env.RH_ACCOUNT_NUMBER || "";
-    var data = await new Promise((resolve) => {
-      var opts = {
-        hostname: "api.robinhood.com",
-        path: "/accounts/" + accountNum + "/",
-        headers: {
-          "Authorization": "Bearer " + token,
-          "Accept": "application/json",
-          "X-Robinhood-API-Version": "1.431.4",
-          "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)"
-        }
+    // Fetch buying power from Trayd API
+    var traydRes = await new Promise((resolve) => {
+      var options = {
+        hostname: "mcp.trayd.ai",
+        path: "/portfolio?account_number=" + (process.env.RH_ACCOUNT_NUMBER || ""),
+        headers: { "Accept": "application/json" }
       };
-      var req2 = https.request(opts, (r) => {
+      var req2 = https.request(options, (r) => {
         var raw = "";
         r.on("data", c => raw += c);
         r.on("end", () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({}); } });
@@ -56,14 +50,32 @@ app.get("/api/buying-power", async (req, res) => {
       req2.on("error", () => resolve({}));
       req2.end();
     });
-    var bp = data.buying_power || data.cash || data.margin_balances?.day_trade_buying_power || null;
+    var bp = traydRes.buying_power || traydRes.cash || null;
+    if (!bp) {
+      // Fallback to Robinhood accounts endpoint
+      var token = rh.getToken();
+      if (token) {
+        var data = await new Promise((resolve) => {
+          var opts = {
+            hostname: "api.robinhood.com",
+            path: "/accounts/" + (process.env.RH_ACCOUNT_NUMBER || "") + "/",
+            headers: { "Authorization": "Bearer " + token, "Accept": "application/json", "X-Robinhood-API-Version": "1.431.4", "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)" }
+          };
+          var req3 = https.request(opts, (r) => {
+            var raw = ""; r.on("data", c => raw += c);
+            r.on("end", () => { try { resolve(JSON.parse(raw)); } catch(e) { resolve({}); } });
+          });
+          req3.on("error", () => resolve({})); req3.end();
+        });
+        bp = data.buying_power || data.cash || null;
+      }
+    }
     res.json({ buying_power: bp });
   } catch(e) {
     console.log("[BUYING_POWER_ERROR]", e.message);
     res.json({ buying_power: null });
   }
 });
-
 app.get("/api/state", (req, res) => {
   var s = getState();
   s.auth = { logged_in: !!rh.getToken(), pending: !!getPendingWorkflow() };
@@ -72,6 +84,7 @@ app.get("/api/state", (req, res) => {
 
 app.get("/api/prices", async (req, res) => {
   try {
+    // Use Yahoo Finance — no auth needed, always works
     var tickers = { "SPY": "SPY", "IWM": "IWM", "QQQ": "QQQ", "SPX": "^GSPC" };
     async function getYahooPrice(display, symbol) {
       return new Promise((resolve) => {
@@ -105,7 +118,6 @@ app.get("/api/prices", async (req, res) => {
     res.json({ prices: {} });
   }
 });
-
 app.get("/api/pnl", (req, res) => {
   try {
     var pnlFile = "/tmp/orb-pnl.json";
