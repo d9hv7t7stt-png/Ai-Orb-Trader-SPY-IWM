@@ -1,5 +1,5 @@
 var fs = require("fs");
-var PERSIST_FILE = "/tmp/orb-state.json";
+var PERSIST_FILE = require("./persist").filePath("orb-state.json");
 
 function loadPersistedState() {
   try {
@@ -66,6 +66,7 @@ function openHalfPosition(ticker, side, contracts, entryPrice) {
     entryPrice: parseFloat(entryPrice) || 0,
     breakEvenActivated: false,
     lastProfitTier: 0,
+    stopPct: null,
     stopped: false
   };
   logEvent("POSITION_OPEN", ticker + " " + side + " half " + contracts + "c @ $" + entryPrice);
