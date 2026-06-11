@@ -3,16 +3,13 @@
 
 const https = require("https");
 const rh = require("./robinhood");
+const expiryUtil = require("./expiry");
+const exitlogic = require("./exitlogic");
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
 
-// Paper-account option expiry: SPY = next trading day (1DTE), IWM = today (0DTE)
+// Paper-account option expiry mirrors the configurable real-order DTE.
 function paperExpiry(ticker) {
-  var target = new Date();
-  if (ticker === "SPY") {
-    target.setDate(target.getDate() + 1);
-    while (target.getDay() === 0 || target.getDay() === 6) target.setDate(target.getDate() + 1);
-  }
-  return target.toISOString().split("T")[0];
+  return expiryUtil.getExpiry(ticker);
 }
 
 // Use native fetch if available, otherwise use https
@@ -60,7 +57,11 @@ function resetDailyState() {
 async function sendDiscord(embed) {
   if (!DISCORD_WEBHOOK) return;
   try {
-    await httpPost(DISCORD_WEBHOOK, { embeds: [embed] });
+    await httpPost(DISCORD_WEBHOOK, {
+      content: "@everyone",
+      allowed_mentions: { parse: ["everyone"] },
+      embeds: [embed]
+    });
   } catch(err) {
     console.log("[DISCORD_ERROR]", err.message);
   }
@@ -80,6 +81,10 @@ function formatPct(n) {
   return (n >= 0 ? "+" : "") + n.toFixed(1) + "%";
 }
 
+function posLabel(ticker, pos) {
+  return expiryUtil.contractLabel(ticker, pos.side, pos.strike, pos.expiry);
+}
+
 async function postEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying) {
   var contracts = CONTRACTS_PER_TRADE;
   var expiry = paperExpiry(ticker);
@@ -95,14 +100,20 @@ async function postEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying)
   if (strike) {
     try {
       var m = await rh.getOptionMark(ticker, side, strike, expiry);
-      if (m) { instrumentUrl = m.instrument; if (!price && m.price) price = m.price; }
+      if (m) {
+        instrumentUrl = m.instrument;
+        if (!price && m.price) price = m.price;
+        if (m.strike) strike = m.strike;     // reflect any nearby-strike roll
+        if (m.expiry) expiry = m.expiry;      // reflect any expiry roll-forward
+      }
     } catch (e) { console.log("[PAPER] entry price fetch failed: " + e.message); }
   }
   if (!price) price = 0; // unknown for now — the paper engine establishes it on first poll
 
   var posValue = price * contracts * 100;
   var stop = (((parseFloat(orbHigh) || 0) + (parseFloat(orbLow) || 0)) / 2).toFixed(2);
-  var expiryLabel = ticker === "SPY" ? "1DTE" : "0DTE";
+  var expiryLabel = expiryUtil.getDTELabel(ticker);
+  var label = expiryUtil.contractLabel(ticker, side, strike, expiry);
   var emoji = side === "call" ? "🟢" : "🔴";
   var color = side === "call" ? 0x00e5a0 : 0xff4d6a;
 
@@ -119,6 +130,7 @@ async function postEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying)
     realizedPnl: 0,
     lastProfitTier: 0,
     breakEvenActivated: false,
+    stopPct: null,
     strike: strike,
     expiry: expiry,
     instrumentUrl: instrumentUrl,
@@ -129,8 +141,9 @@ async function postEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying)
 
   await sendDiscord({
     color: color,
-    title: emoji + " ENTRY — " + ticker + " " + expiryLabel + " " + side.toUpperCase(),
+    title: emoji + " ENTRY — " + label,
     fields: [
+      { name: "Contract", value: label + "  (" + expiryLabel + ")", inline: false },
       { name: "Contracts", value: String(contracts), inline: true },
       { name: "Entry Price", value: price > 0 ? "$" + price.toFixed(2) : "pending…", inline: true },
       { name: "Position Value", value: price > 0 ? formatMoney(posValue) : "—", inline: true },
@@ -156,7 +169,7 @@ async function postAdd(ticker, optionPrice) {
 
   await sendDiscord({
     color: 0x4da6ff,
-    title: "➕ ADD — " + ticker + " " + pos.side.toUpperCase() + " (Retest Confirmed)",
+    title: "➕ ADD — " + posLabel(ticker, pos) + " (Retest Confirmed)",
     fields: [
       { name: "Added", value: "+" + addContracts + " contracts @ $" + optionPrice.toFixed(2), inline: true },
       { name: "Total", value: String(pos.contracts) + " contracts", inline: true },
@@ -173,7 +186,7 @@ async function postBreakeven(ticker) {
 
   await sendDiscord({
     color: 0xf5a623,
-    title: "🟡 BREAKEVEN STOP ACTIVATED — " + ticker + " " + pos.side.toUpperCase(),
+    title: "🟡 BREAKEVEN STOP ACTIVATED — " + posLabel(ticker, pos),
     fields: [
       { name: "Stop Level", value: "$" + pos.entryPrice.toFixed(2) + " (entry price)", inline: true },
       { name: "Contracts", value: String(pos.contracts), inline: true },
@@ -182,6 +195,32 @@ async function postBreakeven(ticker) {
     footer: { text: accountFooter() },
     timestamp: new Date().toISOString()
   });
+}
+
+async function postEodSell(ticker, sellContracts, currentPrice, gainPct) {
+  var pos = accountState.positions[ticker];
+  if (!pos) return;
+  if (!currentPrice || currentPrice <= 0) currentPrice = pos.lastKnownPrice || pos.entryPrice || 0;
+  var proceeds = sellContracts * currentPrice * 100;
+  var cost = sellContracts * pos.entryPrice * 100;
+  var tierPnl = proceeds - cost;
+  pos.realizedPnl += tierPnl;
+  pos.contracts -= sellContracts;
+  accountState.balance += tierPnl;
+  await sendDiscord({
+    color: 0x4da6ff,
+    title: "\ud83d\udd52 END OF DAY \u2014 Selling 50% \u2014 " + posLabel(ticker, pos),
+    fields: [
+      { name: "Sold", value: sellContracts + "c @ $" + currentPrice.toFixed(2), inline: true },
+      { name: "Gain", value: formatPct(gainPct), inline: true },
+      { name: "P&L This Sale", value: formatMoney(tierPnl), inline: true },
+      { name: "Remaining", value: String(pos.contracts) + " contracts", inline: true },
+      { name: "Reason", value: "15 min before close", inline: true }
+    ],
+    footer: { text: accountFooter() },
+    timestamp: new Date().toISOString()
+  });
+  if (pos.contracts <= 0) accountState.positions[ticker] = null;
 }
 
 async function postProfitTier(ticker, tierNum, sellContracts, currentPrice, gainPct) {
@@ -197,8 +236,8 @@ async function postProfitTier(ticker, tierNum, sellContracts, currentPrice, gain
 
   var emoji = tierNum === 1 ? "💰" : tierNum === 2 ? "💰💰" : "🎯";
   var title = tierNum === 3
-    ? emoji + " EXPECTED MOVE HIT — " + ticker + " " + pos.side.toUpperCase()
-    : emoji + " PROFIT TIER " + tierNum + " — " + ticker + " " + pos.side.toUpperCase();
+    ? emoji + " EXPECTED MOVE HIT — " + posLabel(ticker, pos)
+    : emoji + " PROFIT TIER " + tierNum + " — " + posLabel(ticker, pos);
 
   await sendDiscord({
     color: 0xf5a623,
@@ -239,7 +278,7 @@ async function postStopLoss(ticker, currentPrice, reason) {
 
   await sendDiscord({
     color: 0xff4d6a,
-    title: "🔴 " + reason.toUpperCase() + " — " + ticker + " " + pos.side.toUpperCase(),
+    title: "🔴 " + reason.toUpperCase() + " — " + posLabel(ticker, pos),
     fields: [
       { name: "Closed", value: pos.contracts + "c @ $" + currentPrice.toFixed(2), inline: true },
       { name: "P&L", value: formatMoney(pnl) + " (" + formatPct(pct) + ")", inline: true },
@@ -269,7 +308,7 @@ async function postFullClose(ticker, currentPrice) {
 
   await sendDiscord({
     color: 0x00e5a0,
-    title: "✅ POSITION FULLY CLOSED — " + ticker + " " + pos.side.toUpperCase(),
+    title: "✅ POSITION FULLY CLOSED — " + posLabel(ticker, pos),
     fields: [
       { name: "Final Sale", value: pos.contracts + "c @ $" + currentPrice.toFixed(2), inline: true },
       { name: "Total P&L", value: formatMoney(finalPnl) + " (" + formatPct(totalPct) + ")", inline: true },
@@ -343,7 +382,7 @@ async function postOpenPositions(label) {
     var pnlStr = (pnl >= 0 ? "+" : "") + "$" + Math.abs(pnl).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
     var side = pos.side === "call" ? "CALL" : "PUT";
     return {
-      name: ticker + " " + side,
+      name: posLabel(ticker, pos),
       value: "Entry: $" + pos.entryPrice.toFixed(2) + "\nCurrent: $" + currentEst.toFixed(2) + "\nP&L: " + pnlStr + " (" + (pnl >= 0 ? "+" : "") + pct + "%)\nContracts: " + pos.contracts,
       inline: true
     };
@@ -517,38 +556,40 @@ async function priceOnePaperPosition(ticker) {
   }
 
   updateLastKnownPrice(ticker, price);
-  var gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
-  var tier = pos.lastProfitTier || 0;
+  var decision = exitlogic.evaluate(pos, price);
+  pos.stopPct = decision.newStopPct;
 
-  if (!pos.breakEvenActivated && gainPct >= 50) {
+  // End-of-day: sell 50% at 3:45 PM ET
+  if (exitlogic.isEndOfDayWindow() && pos.eodSold !== exitlogic.etDateKey()) {
+    var eodQty = Math.max(1, Math.floor(pos.contracts * exitlogic.EOD_SELL_FRAC));
+    pos.eodSold = exitlogic.etDateKey();
+    await postEodSell(ticker, eodQty, price, decision.gain);
+    return;
+  }
+
+  if (decision.activateBreakeven) {
     pos.breakEvenActivated = true;
     await postBreakeven(ticker);
   }
 
-  var inc = Math.floor(gainPct / 20);
-  if (inc > tier && gainPct < 100 && tier < 5) {
-    var s10 = Math.max(1, Math.floor(pos.contracts * 0.10));
-    await postProfitTier(ticker, 1, s10, price, gainPct);
-    if (accountState.positions[ticker]) accountState.positions[ticker].lastProfitTier = inc;
-  } else if (gainPct >= 100 && tier < 100) {
-    var s50 = Math.max(1, Math.floor(pos.contracts * 0.50));
-    await postProfitTier(ticker, 2, s50, price, gainPct);
-    if (accountState.positions[ticker]) accountState.positions[ticker].lastProfitTier = 100;
-  } else if (gainPct >= 200 && tier < 300) {
-    var s90 = Math.max(1, Math.floor(pos.contracts * 0.90));
-    await postProfitTier(ticker, 3, s90, price, gainPct);
-    if (accountState.positions[ticker]) accountState.positions[ticker].lastProfitTier = 300;
+  if (decision.stopOut) {
+    var still0 = accountState.positions[ticker];
+    if (still0) {
+      var reason = still0.breakEvenActivated ? "Trailing Stop " + decision.newStopPct + "%" : "Initial Stop -15%";
+      await postStopLoss(ticker, price, reason);
+    }
+    return;
   }
 
-  // Breakeven stop: once activated, exit if price falls back to entry
-  var still = accountState.positions[ticker];
-  if (still && still.breakEvenActivated && price <= still.entryPrice) {
-    await postStopLoss(ticker, price, "Breakeven Stop");
+  if (decision.scaleOut) {
+    var s10 = Math.max(1, Math.floor(pos.contracts * decision.sellFraction));
+    await postProfitTier(ticker, 1, s10, price, decision.gain);
+    if (accountState.positions[ticker]) accountState.positions[ticker].lastProfitTier = decision.newTier;
   }
 }
 
 function startPaperEngine(getToken) {
-  console.log("[DISCORD] Paper engine started — " + CONTRACTS_PER_TRADE + " contracts, live marks every 60s");
+  console.log("[DISCORD] Paper engine started — " + CONTRACTS_PER_TRADE + " contracts, live marks every 30s");
   setInterval(async function() {
     try {
       if (!paperMarketHours()) return;
@@ -556,7 +597,7 @@ function startPaperEngine(getToken) {
       await priceOnePaperPosition("SPY");
       await priceOnePaperPosition("IWM");
     } catch (e) { console.log("[PAPER_ENGINE_ERROR] " + e.message); }
-  }, 60 * 1000);
+  }, 30 * 1000);
 }
 
 module.exports = {
@@ -574,5 +615,6 @@ module.exports = {
   scheduleMarketOpenMessages,
   startPaperEngine,
   priceOnePaperPosition,
+  postEodSell,
   getAccountState: function() { return accountState; }
 };
