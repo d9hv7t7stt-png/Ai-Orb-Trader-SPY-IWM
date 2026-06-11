@@ -330,10 +330,33 @@ async function refreshToken(refreshTokenValue) {
   }
 }
 
+// Read-only option pricing for the paper feed (no order placement involved).
+// Uses authedRequest so an expired access token auto-refreshes.
+async function getOptionMark(ticker, side, strike, expiry) {
+  const optionType = side === "call" ? "call" : "put";
+  const instrument = await getOptionInstrument(ticker, expiry, strike, optionType);
+  if (!instrument) return null;
+  const price = await getOptionMarkByUrl(instrument.url);
+  return { price: price, instrument: instrument.url, strike: strike, expiry: expiry };
+}
+
+async function getOptionMarkByUrl(instrumentUrl) {
+  const quoteRes = await authedRequest("GET", `/marketdata/options/?instruments=${encodeURIComponent(instrumentUrl)}`, null, "json");
+  const r = quoteRes && quoteRes.results && quoteRes.results[0];
+  if (!r) return null;
+  let p = parseFloat(r.mark_price || r.adjusted_mark_price || r.last_trade_price || 0);
+  if (!p || isNaN(p)) {
+    const bid = parseFloat(r.bid_price || 0), ask = parseFloat(r.ask_price || 0);
+    if (bid && ask) p = (bid + ask) / 2;
+  }
+  return p && !isNaN(p) ? p : null;
+}
+
 module.exports = {
   login, setToken, getToken, setDeviceToken, refreshToken,
   getStoredRefreshToken, reauthorize,
   handleVerificationWorkflow, completeWorkflow,
   respondToSmsChallenge, waitForPushApproval,
-  getQuote, placeOptionOrder, closeOptionPosition
+  getQuote, placeOptionOrder, closeOptionPosition,
+  getOptionMark, getOptionMarkByUrl
 };
