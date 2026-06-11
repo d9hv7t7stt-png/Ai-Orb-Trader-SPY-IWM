@@ -12,6 +12,7 @@ const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth }
 const rh = require("./utils/robinhood");
 const discord = require("./utils/discord");
 const profitManager = require("./utils/profitmanager");
+const orbUtil = require("./utils/orb");
 
 // Catch unhandled promise rejections so server never silently crashes
 process.on("unhandledRejection", (err) => {
@@ -80,6 +81,15 @@ app.get("/api/state", (req, res) => {
   var s = getState();
   s.auth = { logged_in: !!rh.getToken(), pending: !!getPendingWorkflow() };
   res.json(s);
+});
+
+app.get("/api/orb/refresh", async (req, res) => {
+  try {
+    var results = await orbUtil.populateIfNeeded(true);
+    res.json({ ok: true, orb: results });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 app.get("/api/prices", async (req, res) => {
@@ -224,4 +234,5 @@ app.listen(PORT, async () => {
   discord.scheduleMarketOpenMessages();
   discord.schedulePositionUpdates();
   profitManager.startProfitManager(rh.getToken.bind(rh));
+  orbUtil.scheduleORBCapture();
 });
