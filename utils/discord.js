@@ -1,12 +1,21 @@
-// Discord - Argus ORB Trader
+// Discord Paper Trading Bot
+// Tracks a virtual account and posts all signals to Discord
 
 const https = require("https");
-const fs = require("fs");
+const rh = require("./robinhood");
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
-const STARTING_BALANCE = 50000;
-const CONTRACTS_PER_TRADE = 50;
-const STATE_FILE = "/tmp/orb-discord-state.json";
 
+// Paper-account option expiry: SPY = next trading day (1DTE), IWM = today (0DTE)
+function paperExpiry(ticker) {
+  var target = new Date();
+  if (ticker === "SPY") {
+    target.setDate(target.getDate() + 1);
+    while (target.getDay() === 0 || target.getDay() === 6) target.setDate(target.getDate() + 1);
+  }
+  return target.toISOString().split("T")[0];
+}
+
+// Use native fetch if available, otherwise use https
 async function httpPost(url, data) {
   return new Promise((resolve, reject) => {
     const body = JSON.stringify(data);
@@ -30,41 +39,22 @@ async function httpPost(url, data) {
     req.end();
   });
 }
+const STARTING_BALANCE = 50000;
+const CONTRACTS_PER_TRADE = 50;
 
-function loadState() {
-  try {
-    if (fs.existsSync(STATE_FILE)) {
-      var saved = JSON.parse(fs.readFileSync(STATE_FILE, "utf8"));
-      console.log("[DISCORD] Loaded saved account state — balance: $" + saved.balance);
-      return saved;
-    }
-  } catch(e) {
-    console.log("[DISCORD] Could not load saved state, starting fresh");
-  }
-  return {
-    balance: STARTING_BALANCE,
-    startingBalance: STARTING_BALANCE,
-    positions: { SPY: null, IWM: null },
-    dailyTrades: [],
-    totalTrades: 0,
-    wins: 0,
-    losses: 0
-  };
-}
-
-function saveState() {
-  try {
-    fs.writeFileSync(STATE_FILE, JSON.stringify(accountState));
-  } catch(e) {
-    console.log("[DISCORD] Could not save state:", e.message);
-  }
-}
-
-var accountState = loadState();
+// Paper trading state
+var accountState = {
+  balance: STARTING_BALANCE,
+  startingBalance: STARTING_BALANCE,
+  positions: { SPY: null, IWM: null },
+  dailyTrades: [],
+  totalTrades: 0,
+  wins: 0,
+  losses: 0
+};
 
 function resetDailyState() {
   accountState.dailyTrades = [];
-  saveState();
 }
 
 async function sendDiscord(embed) {
@@ -74,6 +64,10 @@ async function sendDiscord(embed) {
   } catch(err) {
     console.log("[DISCORD_ERROR]", err.message);
   }
+}
+
+function accountFooter() {
+  return "Argus ORB Trader 50K: " + formatMoney(accountState.balance);
 }
 
 function formatMoney(n) {
@@ -86,36 +80,62 @@ function formatPct(n) {
   return (n >= 0 ? "+" : "") + n.toFixed(1) + "%";
 }
 
-function accountFooter() {
-  return "Argus ORB Trader 50K: " + formatMoney(accountState.balance);
-}
-
-async function postEntry(ticker, side, optionPrice, orbHigh, orbLow) {
+async function postEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying) {
   var contracts = CONTRACTS_PER_TRADE;
-  var posValue = optionPrice * contracts * 100;
-  var stop = ((orbHigh + orbLow) / 2).toFixed(2);
-  var expiry = ticker === "SPY" ? "1DTE" : "0DTE";
+  var expiry = paperExpiry(ticker);
+  var strike = underlying ? Math.round(parseFloat(underlying)) : null;
+  if (!strike) {
+    try { var u = await rh.getQuote(ticker); if (u) strike = Math.round(u); } catch (e) {}
+  }
+  var instrumentUrl = null;
+
+  // Paper feed is independent of real order placement: fetch its own option mark.
+  // optionPrice (if the real order filled) is used only as a hint/fallback.
+  var price = optionPrice && optionPrice > 0 ? parseFloat(optionPrice) : null;
+  if (strike) {
+    try {
+      var m = await rh.getOptionMark(ticker, side, strike, expiry);
+      if (m) { instrumentUrl = m.instrument; if (!price && m.price) price = m.price; }
+    } catch (e) { console.log("[PAPER] entry price fetch failed: " + e.message); }
+  }
+  if (!price) price = 0; // unknown for now — the paper engine establishes it on first poll
+
+  var posValue = price * contracts * 100;
+  var stop = (((parseFloat(orbHigh) || 0) + (parseFloat(orbLow) || 0)) / 2).toFixed(2);
+  var expiryLabel = ticker === "SPY" ? "1DTE" : "0DTE";
   var emoji = side === "call" ? "🟢" : "🔴";
   var color = side === "call" ? 0x00e5a0 : 0xff4d6a;
 
   accountState.positions[ticker] = {
-    side: side, contracts: contracts, totalContracts: contracts,
-    entryPrice: optionPrice, posValue: posValue,
-    orbHigh: orbHigh, orbLow: orbLow,
-    halfIn: true, fullIn: false, realizedPnl: 0, lastProfitTier: 0
+    side: side,
+    contracts: contracts,
+    totalContracts: contracts,
+    entryPrice: price,
+    posValue: posValue,
+    orbHigh: orbHigh,
+    orbLow: orbLow,
+    halfIn: true,
+    fullIn: false,
+    realizedPnl: 0,
+    lastProfitTier: 0,
+    breakEvenActivated: false,
+    strike: strike,
+    expiry: expiry,
+    instrumentUrl: instrumentUrl,
+    lastKnownPrice: price
   };
-  accountState.dailyTrades.push({ ticker, side, entryPrice: optionPrice, contracts });
-  saveState();
+
+  accountState.dailyTrades.push({ ticker, side, entryPrice: price, contracts });
 
   await sendDiscord({
     color: color,
-    title: emoji + " ENTRY — " + ticker + " " + expiry + " " + side.toUpperCase(),
+    title: emoji + " ENTRY — " + ticker + " " + expiryLabel + " " + side.toUpperCase(),
     fields: [
       { name: "Contracts", value: String(contracts), inline: true },
-      { name: "Entry Price", value: "$" + optionPrice.toFixed(2), inline: true },
-      { name: "Position Value", value: formatMoney(posValue), inline: true },
-      { name: "ORB High", value: "$" + parseFloat(orbHigh).toFixed(2), inline: true },
-      { name: "ORB Low", value: "$" + parseFloat(orbLow).toFixed(2), inline: true },
+      { name: "Entry Price", value: price > 0 ? "$" + price.toFixed(2) : "pending…", inline: true },
+      { name: "Position Value", value: price > 0 ? formatMoney(posValue) : "—", inline: true },
+      { name: "ORB High", value: "$" + (parseFloat(orbHigh) || 0).toFixed(2), inline: true },
+      { name: "ORB Low",  value: "$" + (parseFloat(orbLow) || 0).toFixed(2),  inline: true },
       { name: "Stop (Mid)", value: "$" + stop, inline: true }
     ],
     footer: { text: accountFooter() },
@@ -126,13 +146,13 @@ async function postEntry(ticker, side, optionPrice, orbHigh, orbLow) {
 async function postAdd(ticker, optionPrice) {
   var pos = accountState.positions[ticker];
   if (!pos) return;
+  if (!optionPrice || optionPrice <= 0) optionPrice = pos.lastKnownPrice || pos.entryPrice || 0;
   var addContracts = CONTRACTS_PER_TRADE;
   pos.contracts += addContracts;
   pos.totalContracts = pos.contracts;
   pos.fullIn = true;
   pos.halfIn = false;
   var avgEntry = ((pos.entryPrice + optionPrice) / 2).toFixed(2);
-  saveState();
 
   await sendDiscord({
     color: 0x4da6ff,
@@ -174,7 +194,6 @@ async function postProfitTier(ticker, tierNum, sellContracts, currentPrice, gain
   pos.realizedPnl += tierPnl;
   pos.contracts -= sellContracts;
   accountState.balance += tierPnl;
-  saveState();
 
   var emoji = tierNum === 1 ? "💰" : tierNum === 2 ? "💰💰" : "🎯";
   var title = tierNum === 3
@@ -199,6 +218,7 @@ async function postProfitTier(ticker, tierNum, sellContracts, currentPrice, gain
 async function postStopLoss(ticker, currentPrice, reason) {
   var pos = accountState.positions[ticker];
   if (!pos) return;
+  if (!currentPrice || currentPrice <= 0) currentPrice = pos.lastKnownPrice || pos.entryPrice || 0;
 
   var proceeds = pos.contracts * currentPrice * 100;
   var cost = pos.contracts * pos.entryPrice * 100;
@@ -209,12 +229,13 @@ async function postStopLoss(ticker, currentPrice, reason) {
   if (pnl < 0) accountState.losses++;
   else accountState.wins++;
   accountState.totalTrades++;
+
   accountState.dailyTrades.push({
     ticker, side: pos.side, exitPrice: currentPrice,
     pnl: pnl, pct: pct, reason: reason, closed: true
   });
+
   accountState.positions[ticker] = null;
-  saveState();
 
   await sendDiscord({
     color: 0xff4d6a,
@@ -232,6 +253,7 @@ async function postStopLoss(ticker, currentPrice, reason) {
 async function postFullClose(ticker, currentPrice) {
   var pos = accountState.positions[ticker];
   if (!pos || pos.contracts <= 0) return;
+  if (!currentPrice || currentPrice <= 0) currentPrice = pos.lastKnownPrice || pos.entryPrice || 0;
 
   var proceeds = pos.contracts * currentPrice * 100;
   var cost = pos.contracts * pos.entryPrice * 100;
@@ -242,8 +264,8 @@ async function postFullClose(ticker, currentPrice) {
   if (finalPnl > 0) accountState.wins++;
   else accountState.losses++;
   accountState.totalTrades++;
+
   accountState.positions[ticker] = null;
-  saveState();
 
   await sendDiscord({
     color: 0x00e5a0,
@@ -285,9 +307,11 @@ async function postDailySummary() {
     timestamp: new Date().toISOString()
   });
 
+  // Reset daily trades but keep running balance
   resetDailyState();
 }
 
+// Schedule daily summary at 4 PM ET (20:00 UTC)
 function scheduleDailySummary() {
   function msUntil4pmET() {
     var now = new Date();
@@ -306,26 +330,28 @@ function scheduleDailySummary() {
   console.log("[DISCORD] Daily summary scheduled for 4 PM ET");
 }
 
+// ── Open positions post ──────────────────────────────────────────────────────
 async function postOpenPositions(label) {
   var positions = Object.entries(accountState.positions).filter(function(e) { return e[1] && !e[1].stopped; });
+  if (positions.length === 0) return;
 
-  var fields = positions.length > 0 ? positions.map(function(e) {
+  var fields = positions.map(function(e) {
     var ticker = e[0]; var pos = e[1];
     var currentEst = pos.lastKnownPrice || pos.entryPrice;
     var pnl = (currentEst - pos.entryPrice) * pos.contracts * 100;
     var pct = pos.entryPrice > 0 ? ((currentEst - pos.entryPrice) / pos.entryPrice * 100).toFixed(1) : "0.0";
-    var pnlStr = (pnl >= 0 ? "+" : "") + "$" + Math.abs(pnl).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    var pnlStr = (pnl >= 0 ? "+" : "") + "$" + Math.abs(pnl).toLocaleString("en-US", {minimumFractionDigits:2, maximumFractionDigits:2});
     var side = pos.side === "call" ? "CALL" : "PUT";
     return {
       name: ticker + " " + side,
       value: "Entry: $" + pos.entryPrice.toFixed(2) + "\nCurrent: $" + currentEst.toFixed(2) + "\nP&L: " + pnlStr + " (" + (pnl >= 0 ? "+" : "") + pct + "%)\nContracts: " + pos.contracts,
       inline: true
     };
-  }) : [{ name: "No Open Positions", value: "Watching for signals 👁️", inline: false }];
+  });
 
   await sendDiscord({
     color: 0x4da6ff,
-    title: "📋 " + label + " — Position Update",
+    title: "📋 " + label + " — Open Positions",
     fields: fields,
     footer: { text: accountFooter() },
     timestamp: new Date().toISOString()
@@ -335,15 +361,15 @@ async function postOpenPositions(label) {
 function updateLastKnownPrice(ticker, optionPrice) {
   if (accountState.positions[ticker] && optionPrice) {
     accountState.positions[ticker].lastKnownPrice = optionPrice;
-    saveState();
   }
 }
 
+// Every 30 minutes during market hours
 function schedulePositionUpdates() {
   function isMarketHours() {
     var now = new Date();
     var utcTotal = now.getUTCHours() * 60 + now.getUTCMinutes();
-    return utcTotal >= 13 * 60 + 30 && utcTotal <= 20 * 60;
+    return utcTotal >= 13*60+30 && utcTotal <= 20*60;
   }
   function msUntilNext15() {
     var now = new Date();
@@ -365,6 +391,7 @@ function schedulePositionUpdates() {
   console.log("[DISCORD] 15-min position updates scheduled");
 }
 
+// ── Market open countdown messages ──────────────────────────────────────────
 async function postGoodMorning(minutesBefore) {
   var messages = {
     45: {
@@ -427,12 +454,14 @@ async function postGoodMorning(minutesBefore) {
 }
 
 function scheduleMarketOpenMessages() {
+  // Market opens 9:30 AM ET = 13:30 UTC (EDT)
+  // Messages at: 8:30 (60min), 9:00 (30min), 9:25 (5min), 9:29 (1min)
   var alerts = [
-    { utcHour: 12, utcMin: 45, minutesBefore: 45 },
-    { utcHour: 12, utcMin: 30, minutesBefore: 60 },
-    { utcHour: 13, utcMin: 0,  minutesBefore: 30 },
-    { utcHour: 13, utcMin: 25, minutesBefore: 5  },
-    { utcHour: 13, utcMin: 29, minutesBefore: 1  }
+    { utcHour: 12, utcMin: 45, minutesBefore: 45 },  // 8:45 AM ET
+    { utcHour: 12, utcMin: 30, minutesBefore: 60 },  // 8:30 AM ET
+    { utcHour: 13, utcMin: 0,  minutesBefore: 30 },  // 9:00 AM ET
+    { utcHour: 13, utcMin: 25, minutesBefore: 5  },  // 9:25 AM ET
+    { utcHour: 13, utcMin: 29, minutesBefore: 1  }   // 9:29 AM ET
   ];
 
   function msUntilNext(utcHour, utcMin) {
@@ -446,7 +475,7 @@ function scheduleMarketOpenMessages() {
   alerts.forEach(function(alert) {
     function scheduleNext() {
       var delay = msUntilNext(alert.utcHour, alert.utcMin);
-      console.log("[DISCORD] Argus " + alert.minutesBefore + "-min message in " + Math.round(delay / 60000) + " min");
+      console.log("[DISCORD] Argus " + alert.minutesBefore + "-min message in " + Math.round(delay/60000) + " min");
       setTimeout(async function() {
         await postGoodMorning(alert.minutesBefore);
         scheduleNext();
@@ -456,19 +485,94 @@ function scheduleMarketOpenMessages() {
   });
 }
 
+// ── Paper price engine ───────────────────────────────────────────────────────
+// Polls live option marks for the PAPER positions and drives P&L + TP tiers,
+// fully independent of real order placement. Mirrors the profit-tier ladder.
+function paperMarketHours() {
+  var now = new Date();
+  var utcTotal = now.getUTCHours() * 60 + now.getUTCMinutes();
+  return utcTotal >= 13 * 60 + 30 && utcTotal <= 20 * 60; // 9:30–16:00 ET
+}
+
+async function priceOnePaperPosition(ticker) {
+  var pos = accountState.positions[ticker];
+  if (!pos) return;
+
+  var price = null;
+  try {
+    if (pos.instrumentUrl) price = await rh.getOptionMarkByUrl(pos.instrumentUrl);
+    if ((!price || price <= 0) && pos.strike) {
+      var m = await rh.getOptionMark(ticker, pos.side, pos.strike, pos.expiry);
+      if (m) { price = m.price; if (!pos.instrumentUrl) pos.instrumentUrl = m.instrument; }
+    }
+  } catch (e) { console.log("[PAPER_ENGINE] price fetch " + ticker + ": " + e.message); }
+  if (!price || price <= 0) return;
+
+  // Establish entry on first successful read if it wasn't known at entry time
+  if (!pos.entryPrice || pos.entryPrice <= 0) {
+    pos.entryPrice = price;
+    pos.posValue = price * pos.contracts * 100;
+    pos.lastKnownPrice = price;
+    return;
+  }
+
+  updateLastKnownPrice(ticker, price);
+  var gainPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+  var tier = pos.lastProfitTier || 0;
+
+  if (!pos.breakEvenActivated && gainPct >= 50) {
+    pos.breakEvenActivated = true;
+    await postBreakeven(ticker);
+  }
+
+  var inc = Math.floor(gainPct / 20);
+  if (inc > tier && gainPct < 100 && tier < 5) {
+    var s10 = Math.max(1, Math.floor(pos.contracts * 0.10));
+    await postProfitTier(ticker, 1, s10, price, gainPct);
+    if (accountState.positions[ticker]) accountState.positions[ticker].lastProfitTier = inc;
+  } else if (gainPct >= 100 && tier < 100) {
+    var s50 = Math.max(1, Math.floor(pos.contracts * 0.50));
+    await postProfitTier(ticker, 2, s50, price, gainPct);
+    if (accountState.positions[ticker]) accountState.positions[ticker].lastProfitTier = 100;
+  } else if (gainPct >= 200 && tier < 300) {
+    var s90 = Math.max(1, Math.floor(pos.contracts * 0.90));
+    await postProfitTier(ticker, 3, s90, price, gainPct);
+    if (accountState.positions[ticker]) accountState.positions[ticker].lastProfitTier = 300;
+  }
+
+  // Breakeven stop: once activated, exit if price falls back to entry
+  var still = accountState.positions[ticker];
+  if (still && still.breakEvenActivated && price <= still.entryPrice) {
+    await postStopLoss(ticker, price, "Breakeven Stop");
+  }
+}
+
+function startPaperEngine(getToken) {
+  console.log("[DISCORD] Paper engine started — " + CONTRACTS_PER_TRADE + " contracts, live marks every 60s");
+  setInterval(async function() {
+    try {
+      if (!paperMarketHours()) return;
+      if (getToken && !getToken()) return; // need a token for read-only marks
+      await priceOnePaperPosition("SPY");
+      await priceOnePaperPosition("IWM");
+    } catch (e) { console.log("[PAPER_ENGINE_ERROR] " + e.message); }
+  }, 60 * 1000);
+}
+
 module.exports = {
   postEntry,
+  updateLastKnownPrice,
+  postOpenPositions,
+  schedulePositionUpdates,
   postAdd,
   postBreakeven,
   postProfitTier,
   postStopLoss,
   postFullClose,
   postDailySummary,
-  postOpenPositions,
-  postGoodMorning,
-  updateLastKnownPrice,
   scheduleDailySummary,
   scheduleMarketOpenMessages,
-  schedulePositionUpdates,
+  startPaperEngine,
+  priceOnePaperPosition,
   getAccountState: function() { return accountState; }
 };
