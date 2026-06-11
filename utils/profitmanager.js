@@ -1,7 +1,8 @@
-// Profit Manager — polls open option positions every 60 seconds
+// Profit Manager — polls open option positions every 30 seconds
 // Handles: breakeven stop, +20% sell 10%, +100% sell 50%, expected move sell 90%
 
 var stateModule = require("./state");
+var exitlogic = require("./exitlogic");
 var trayd = require("./trayd");
 var discord = require("./discord");
 var https = require("https");
@@ -107,67 +108,56 @@ async function checkProfitTiers(token) {
     }
 
     var entryPrice = pos.entryPrice;
-    var gainPct = ((optionPrice - entryPrice) / entryPrice) * 100;
     var contracts = pos.contracts;
-    var tier = pos.lastProfitTier || 0;
+    var decision = exitlogic.evaluate(pos, optionPrice);
+    var gainPct = decision.gain;
 
-    console.log("[PROFIT_MGR] " + ticker + " entry=$" + entryPrice.toFixed(2) + " current=$" + optionPrice.toFixed(2) + " gain=" + gainPct.toFixed(1) + "% tier=" + tier);
+    console.log("[PROFIT_MGR] " + ticker + " entry=$" + entryPrice.toFixed(2) + " current=$" + optionPrice.toFixed(2) + " gain=" + gainPct.toFixed(1) + "% tier=" + (pos.lastProfitTier||0) + " stop=" + decision.newStopPct + "%");
 
-    // Update last known price for Discord
+    // persist trailing stop level
+    pos.stopPct = decision.newStopPct;
 
-    // ── Breakeven stop at +50% ────────────────────────────────────────────
-    if (!pos.breakEvenActivated && gainPct >= 50) {
+    // ── End-of-day: sell 50% of every open position at 3:45 PM ET ──────────
+    if (exitlogic.isEndOfDayWindow() && pos.eodSold !== exitlogic.etDateKey()) {
+      var eodQty = Math.max(1, Math.floor(contracts * exitlogic.EOD_SELL_FRAC));
+      stateModule.logEvent("EOD_SELL", ticker + " 3:45 ET — selling 50% (" + eodQty + "c) before close @ $" + optionPrice.toFixed(2));
+      await trayd.closePartialPosition({ ticker: ticker, contracts: eodQty, reason: "EOD 50% (15m before close)" });
+      logTradePnL(ticker, pos.side, entryPrice, optionPrice, eodQty);
+      pos.contracts -= eodQty;
+      pos.eodSold = exitlogic.etDateKey();
+      if (pos.contracts <= 0) { stateModule.closePosition(ticker, "EOD flat"); continue; }
+      contracts = pos.contracts;
+    }
+
+    // ── Breakeven activation at +30% ──────────────────────────────────────
+    if (decision.activateBreakeven) {
       stateModule.setBreakEven(ticker);
-      stateModule.logEvent("BREAKEVEN", ticker + " +50% — stop moved to breakeven $" + entryPrice.toFixed(2));
-      console.log("[PROFIT_MGR] " + ticker + " breakeven activated");
+      stateModule.logEvent("BREAKEVEN", ticker + " +30% — stop moved to breakeven $" + entryPrice.toFixed(2));
     }
 
-    // ── Every +20% → sell 10% ─────────────────────────────────────────────
-    var increments = Math.floor(gainPct / 20);
-    if (increments > tier && gainPct < 100 && tier < 5) {
-      var sell10 = Math.max(1, Math.floor(contracts * 0.10));
-      stateModule.logEvent("PROFIT_TIER_1", ticker + " +" + gainPct.toFixed(1) + "% — selling 10% (" + sell10 + "c) @ $" + optionPrice.toFixed(2));
-      await trayd.closePartialPosition({ ticker: ticker, contracts: sell10, reason: "+" + Math.floor(gainPct) + "% profit tier" });
-      logTradePnL(ticker, pos.side, entryPrice, optionPrice, sell10);
-      stateModule.markProfitTier(ticker, increments);
-      console.log("[PROFIT_MGR] " + ticker + " sold 10% at +" + gainPct.toFixed(1) + "%");
-    }
-
-    // ── +100% → sell 50% ──────────────────────────────────────────────────
-    if (gainPct >= 100 && tier < 100) {
-      var sell50 = Math.max(1, Math.floor(contracts * 0.50));
-      stateModule.logEvent("PROFIT_TIER_2", ticker + " +100% — selling 50% (" + sell50 + "c) @ $" + optionPrice.toFixed(2));
-      await trayd.closePartialPosition({ ticker: ticker, contracts: sell50, reason: "+100% profit tier" });
-      logTradePnL(ticker, pos.side, entryPrice, optionPrice, sell50);
-      stateModule.markProfitTier(ticker, 100);
-      console.log("[PROFIT_MGR] " + ticker + " sold 50% at +100%");
-    }
-
-    // ── Expected move → sell 90% ──────────────────────────────────────────
-    // Uses IWM daily expected move (~1% of price) as proxy
-    // Can be extended with actual expected move calculation
-    if (gainPct >= 200 && tier < 300) {
-      var sell90 = Math.max(1, Math.floor(contracts * 0.90));
-      stateModule.logEvent("PROFIT_TIER_3", ticker + " +200% (expected move) — selling 90% (" + sell90 + "c) @ $" + optionPrice.toFixed(2));
-      await trayd.closePartialPosition({ ticker: ticker, contracts: sell90, reason: "expected move 90% exit" });
-      logTradePnL(ticker, pos.side, entryPrice, optionPrice, sell90);
-      stateModule.markProfitTier(ticker, 300);
-      console.log("[PROFIT_MGR] " + ticker + " sold 90% at expected move");
-    }
-
-    // ── Breakeven stop check — exit if price drops back to entry ─────────
-    if (pos.breakEvenActivated && optionPrice <= entryPrice && !pos.stopped) {
-      stateModule.logEvent("STOP_BREAKEVEN", ticker + " hit breakeven stop @ $" + optionPrice.toFixed(2));
-      await trayd.closePartialPosition({ ticker: ticker, contracts: contracts, reason: "breakeven stop hit" });
+    // ── Trailing / initial stop-out → exit full remaining ─────────────────
+    if (decision.stopOut && !pos.stopped) {
+      var reason = pos.breakEvenActivated ? "Trailing stop " + decision.newStopPct + "%" : "Initial stop -15%";
+      stateModule.logEvent("STOP_OUT", ticker + " " + reason + " hit @ $" + optionPrice.toFixed(2) + " (" + gainPct.toFixed(1) + "%)");
+      await trayd.closePartialPosition({ ticker: ticker, contracts: contracts, reason: reason });
       logTradePnL(ticker, pos.side, entryPrice, optionPrice, contracts);
-      stateModule.closePosition(ticker, "breakeven stop");
-      console.log("[PROFIT_MGR] " + ticker + " breakeven stop triggered");
+      stateModule.closePosition(ticker, reason);
+      continue;
+    }
+
+    // ── Scale-out: sell 10% for every +10% of gain ────────────────────────
+    if (decision.scaleOut) {
+      var sell10 = Math.max(1, Math.floor(contracts * decision.sellFraction));
+      stateModule.logEvent("PROFIT_TIER", ticker + " +" + gainPct.toFixed(1) + "% — selling 10% (" + sell10 + "c) @ $" + optionPrice.toFixed(2));
+      await trayd.closePartialPosition({ ticker: ticker, contracts: sell10, reason: "+" + Math.floor(gainPct) + "% scale-out" });
+      logTradePnL(ticker, pos.side, entryPrice, optionPrice, sell10);
+      stateModule.markProfitTier(ticker, decision.newTier);
     }
   }
 }
 
 function startProfitManager(getToken) {
-  console.log("[PROFIT_MGR] Starting — checks every 60 seconds during market hours");
+  console.log("[PROFIT_MGR] Starting — checks every 30 seconds during market hours");
   setInterval(async function() {
     try {
       var token = getToken();
@@ -176,7 +166,7 @@ function startProfitManager(getToken) {
     } catch(e) {
       console.log("[PROFIT_MGR_ERROR]", e.message);
     }
-  }, 60 * 1000); // every 60 seconds
+  }, 30 * 1000); // every 30 seconds
 }
 
 module.exports = { startProfitManager };
