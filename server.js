@@ -235,4 +235,5 @@ app.listen(PORT, async () => {
   discord.schedulePositionUpdates();
   profitManager.startProfitManager(rh.getToken.bind(rh));
   orbUtil.scheduleORBCapture();
+  discord.startPaperEngine(rh.getToken.bind(rh));
 });
