@@ -10,6 +10,7 @@ var fs = require("fs");
 function isMarketHours() {
   var now = new Date();
   var utcTotal = now.getUTCHours() * 60 + now.getUTCMinutes();
+  // 9:30 AM - 4:00 PM ET = 13:30 - 20:00 UTC
   return utcTotal >= 13 * 60 + 30 && utcTotal <= 20 * 60;
 }
 
@@ -91,6 +92,7 @@ async function checkProfitTiers(token) {
     var pos = stateModule.getPosition(ticker);
     if (!pos || pos.stopped || pos.entryPrice <= 0) continue;
 
+    // Get current option price from Robinhood
     var rhPositions = await getOpenOptionPositions(token);
     var rhPos = rhPositions.find(function(p) { return p.chain_symbol === ticker && parseFloat(p.quantity) > 0; });
     if (!rhPos) {
@@ -111,53 +113,55 @@ async function checkProfitTiers(token) {
 
     console.log("[PROFIT_MGR] " + ticker + " entry=$" + entryPrice.toFixed(2) + " current=$" + optionPrice.toFixed(2) + " gain=" + gainPct.toFixed(1) + "% tier=" + tier);
 
-    discord.updateLastKnownPrice(ticker, optionPrice);
+    // Update last known price for Discord
 
-    // Breakeven stop at +50%
+    // ── Breakeven stop at +50% ────────────────────────────────────────────
     if (!pos.breakEvenActivated && gainPct >= 50) {
       stateModule.setBreakEven(ticker);
       stateModule.logEvent("BREAKEVEN", ticker + " +50% — stop moved to breakeven $" + entryPrice.toFixed(2));
-      await discord.postBreakeven(ticker);
+      console.log("[PROFIT_MGR] " + ticker + " breakeven activated");
     }
 
-    // Every +20% → sell 10%
+    // ── Every +20% → sell 10% ─────────────────────────────────────────────
     var increments = Math.floor(gainPct / 20);
     if (increments > tier && gainPct < 100 && tier < 5) {
       var sell10 = Math.max(1, Math.floor(contracts * 0.10));
       stateModule.logEvent("PROFIT_TIER_1", ticker + " +" + gainPct.toFixed(1) + "% — selling 10% (" + sell10 + "c) @ $" + optionPrice.toFixed(2));
       await trayd.closePartialPosition({ ticker: ticker, contracts: sell10, reason: "+" + Math.floor(gainPct) + "% profit tier" });
       logTradePnL(ticker, pos.side, entryPrice, optionPrice, sell10);
-      await discord.postProfitTier(ticker, 1, sell10, optionPrice, gainPct);
       stateModule.markProfitTier(ticker, increments);
+      console.log("[PROFIT_MGR] " + ticker + " sold 10% at +" + gainPct.toFixed(1) + "%");
     }
 
-    // +100% → sell 50%
+    // ── +100% → sell 50% ──────────────────────────────────────────────────
     if (gainPct >= 100 && tier < 100) {
       var sell50 = Math.max(1, Math.floor(contracts * 0.50));
       stateModule.logEvent("PROFIT_TIER_2", ticker + " +100% — selling 50% (" + sell50 + "c) @ $" + optionPrice.toFixed(2));
       await trayd.closePartialPosition({ ticker: ticker, contracts: sell50, reason: "+100% profit tier" });
       logTradePnL(ticker, pos.side, entryPrice, optionPrice, sell50);
-      await discord.postProfitTier(ticker, 2, sell50, optionPrice, gainPct);
       stateModule.markProfitTier(ticker, 100);
+      console.log("[PROFIT_MGR] " + ticker + " sold 50% at +100%");
     }
 
-    // +200% → sell 90% (expected move proxy)
+    // ── Expected move → sell 90% ──────────────────────────────────────────
+    // Uses IWM daily expected move (~1% of price) as proxy
+    // Can be extended with actual expected move calculation
     if (gainPct >= 200 && tier < 300) {
       var sell90 = Math.max(1, Math.floor(contracts * 0.90));
-      stateModule.logEvent("PROFIT_TIER_3", ticker + " +200% — selling 90% (" + sell90 + "c) @ $" + optionPrice.toFixed(2));
+      stateModule.logEvent("PROFIT_TIER_3", ticker + " +200% (expected move) — selling 90% (" + sell90 + "c) @ $" + optionPrice.toFixed(2));
       await trayd.closePartialPosition({ ticker: ticker, contracts: sell90, reason: "expected move 90% exit" });
       logTradePnL(ticker, pos.side, entryPrice, optionPrice, sell90);
-      await discord.postProfitTier(ticker, 3, sell90, optionPrice, gainPct);
       stateModule.markProfitTier(ticker, 300);
+      console.log("[PROFIT_MGR] " + ticker + " sold 90% at expected move");
     }
 
-    // Breakeven stop — exit if price drops back to entry after activation
+    // ── Breakeven stop check — exit if price drops back to entry ─────────
     if (pos.breakEvenActivated && optionPrice <= entryPrice && !pos.stopped) {
       stateModule.logEvent("STOP_BREAKEVEN", ticker + " hit breakeven stop @ $" + optionPrice.toFixed(2));
       await trayd.closePartialPosition({ ticker: ticker, contracts: contracts, reason: "breakeven stop hit" });
       logTradePnL(ticker, pos.side, entryPrice, optionPrice, contracts);
-      await discord.postStopLoss(ticker, optionPrice, "Breakeven Stop Hit");
       stateModule.closePosition(ticker, "breakeven stop");
+      console.log("[PROFIT_MGR] " + ticker + " breakeven stop triggered");
     }
   }
 }
@@ -172,7 +176,7 @@ function startProfitManager(getToken) {
     } catch(e) {
       console.log("[PROFIT_MGR_ERROR]", e.message);
     }
-  }, 60 * 1000);
+  }, 60 * 1000); // every 60 seconds
 }
 
 module.exports = { startProfitManager };
