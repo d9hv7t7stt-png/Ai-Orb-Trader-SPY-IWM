@@ -1,7 +1,7 @@
 var stateModule = require("../utils/state");
 var trayd = require("../utils/trayd");
+var orbUtil = require("../utils/orb");
 var fs = require("fs");
-var https = require("https");
 
 function logTradePnL(ticker, side, entryPrice, exitPrice, contracts) {
   try {
@@ -43,49 +43,6 @@ function recentlySeen(ticker, event) {
   }
   lastSignal[key] = now;
   return 0;
-}
-
-/* ──────────────────────────────────────────────────────────────────────────
-   OPENING RANGE FETCH (server-side)
-   Pine sends {"event":"orb_set"} with no levels, so the dashboard showed "—"
-   and cross-entry (which checks orb.SPY.set) never armed. On orb_set we fetch
-   the first regular-session 5-min candle from Yahoo and store its high/low.
-   Uses meta.currentTradingPeriod.regular.start so it is DST-correct.
-   ────────────────────────────────────────────────────────────────────────── */
-function fetchOpeningRange(ticker) {
-  return new Promise(function(resolve) {
-    var options = {
-      hostname: "query1.finance.yahoo.com",
-      path: "/v8/finance/chart/" + encodeURIComponent(ticker) + "?interval=5m&range=1d",
-      headers: { "Accept": "application/json", "User-Agent": "Mozilla/5.0" }
-    };
-    var req = https.request(options, function(r) {
-      var raw = "";
-      r.on("data", function(c) { raw += c; });
-      r.on("end", function() {
-        try {
-          var parsed = JSON.parse(raw);
-          var result = parsed.chart && parsed.chart.result && parsed.chart.result[0];
-          if (!result) return resolve(null);
-          var ts = result.timestamp || [];
-          var q = result.indicators && result.indicators.quote && result.indicators.quote[0];
-          if (!q) return resolve(null);
-          var regStart = result.meta && result.meta.currentTradingPeriod &&
-                         result.meta.currentTradingPeriod.regular &&
-                         result.meta.currentTradingPeriod.regular.start;
-          for (var i = 0; i < ts.length; i++) {
-            if (regStart && ts[i] < regStart) continue;       // skip pre-market bars
-            if (q.high[i] != null && q.low[i] != null) {
-              return resolve({ high: q.high[i], low: q.low[i] });  // first regular 5-min bar = ORB
-            }
-          }
-          resolve(null);
-        } catch(e) { resolve(null); }
-      });
-    });
-    req.on("error", function() { resolve(null); });
-    req.end();
-  });
 }
 
 /*
@@ -150,7 +107,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     }
     // No levels in payload — fetch the opening range ourselves so the
     // dashboard populates and cross-entry arms.
-    var range = await fetchOpeningRange(ticker);
+    var range = await orbUtil.fetchOpeningRange(ticker);
     if (range && range.high && range.low) {
       stateModule.setORB(ticker, range.high, range.low);
       return { ok: true, message: ticker + " ORB set (fetched)" };
