@@ -3,8 +3,8 @@
 const https = require("https");
 const fs = require("fs");
 const DISCORD_WEBHOOK = process.env.DISCORD_WEBHOOK_URL;
-const STARTING_BALANCE = 50000;
-const CONTRACTS_PER_TRADE = 10;
+const STARTING_BALANCE = 78345;
+const CONTRACTS_PER_TRADE = 100;
 const STATE_FILE = "/tmp/orb-discord-state.json";
 
 async function httpPost(url, data) {
