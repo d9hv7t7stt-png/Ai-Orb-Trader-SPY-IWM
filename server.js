@@ -219,6 +219,26 @@ app.get("/test/discord/:type", async (req, res) => {
   }
 });
 
+// Per-channel daily summary test.
+//   /test/discord/summary/free      → Channel B only
+//   /test/discord/summary/spy0dte   → Channel C only
+//   /test/discord/summary/bc        → Channels B + C
+//   /test/discord/summary/all       → every active channel
+app.get("/test/discord/summary/:channel", async (req, res) => {
+  try {
+    var ch = req.params.channel;
+    var chans = (typeof discord.getChannels === "function") ? discord.getChannels() : [];
+    var targets;
+    if (ch === "all") targets = chans;
+    else if (ch === "bc") targets = chans.filter(function(c){ return c.cfg.id === "free" || c.cfg.id === "spy0dte"; });
+    else targets = chans.filter(function(c){ return c.cfg.id === ch; });
+    for (var i = 0; i < targets.length; i++) await targets[i].dailySummary();
+    res.json({ ok: true, tested: targets.map(function(c){ return c.cfg.id; }), active: chans.map(function(c){ return c.cfg.id; }) });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/webhook", async (req, res) => {
   console.log("[WEBHOOK]", JSON.stringify(req.body));
   if (!rh.getToken()) {
