@@ -243,10 +243,7 @@ app.listen(PORT, async () => {
   console.log("ORB server listening on port " + PORT);
   await ensureLoggedIn();
   scheduleDailyReauth();
-  discord.scheduleDailySummary();
-  discord.scheduleMarketOpenMessages();
-  discord.schedulePositionUpdates();
+  discord.initChannels(rh.getToken.bind(rh));
   profitManager.startProfitManager(rh.getToken.bind(rh));
   orbUtil.scheduleORBCapture();
-  discord.startPaperEngine(rh.getToken.bind(rh));
 });
