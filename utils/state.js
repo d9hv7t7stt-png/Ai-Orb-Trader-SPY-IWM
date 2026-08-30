@@ -1,62 +1,100 @@
 var fs = require("fs");
-var PERSIST_FILE = require("./persist").filePath("orb-state.json");
+var persist = require("./persist");
+
+var PERSIST_FILE = persist.filePath("orb-state.json");
+
+function etDateKey() {
+  return new Date().toLocaleDateString("en-US", { timeZone: "America/New_York" });
+}
 
 function loadPersistedState() {
   try {
-    if (fs.existsSync(PERSIST_FILE)) {
-      var saved = JSON.parse(fs.readFileSync(PERSIST_FILE, "utf8"));
-      return saved;
-    }
-  } catch(e) {}
+    if (fs.existsSync(PERSIST_FILE)) return JSON.parse(fs.readFileSync(PERSIST_FILE, "utf8"));
+  } catch (e) {}
   return null;
 }
 
 function savePersistedState() {
   try {
-    fs.writeFileSync(PERSIST_FILE, JSON.stringify({ contracts: state.contracts }));
-  } catch(e) {}
+    fs.writeFileSync(PERSIST_FILE, JSON.stringify({
+      contracts: state.contracts,
+      orb: state.orb,
+      positions: state.positions,
+      lastReset: state.lastReset
+    }));
+  } catch (e) {}
 }
 
 var _saved = loadPersistedState();
+var _today = etDateKey();
+
+function freshOrb() {
+  return {
+    SPY: { high: null, low: null, mid: null, set: false, date: null, source: null },
+    IWM: { high: null, low: null, mid: null, set: false, date: null, source: null }
+  };
+}
+
+function restoreOrb(savedOrb) {
+  var orb = freshOrb();
+  if (!savedOrb) return orb;
+  ["SPY", "IWM"].forEach(function(t) {
+    var o = savedOrb[t];
+    if (o && o.set && o.date === _today) orb[t] = o;
+  });
+  return orb;
+}
+
+function restorePositions(savedPos) {
+  var positions = { SPY: null, IWM: null };
+  if (!savedPos || _saved.lastReset !== _today) return positions;
+  ["SPY", "IWM"].forEach(function(t) {
+    if (savedPos[t] && !savedPos[t].stopped) positions[t] = savedPos[t];
+  });
+  return positions;
+}
 
 let state = {
   contracts: (_saved && _saved.contracts) ? _saved.contracts : { SPY: 1, IWM: 1 },
-  orb: {
-    SPY: { high: null, low: null, mid: null, set: false },
-    IWM: { high: null, low: null, mid: null, set: false }
-  },
-  positions: { SPY: null, IWM: null },
-  lastReset: null,
+  orb: restoreOrb(_saved && _saved.orb),
+  positions: restorePositions(_saved && _saved.positions),
+  lastReset: (_saved && _saved.lastReset === _today) ? _saved.lastReset : null,
   log: []
 };
 
 function getState() { return state; }
 
 function resetDay() {
-  var today = new Date().toDateString();
+  var today = etDateKey();
   if (state.lastReset !== today) {
-    state.orb = {
-      SPY: { high: null, low: null, mid: null, set: false },
-      IWM: { high: null, low: null, mid: null, set: false }
-    };
+    var hadPrior = !!state.lastReset;
+    state.orb = freshOrb();
     state.positions = { SPY: null, IWM: null };
+    if (hadPrior && process.env.ORB_DAILY_INCREMENT !== "0") {
+      state.contracts.SPY = Math.min(100, (state.contracts.SPY || 1) + 1);
+      state.contracts.IWM = Math.min(100, (state.contracts.IWM || 1) + 1);
+      logEvent("CONTRACTS", "Daily +1 → SPY=" + state.contracts.SPY + " IWM=" + state.contracts.IWM);
+    }
     state.lastReset = today;
     logEvent("DAY_RESET", "New day. Contracts SPY=" + state.contracts.SPY + " IWM=" + state.contracts.IWM);
+    savePersistedState();
   }
 }
 
-function setORB(ticker, high, low) {
+function setORB(ticker, high, low, source) {
   var h = parseFloat(high);
   var l = parseFloat(low);
   var mid = parseFloat(((h + l) / 2).toFixed(4));
-  var etDate = new Date().toLocaleDateString("en-US", { timeZone: "America/New_York" });
-  state.orb[ticker] = { high: h, low: l, mid: mid, set: true, date: etDate };
-  logEvent("ORB_SET", ticker + " High=" + h + " Low=" + l + " Mid=" + mid);
+  var etDate = etDateKey();
+  state.orb[ticker] = { high: h, low: l, mid: mid, set: true, date: etDate, source: source || "webhook" };
+  logEvent("ORB_SET", ticker + " High=" + h + " Low=" + l + " Mid=" + mid + " (" + (source || "webhook") + ")");
+  savePersistedState();
 }
 
 function getPosition(ticker) { return state.positions[ticker]; }
 
-function openHalfPosition(ticker, side, contracts, entryPrice) {
+function openHalfPosition(ticker, side, contracts, entryPrice, meta) {
+  meta = meta || {};
   state.positions[ticker] = {
     side: side,
     halfIn: true,
@@ -67,9 +105,13 @@ function openHalfPosition(ticker, side, contracts, entryPrice) {
     breakEvenActivated: false,
     lastProfitTier: 0,
     stopPct: null,
-    stopped: false
+    stopped: false,
+    crossEntry: !!meta.crossEntry,
+    stopMode: meta.stopMode || "mid"
   };
-  logEvent("POSITION_OPEN", ticker + " " + side + " half " + contracts + "c @ $" + entryPrice);
+  logEvent("POSITION_OPEN", ticker + " " + side + " half " + contracts + "c @ $" + entryPrice +
+    (meta.crossEntry ? " (cross-entry stop=" + meta.stopMode + ")" : ""));
+  savePersistedState();
 }
 
 function addSecondHalf(ticker, contracts, fillPrice) {
@@ -79,6 +121,7 @@ function addSecondHalf(ticker, contracts, fillPrice) {
   pos.fullIn = true;
   pos.halfIn = false;
   logEvent("POSITION_ADD", ticker + " +half +" + contracts + "c @ $" + fillPrice + " total=" + pos.contracts);
+  savePersistedState();
 }
 
 function setBreakEven(ticker) {
@@ -86,12 +129,16 @@ function setBreakEven(ticker) {
   if (pos && !pos.breakEvenActivated) {
     pos.breakEvenActivated = true;
     logEvent("BREAKEVEN", ticker + " breakeven stop activated @ entry $" + pos.entryPrice);
+    savePersistedState();
   }
 }
 
 function markProfitTier(ticker, tier) {
   var pos = state.positions[ticker];
-  if (pos) pos.lastProfitTier = Math.max(pos.lastProfitTier, tier);
+  if (pos) {
+    pos.lastProfitTier = Math.max(pos.lastProfitTier, tier);
+    savePersistedState();
+  }
 }
 
 function closePosition(ticker, reason) {
@@ -99,6 +146,7 @@ function closePosition(ticker, reason) {
   if (pos) {
     pos.stopped = true;
     logEvent("POSITION_CLOSE", ticker + " closed: " + reason);
+    savePersistedState();
   }
 }
 
@@ -127,5 +175,6 @@ module.exports = {
   markProfitTier: markProfitTier,
   closePosition: closePosition,
   setContractSize: setContractSize,
-  logEvent: logEvent
+  logEvent: logEvent,
+  etDateKey: etDateKey
 };

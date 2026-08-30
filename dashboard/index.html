@@ -360,7 +360,7 @@
       <div class="stat-block">
         <div class="stat-label">Buying Power</div>
         <div class="stat-value" id="val-buying-power">—</div>
-        <div class="stat-sub">Claude account</div>
+        <div class="stat-sub">Robinhood · Claude account</div>
       </div>
       <div class="stat-block">
         <div class="stat-label">Set Contract Size</div>
@@ -440,7 +440,7 @@
       <div class="orb-grid">
         <div class="orb-card" data-ticker="SPY">
           <div class="orb-ticker">SPY</div>
-          <div class="orb-exp">1DTE · S&P 500 ETF</div>
+          <div class="orb-exp">1DTE · S&P 500 ETF · ORB 9:30–9:44 ET</div>
           <div class="orb-levels">
             <div class="orb-level high">
               <div class="orb-level-label">ORB High</div>
@@ -457,7 +457,7 @@
         </div>
         <div class="orb-card" data-ticker="IWM">
           <div class="orb-ticker">IWM</div>
-          <div class="orb-exp">0DTE · Russell 2000 ETF</div>
+          <div class="orb-exp">0DTE · Russell 2000 ETF · ORB 9:30–9:44 ET</div>
           <div class="orb-levels">
             <div class="orb-level high">
               <div class="orb-level-label">ORB High</div>
@@ -557,20 +557,26 @@
       <div class="panel-header"><span class="panel-title">TradingView Alert Templates</span></div>
       <div class="panel-body">
         <div class="template-tabs">
-          <button class="tab active" onclick="switchTab('spy-long')">SPY Long</button>
+          <button class="tab active" onclick="switchTab('spy-orb')">ORB Set</button>
+          <button class="tab" onclick="switchTab('spy-long')">SPY Long</button>
           <button class="tab" onclick="switchTab('spy-short')">SPY Short</button>
           <button class="tab" onclick="switchTab('spy-stop')">SPY Stop</button>
           <button class="tab" onclick="switchTab('iwm-long')">IWM Long</button>
           <button class="tab" onclick="switchTab('iwm-short')">IWM Short</button>
           <button class="tab" onclick="switchTab('iwm-stop')">IWM Stop</button>
         </div>
-        <div class="template-content active" id="tpl-spy-long">
+        <div class="template-content active" id="tpl-spy-orb">
+          <div class="code-label">ORB Set · Once when 15-min ORB candle closes (9:44 ET) · create for SPY and IWM</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"orb_set","orb_high":{{high}},"orb_low":{{low}}}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"orb_set","orb_high":{{high}},"orb_low":{{low}}}</div>
+        </div>
+        <div class="template-content" id="tpl-spy-long">
           <div class="code-label">SPY Breakout Long · Once Per Bar Close · 5-min chart</div>
-          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"breakout_long"}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"breakout_long","close":{{close}}}</div>
         </div>
         <div class="template-content" id="tpl-spy-short">
           <div class="code-label">SPY Breakout Short · Once Per Bar Close · 5-min chart</div>
-          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"breakout_short"}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"breakout_short","close":{{close}}}</div>
         </div>
         <div class="template-content" id="tpl-spy-stop">
           <div class="code-label">SPY Stop — create 2 alerts</div>
@@ -579,11 +585,11 @@
         </div>
         <div class="template-content" id="tpl-iwm-long">
           <div class="code-label">IWM Breakout Long · Once Per Bar Close · 5-min chart</div>
-          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"breakout_long"}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"breakout_long","close":{{close}}}</div>
         </div>
         <div class="template-content" id="tpl-iwm-short">
           <div class="code-label">IWM Breakout Short · Once Per Bar Close · 5-min chart</div>
-          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"breakout_short"}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"breakout_short","close":{{close}}}</div>
         </div>
         <div class="template-content" id="tpl-iwm-stop">
           <div class="code-label">IWM Stop — create 2 alerts</div>
@@ -591,7 +597,7 @@
           <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"stop_short"}</div>
         </div>
         <div style="padding:8px;background:var(--amber-dim);border:1px solid var(--amber);font-size:10px;color:var(--amber);line-height:1.6;margin-top:8px">
-          ⚠ Set trigger to Once Per Bar Close. Profit tiers and stops handled automatically.
+          ⚠ Set trigger to Once Per Bar Close. Add WEBHOOK_SECRET to Railway and append <code>?secret=YOUR_SECRET</code> to your TradingView webhook URL.
         </div>
       </div>
     </div>
@@ -603,10 +609,18 @@
       <div class="panel-header"><span class="panel-title">Account & Auth</span></div>
       <div class="panel-body">
         <div style="font-size:11px;color:var(--text-dim);line-height:1.7;margin-bottom:12px;padding:10px;background:var(--bg);border:1px solid var(--border)">
-          Credentials stored as Railway env vars: <span style="color:var(--amber)">RH_EMAIL, RH_PASSWORD, RH_TOKEN, RH_REFRESH_TOKEN, RH_ACCOUNT_NUMBER, DISCORD_WEBHOOK_URL</span>
+          Credentials stored as Railway env vars: <span style="color:var(--amber)">RH_EMAIL, RH_PASSWORD, RH_TOKEN, RH_REFRESH_TOKEN, RH_ACCOUNT_NUMBER, WEBHOOK_SECRET, DISCORD_WEBHOOK_URL</span>
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
           <button class="btn primary" onclick="triggerReauth()">Test Connection</button>
+        </div>
+        <div id="sms-panel" style="display:none;margin-top:12px;padding:10px;background:var(--bg);border:1px solid var(--amber)">
+          <div style="font-size:10px;color:var(--amber);margin-bottom:8px">Robinhood SMS verification required</div>
+          <div class="field" style="margin-bottom:8px">
+            <label>SMS / Email Code</label>
+            <input type="text" id="input-sms-code" placeholder="6-digit code" maxlength="10">
+          </div>
+          <button class="btn primary" onclick="submitSmsCode()">Submit Code</button>
         </div>
       </div>
     </div>
@@ -615,6 +629,19 @@
 
 <script>
 const BASE = window.location.origin;
+const API_SECRET = new URLSearchParams(window.location.search).get('secret') || localStorage.getItem('orb_api_secret') || '';
+if (API_SECRET) localStorage.setItem('orb_api_secret', API_SECRET);
+
+function apiFetch(path, opts) {
+  opts = opts || {};
+  opts.headers = opts.headers || {};
+  var url = BASE + path;
+  if (API_SECRET) {
+    url += (url.indexOf('?') >= 0 ? '&' : '?') + 'secret=' + encodeURIComponent(API_SECRET);
+  }
+  return fetch(url, opts);
+}
+
 let state = null;
 
 function showPage(name) {
@@ -658,7 +685,7 @@ function updateWebhookURL() {
 
 async function loadLivePrices() {
   try {
-    const res = await fetch(BASE + '/api/prices');
+    const res = await apiFetch('/api/prices');
     const data = await res.json();
     if (!data.prices) return;
     document.getElementById('prices-updated').textContent = new Date().toLocaleTimeString('en-US', {hour12:false});
@@ -706,7 +733,7 @@ async function loadLivePrices() {
 
 async function loadPnL() {
   try {
-    const res = await fetch(BASE + '/api/pnl');
+    const res = await apiFetch('/api/pnl');
     const data = await res.json();
     if (!data) return;
     function renderPnL(id, val) {
@@ -727,11 +754,11 @@ async function loadPnL() {
 
 async function loadState() {
   try {
-    const res = await fetch(BASE + '/api/state');
+    const res = await apiFetch('/api/state');
     state = await res.json();
     renderState(state);
     try {
-      const bpRes = await fetch(BASE + '/api/buying-power');
+      const bpRes = await apiFetch('/api/buying-power');
       const bpData = await bpRes.json();
       const bpEl = document.getElementById('val-buying-power');
       if (bpEl && bpData.buying_power) {
@@ -848,7 +875,7 @@ async function saveContractSize() {
   const spy = parseInt(document.getElementById('input-spy-c').value) || 1;
   const iwm = parseInt(document.getElementById('input-iwm-c').value) || 1;
   try {
-    const res = await fetch(BASE + '/api/contracts', {
+    const res = await apiFetch('/api/contracts', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({spy, iwm})
@@ -863,7 +890,7 @@ async function saveDTE() {
   const spy = parseInt(document.getElementById('input-spy-dte').value);
   const iwm = parseInt(document.getElementById('input-iwm-dte').value);
   try {
-    const res = await fetch(BASE + '/api/settings/dte', {
+    const res = await apiFetch('/api/settings/dte', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({spy, iwm})
@@ -882,12 +909,21 @@ async function triggerReauth() {
   const label = document.getElementById('auth-label');
   dot.className = 'status-dot warning';
   try {
-    const res = await fetch(BASE + '/api/reauth', {method: 'POST'});
+    const res = await apiFetch('/api/reauth', {method: 'POST'});
     const data = await res.json();
+    if (data.pending_type === 'sms' || data.pending_type === 'email') {
+      document.getElementById('sms-panel').style.display = 'block';
+    }
     if (data.ok) {
+      document.getElementById('sms-panel').style.display = 'none';
       dot.className = 'status-dot';
       label.textContent = 'connected';
       toast('Connected!');
+    } else if (data.pending_type === 'sms' || data.pending_type === 'email') {
+      document.getElementById('sms-panel').style.display = 'block';
+      dot.className = 'status-dot warning';
+      label.textContent = 'sms required';
+      toast('Enter SMS code below', 'amber');
     } else {
       dot.className = 'status-dot offline';
       label.textContent = 'failed';
@@ -900,14 +936,44 @@ async function triggerReauth() {
   }
 }
 
+async function submitSmsCode() {
+  var code = document.getElementById('input-sms-code').value.trim();
+  if (!code) return toast('Enter a code', 'amber');
+  try {
+    const res = await apiFetch('/api/sms', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({code: code})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      document.getElementById('sms-panel').style.display = 'none';
+      toast('Verified!');
+      checkAuth();
+    } else toast(data.error || 'Failed', 'red');
+  } catch(e) { toast('Error', 'red'); }
+}
+
 async function checkAuth() {
   const dot = document.getElementById('auth-dot');
   const label = document.getElementById('auth-label');
   try {
-    const res = await fetch(BASE + '/health');
+    const res = await apiFetch('/health');
     const data = await res.json();
-    dot.className = data.auth === 'connected' ? 'status-dot' : 'status-dot warning';
-    label.textContent = data.auth === 'connected' ? 'server online' : 'not connected';
+    if (data.auth === 'connected') {
+      dot.className = 'status-dot';
+      label.textContent = 'connected';
+    } else if (data.auth === 'token_expired') {
+      dot.className = 'status-dot offline';
+      label.textContent = 'token expired';
+    } else if (data.pending_verification) {
+      dot.className = 'status-dot warning';
+      label.textContent = 'verification pending';
+      document.getElementById('sms-panel').style.display = 'block';
+    } else {
+      dot.className = 'status-dot warning';
+      label.textContent = data.auth || 'not connected';
+    }
   } catch {
     dot.className = 'status-dot offline';
     label.textContent = 'server offline';

@@ -22,8 +22,9 @@ function dataDir() {
       fs.mkdirSync(candidates[i], { recursive: true });
       fs.accessSync(candidates[i], fs.constants.W_OK);
       _dir = candidates[i];
-      var durable = !!process.env.RAILWAY_VOLUME_MOUNT_PATH && _dir === process.env.RAILWAY_VOLUME_MOUNT_PATH;
-      console.log("[PERSIST] data dir = " + _dir + (durable ? " (volume — survives redeploys)" : " (ephemeral — attach a Railway volume to survive redeploys)"));
+      var onVolume = candidates[i] === process.env.RAILWAY_VOLUME_MOUNT_PATH ||
+        candidates[i] === "/data";
+      console.log("[PERSIST] data dir = " + _dir + (onVolume ? " (persists across redeploys)" : " (ephemeral — attach a Railway volume at /data)"));
       return _dir;
     } catch (e) { /* try next */ }
   }

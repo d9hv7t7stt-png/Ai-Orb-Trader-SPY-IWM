@@ -1,6 +1,5 @@
 // utils/yahoo.js
-// Unauthenticated underlying quotes for SPY, IWM, etc. Used when webhooks omit
-// `close` and Robinhood auth is unavailable — Discord paper feeds need a strike.
+// Unauthenticated underlying quotes for SPY, IWM, etc.
 
 var https = require("https");
 
@@ -32,4 +31,25 @@ function getUnderlyingPrice(ticker) {
   });
 }
 
-module.exports = { getUnderlyingPrice: getUnderlyingPrice, SYMBOLS: SYMBOLS };
+function getChart(ticker, interval, range) {
+  var symbol = SYMBOLS[ticker] || ticker;
+  return new Promise(function(resolve) {
+    var options = {
+      hostname: "query1.finance.yahoo.com",
+      path: "/v8/finance/chart/" + encodeURIComponent(symbol) + "?interval=" + interval + "&range=" + range,
+      headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" }
+    };
+    var req = https.request(options, function(r) {
+      var raw = "";
+      r.on("data", function(c) { raw += c; });
+      r.on("end", function() {
+        try { resolve(JSON.parse(raw)); } catch (e) { resolve(null); }
+      });
+    });
+    req.on("error", function() { resolve(null); });
+    req.setTimeout(8000, function() { req.destroy(); resolve(null); });
+    req.end();
+  });
+}
+
+module.exports = { getUnderlyingPrice: getUnderlyingPrice, getChart: getChart, SYMBOLS: SYMBOLS };
