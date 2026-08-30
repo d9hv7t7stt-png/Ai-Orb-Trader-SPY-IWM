@@ -1,10 +1,13 @@
 // utils/expectedMove.js
-// Multi-timeframe expected moves from ATM straddles (call + put mid).
-// Implied move = straddle price; range = current underlying ± straddle.
+// Calendar-based expected moves from ATM straddles + 1σ next-session for indices.
 
 var yahoo = require("./yahoo");
 var marketCal = require("./marketCalendar");
 var expiryUtil = require("./expiry");
+var expiryCal = require("./expiryCalendar");
+
+var ONE_SD_TICKERS = ["SPY", "IWM", "QQQ", "SPXW"];
+var ONE_SD_FACTOR = 1 / 0.85; // straddle ≈ 85% of 1 standard deviation
 
 function sessionLabel(date) {
   var d = date;
@@ -21,54 +24,42 @@ function shortLabel(ymd) {
   return weekday + " " + expiryUtil.formatExpiryLabel(ymd);
 }
 
-function daysBetweenYmd(fromYmd, toYmd) {
-  return Math.round((new Date(toYmd + "T12:00:00").getTime() - new Date(fromYmd + "T12:00:00").getTime()) / 86400000);
-}
-
 function unique(list) {
   var out = [];
   list.forEach(function(v) { if (v && out.indexOf(v) === -1) out.push(v); });
   return out;
 }
 
-function pickNearestExpiry(expiries, afterYmd, targetDays, minDays, exclude) {
-  var best = null;
-  var bestDiff = Infinity;
-  for (var i = 0; i < expiries.length; i++) {
-    var exp = expiries[i];
-    if (exp <= afterYmd) continue;
-    if (exclude && exclude.indexOf(exp) !== -1) continue;
-    var days = daysBetweenYmd(afterYmd, exp);
-    if (days < minDays) continue;
-    var diff = Math.abs(days - targetDays);
-    if (diff < bestDiff) { bestDiff = diff; best = exp; }
-  }
-  return best;
+function enrichOneSd(data, include) {
+  if (!include || !data) return data;
+  var sd = data.moveDollars * ONE_SD_FACTOR;
+  data.oneSdDollars = sd;
+  data.oneSdPct = (sd / data.price) * 100;
+  data.oneSdUpper = data.price + sd;
+  data.oneSdLower = data.price - sd;
+  return data;
 }
 
-function pickWeeklyExpiry(expiries, afterYmd, exclude) {
-  return pickNearestExpiry(expiries, afterYmd, 7, 3, exclude);
-}
-
-function pickMonthlyExpiry(expiries, afterYmd, exclude) {
-  return pickNearestExpiry(expiries, afterYmd, 30, 14, exclude);
-}
-
-function packHorizon(data, horizon, expiryYmd) {
+function packHorizon(data, horizon, expiryYmd, opts) {
   if (!data) return null;
+  var d = enrichOneSd(Object.assign({}, data), opts && opts.oneSd);
   return {
     horizon: horizon,
     expiry: expiryYmd,
     label: sessionLabel(expiryYmd),
     shortLabel: shortLabel(expiryYmd),
-    moveDollars: data.moveDollars,
-    movePct: data.movePct,
-    upper: data.upper,
-    lower: data.lower,
-    strike: data.strike,
-    callPrice: data.callPrice,
-    putPrice: data.putPrice,
-    price: data.price
+    moveDollars: d.moveDollars,
+    movePct: d.movePct,
+    upper: d.upper,
+    lower: d.lower,
+    strike: d.strike,
+    callPrice: d.callPrice,
+    putPrice: d.putPrice,
+    price: d.price,
+    oneSdDollars: d.oneSdDollars || null,
+    oneSdPct: d.oneSdPct || null,
+    oneSdUpper: d.oneSdUpper || null,
+    oneSdLower: d.oneSdLower || null
   };
 }
 
@@ -77,8 +68,6 @@ function computeExpectedMove(ticker, expiryYmd) {
     if (!data) return null;
     return {
       ticker: ticker,
-      sessionDate: data.expiry,
-      sessionLabel: sessionLabel(data.expiry),
       price: data.price,
       strike: data.strike,
       expiry: data.expiry,
@@ -92,17 +81,47 @@ function computeExpectedMove(ticker, expiryYmd) {
   });
 }
 
+function detectHits(horizons, refPrice, dayHigh, dayLow) {
+  if (!refPrice || !dayHigh || !dayLow) return [];
+  var hits = [];
+  horizons.forEach(function(h) {
+    if (!h || !h.moveDollars) return;
+    if (h.horizon === "Next session" || h.horizon === "Session +2") return;
+    var up = refPrice + h.moveDollars;
+    var dn = refPrice - h.moveDollars;
+    if (dayHigh >= up) hits.push({ horizon: h.horizon, side: "upper", level: up, label: h.shortLabel });
+    if (dayLow <= dn) hits.push({ horizon: h.horizon, side: "lower", level: dn, label: h.shortLabel });
+  });
+  return hits;
+}
+
+function formatHits(hits) {
+  if (!hits || !hits.length) return "No expected-move levels hit today (vs prior close).";
+  return "**Hit today** (from prior close):\n" + hits.map(function(h) {
+    var arrow = h.side === "upper" ? "▲ upper" : "▼ lower";
+    return "• " + h.horizon + " " + arrow + " $" + h.level.toFixed(2);
+  }).join("\n");
+}
+
 function computeTickerMoves(ticker) {
-  return yahoo.getExpirationDates(ticker).then(function(expiries) {
+  var includeOneSd = ONE_SD_TICKERS.indexOf(ticker) !== -1;
+
+  return Promise.all([
+    yahoo.getExpirationDates(ticker),
+    yahoo.getIntradayBar(ticker)
+  ]).then(function(results) {
+    var expiries = results[0];
+    var bar = results[1];
     var todayYmd = marketCal.ymdInET(new Date());
     var session1Date = marketCal.nextTradingDayAfter(new Date());
     var session1Ymd = marketCal.ymdInET(session1Date);
     var session2Date = marketCal.nextTradingDayAfter(session1Date);
     var session2Ymd = marketCal.ymdInET(session2Date);
-    var weeklyYmd = pickWeeklyExpiry(expiries, todayYmd, [session1Ymd, session2Ymd]);
-    var monthlyYmd = pickMonthlyExpiry(expiries, todayYmd, [session1Ymd, session2Ymd, weeklyYmd]);
+    var weeklyYmd = expiryCal.pickWeeklyExpiry(expiries, todayYmd);
+    var monthlyYmd = expiryCal.pickMonthlyExpiry(expiries, todayYmd);
+    var quarterlyYmd = expiryCal.pickQuarterlyExpiry(expiries, todayYmd);
 
-    var targets = unique([session1Ymd, session2Ymd, weeklyYmd, monthlyYmd]);
+    var targets = unique([session1Ymd, session2Ymd, weeklyYmd, monthlyYmd, quarterlyYmd]);
     return Promise.all(targets.map(function(exp) {
       return computeExpectedMove(ticker, exp).then(function(m) { return [exp, m]; });
     })).then(function(pairs) {
@@ -112,15 +131,34 @@ function computeTickerMoves(ticker) {
       var price = (byExp[session1Ymd] && byExp[session1Ymd].price)
         || (pairs[0] && pairs[0][1] && pairs[0][1].price) || null;
 
+      var sessions = [
+        packHorizon(byExp[session1Ymd], "Next session", session1Ymd, { oneSd: includeOneSd }),
+        packHorizon(byExp[session2Ymd], "Session +2", session2Ymd, { oneSd: false })
+      ].filter(Boolean);
+
+      var weekly = packHorizon(byExp[weeklyYmd], "This week", weeklyYmd);
+      var monthly = packHorizon(byExp[monthlyYmd], "This month", monthlyYmd);
+      var quarterly = packHorizon(byExp[quarterlyYmd], "This quarter", quarterlyYmd);
+
+      var refPrice = (bar && bar.prevClose) ? bar.prevClose : null;
+      var dayHigh = bar && bar.high;
+      var dayLow = bar && bar.low;
+      var hitsToday = detectHits(
+        sessions.concat([weekly, monthly, quarterly]),
+        refPrice, dayHigh, dayLow
+      );
+
       return {
         ticker: ticker,
         price: price,
-        sessions: [
-          packHorizon(byExp[session1Ymd], "Next session", session1Ymd),
-          packHorizon(byExp[session2Ymd], "Session +2", session2Ymd)
-        ].filter(Boolean),
-        weekly: packHorizon(byExp[weeklyYmd], "Weekly", weeklyYmd),
-        monthly: packHorizon(byExp[monthlyYmd], "Monthly", monthlyYmd)
+        refPrice: refPrice,
+        dayHigh: dayHigh,
+        dayLow: dayLow,
+        sessions: sessions,
+        weekly: weekly,
+        monthly: monthly,
+        quarterly: quarterly,
+        hitsToday: hitsToday
       };
     });
   });
@@ -129,9 +167,15 @@ function computeTickerMoves(ticker) {
 function formatHorizonLine(h) {
   if (!h) return "";
   var pct = (h.movePct >= 0 ? "+" : "") + h.movePct.toFixed(2) + "%";
-  return "**" + h.horizon + "** · " + h.shortLabel + "\n"
-    + "±$" + h.moveDollars.toFixed(2) + " (" + pct + ") · "
-    + "$" + h.lower.toFixed(2) + " — $" + h.upper.toFixed(2);
+  var lines = [
+    "**" + h.horizon + "** · " + h.shortLabel,
+    "Expected ±$" + h.moveDollars.toFixed(2) + " (" + pct + ") · $" + h.lower.toFixed(2) + " — $" + h.upper.toFixed(2)
+  ];
+  if (h.oneSdDollars) {
+    var sdPct = h.oneSdPct.toFixed(2) + "%";
+    lines.push("1σ next session ±$" + h.oneSdDollars.toFixed(2) + " (" + sdPct + ") · $" + h.oneSdLower.toFixed(2) + " — $" + h.oneSdUpper.toFixed(2));
+  }
+  return lines.join("\n");
 }
 
 function computeFullMoves(tickers) {
@@ -141,7 +185,7 @@ function computeFullMoves(tickers) {
 
   return Promise.all(uniqueTickers.map(computeTickerMoves)).then(function(results) {
     var tickersOut = results.filter(function(r) {
-      return r && (r.sessions.length || r.weekly || r.monthly);
+      return r && (r.sessions.length || r.weekly || r.monthly || r.quarterly);
     });
     return {
       sessionLabel: sessionLabel(marketCal.nextTradingDayAfter(new Date())),
@@ -151,36 +195,39 @@ function computeFullMoves(tickers) {
   });
 }
 
-function computePlannedMoves(tickers, plan) {
-  return computeFullMoves(tickers).then(function(data) {
-    data.tickers = data.tickers.map(function(t) { return filterMoves(t, plan); }).filter(function(t) {
-      return t && (t.sessions.length || t.weekly || t.monthly);
-    });
-    return data;
-  });
-}
-
 function filterMoves(tickerMoves, plan) {
   if (!tickerMoves || !plan) return tickerMoves;
   var sessions = tickerMoves.sessions || [];
   return {
     ticker: tickerMoves.ticker,
     price: tickerMoves.price,
+    refPrice: tickerMoves.refPrice,
+    hitsToday: tickerMoves.hitsToday,
     sessions: [].concat(
       plan.nextSession !== false && sessions[0] ? [sessions[0]] : [],
       plan.session2 && sessions[1] ? [sessions[1]] : []
     ),
     weekly: plan.weekly ? tickerMoves.weekly : null,
-    monthly: plan.monthly ? tickerMoves.monthly : null
+    monthly: plan.monthly ? tickerMoves.monthly : null,
+    quarterly: plan.quarterly ? tickerMoves.quarterly : null
   };
 }
 
-// Backward-compatible single-session helper
+function computePlannedMoves(tickers, plan) {
+  return computeFullMoves(tickers).then(function(data) {
+    data.tickers = data.tickers.map(function(t) { return filterMoves(t, plan); }).filter(function(t) {
+      return t && (t.sessions.length || t.weekly || t.monthly || t.quarterly);
+    });
+    return data;
+  });
+}
+
 function computeNextSessionMoves(tickers) {
   return computeFullMoves(tickers);
 }
 
 module.exports = {
+  ONE_SD_TICKERS: ONE_SD_TICKERS,
   computeExpectedMove: computeExpectedMove,
   computeTickerMoves: computeTickerMoves,
   computeFullMoves: computeFullMoves,
@@ -188,5 +235,7 @@ module.exports = {
   filterMoves: filterMoves,
   computeNextSessionMoves: computeNextSessionMoves,
   sessionLabel: sessionLabel,
-  formatHorizonLine: formatHorizonLine
+  formatHorizonLine: formatHorizonLine,
+  formatHits: formatHits,
+  detectHits: detectHits
 };

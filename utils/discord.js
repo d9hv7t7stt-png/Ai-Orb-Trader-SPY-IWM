@@ -498,7 +498,7 @@ function createChannel(cfg) {
       await send({
         color: 0xf5a623,
         title: "📐 Watchlist Expected Moves",
-        description: "Friday / month-end: next session + weekly + monthly implied ranges.",
+        description: "Friday / month-end / quarter-end: calendar week, month, and quarter implied ranges.",
         fields: mvFields.slice(0, 24),
         footer: { text: cfg.name + " · Not financial advice" },
         timestamp: new Date().toISOString()

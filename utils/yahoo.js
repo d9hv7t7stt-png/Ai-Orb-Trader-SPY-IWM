@@ -299,6 +299,33 @@ function parseDailyCloses(chartJson) {
   }
 }
 
+function parseLatestBar(chartJson) {
+  try {
+    var result = chartJson && chartJson.chart && chartJson.chart.result && chartJson.chart.result[0];
+    if (!result) return null;
+    var q = result.indicators && result.indicators.quote && result.indicators.quote[0];
+    if (!q || !q.close || !q.close.length) return null;
+    var i = q.close.length - 1;
+    while (i >= 0 && (q.close[i] === null || q.close[i] === undefined)) i--;
+    if (i < 0) return null;
+    return {
+      open: q.open && q.open[i] ? parseFloat(q.open[i]) : null,
+      high: q.high && q.high[i] ? parseFloat(q.high[i]) : null,
+      low: q.low && q.low[i] ? parseFloat(q.low[i]) : null,
+      close: parseFloat(q.close[i]),
+      prevClose: result.meta && result.meta.chartPreviousClose
+        ? parseFloat(result.meta.chartPreviousClose)
+        : (i > 0 && q.close[i - 1] ? parseFloat(q.close[i - 1]) : null)
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+function getIntradayBar(ticker) {
+  return getChart(ticker, "1d", "5d").then(parseLatestBar);
+}
+
 function getExpirationDates(ticker) {
   return fetchOptionsChain(ticker, null).then(function(data) {
     try {
@@ -314,6 +341,7 @@ module.exports = {
   getQuoteSnapshot: getQuoteSnapshot,
   getChart: getChart,
   getDailyCloses: getDailyCloses,
+  getIntradayBar: getIntradayBar,
   getOptionMark: getOptionMark,
   getChainForExpiry: getChainForExpiry,
   getATMStraddle: getATMStraddle,

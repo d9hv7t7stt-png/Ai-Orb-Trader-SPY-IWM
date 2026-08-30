@@ -10,8 +10,6 @@ var MAIN_WATCHLIST = [
   "SPCX", "XLE", "GOOG", "SMH", "GLD", "SLV"
 ];
 
-var INDEX_MOVE_TICKERS = ["SPY", "IWM", "QQQ"];
-
 function weekdayET(date) {
   return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" })
     .format(date || new Date());
@@ -22,30 +20,41 @@ function isLastTradingDayOfMonth(date) {
   return marketCal.ymdInET(date).slice(0, 7) !== marketCal.ymdInET(next).slice(0, 7);
 }
 
+var INDEX_MOVE_TICKERS = ["SPY", "IWM", "QQQ", "SPXW"];
+
+function isQuarterEnd(date) {
+  if (!isLastTradingDayOfMonth(date)) return false;
+  var m = parseInt(marketCal.ymdInET(date).slice(5, 7), 10);
+  return m === 3 || m === 6 || m === 9 || m === 12;
+}
+
 function buildPlan(channelCfg) {
   var now = new Date();
   var wd = weekdayET(now);
   var monthEnd = isLastTradingDayOfMonth(now);
+  var quarterEnd = isQuarterEnd(now);
   var isMain = channelCfg.id === "main";
   var isMon = wd === "Mon";
   var isFri = wd === "Fri";
 
   return {
-    label: monthEnd ? "Month-end close" : isMon ? "Monday close" : isFri ? "Friday close" : wd + " close",
+    label: quarterEnd ? "Quarter-end close" : monthEnd ? "Month-end close" : isMon ? "Monday close" : isFri ? "Friday close" : wd + " close",
     fullWatchlist: isMain && (isMon || isFri || monthEnd),
     notableWatchlistOnly: isMain && !isMon && !isFri && !monthEnd,
     moves: {
       nextSession: true,
       session2: isMon || isFri || monthEnd,
       weekly: isMon || isFri || monthEnd,
-      monthly: isMon || monthEnd
+      monthly: isMon || monthEnd,
+      quarterly: isMon || quarterEnd || monthEnd
     },
-    watchlistMovesFull: isMain && (isFri || monthEnd),
+    watchlistMovesFull: isMain && (isFri || monthEnd || quarterEnd),
     note: isMain && !isMon && !isFri && !monthEnd
-      ? "Mid-week: ORB tickers full · watchlist notable moves only"
-      : isMon ? "Monday: full watchlist scan + expanded expected moves"
-      : isFri ? "Friday: full watchlist + weekly expected moves"
-      : monthEnd ? "Month-end: full watchlist + weekly & monthly moves"
+      ? "Mid-week: ORB + index 1σ · watchlist notable only"
+      : isMon ? "Monday: full watchlist · this week / month / quarter moves"
+      : isFri ? "Friday: full watchlist · calendar week moves"
+      : quarterEnd ? "Quarter-end: quarterly implied ranges included"
+      : monthEnd ? "Month-end: monthly implied ranges included"
       : "Daily ORB focus"
   };
 }
@@ -53,8 +62,11 @@ function buildPlan(channelCfg) {
 function formatMovesBlock(moves, compact) {
   if (!moves) return "";
   var lines = [];
+  if (moves.hitsToday && moves.hitsToday.length) {
+    lines.push(expectedMove.formatHits(moves.hitsToday));
+  }
   (moves.sessions || []).forEach(function(s) {
-    if (compact) {
+    if (compact && !s.oneSdDollars) {
       lines.push("Next: ±$" + s.moveDollars.toFixed(2) + " (" + s.movePct.toFixed(2) + "%)");
     } else {
       lines.push(expectedMove.formatHorizonLine(s));
@@ -63,11 +75,13 @@ function formatMovesBlock(moves, compact) {
   if (!compact) {
     if (moves.weekly) lines.push(expectedMove.formatHorizonLine(moves.weekly));
     if (moves.monthly) lines.push(expectedMove.formatHorizonLine(moves.monthly));
+    if (moves.quarterly) lines.push(expectedMove.formatHorizonLine(moves.quarterly));
   } else {
-    if (moves.weekly) lines.push("Weekly: ±" + moves.weekly.movePct.toFixed(2) + "%");
-    if (moves.monthly) lines.push("Monthly: ±" + moves.monthly.movePct.toFixed(2) + "%");
+    if (moves.weekly) lines.push("This week: ±" + moves.weekly.movePct.toFixed(2) + "%");
+    if (moves.monthly) lines.push("This month: ±" + moves.monthly.movePct.toFixed(2) + "%");
+    if (moves.quarterly) lines.push("This quarter: ±" + moves.quarterly.movePct.toFixed(2) + "%");
   }
-  return lines.join("\n");
+  return lines.join("\n\n");
 }
 
 function buildDigest(channelCfg) {
