@@ -18,6 +18,16 @@ async function underlyingForNotify(ticker, close) {
   return await yahoo.getUnderlyingPrice(ticker);
 }
 
+async function orbLevelsFor(ticker, payloadHigh, payloadLow) {
+  if (payloadHigh && payloadLow) return { high: payloadHigh, low: payloadLow };
+  var ensured = await orbUtil.ensureOrbForTicker(ticker);
+  if (ensured) return ensured;
+  var s = stateModule.getState();
+  var orb = s.orb[ticker];
+  if (orb && orb.set) return { high: orb.high, low: orb.low };
+  return { high: payloadHigh || 0, low: payloadLow || 0 };
+}
+
 var DEDUP_WINDOW_MS = parseInt(process.env.ORB_DEDUP_MS, 10) || 30000;
 var lastSignal = {};
 var processing = {};
@@ -79,12 +89,21 @@ async function processEvent(payload, ticker, event, lockedTickers) {
   var orbHigh  = payload.orb_high ? parseFloat(payload.orb_high) : null;
   var orbLow   = payload.orb_low  ? parseFloat(payload.orb_low)  : null;
 
+  var TRADE_EVENTS = ["breakout_long", "breakout_short", "stop_long", "stop_short", "expected_move_hit"];
+  if (TRADE_EVENTS.indexOf(event) !== -1) {
+    await orbUtil.ensureOrbForTicker(ticker);
+    if (ticker === "IWM") await orbUtil.ensureOrbForTicker("SPY");
+    var levels = await orbLevelsFor(ticker, orbHigh, orbLow);
+    orbHigh = levels.high;
+    orbLow = levels.low;
+  }
+
   if (event === "orb_set") {
     if (orbHigh && orbLow) {
       stateModule.setORB(ticker, orbHigh, orbLow, "webhook");
       return { ok: true, message: ticker + " ORB set (from TradingView)" };
     }
-    stateModule.logEvent("ORB_WARN", ticker + " orb_set received without orb_high/orb_low — add levels to TradingView JSON; using Yahoo fallback");
+    stateModule.logEvent("ORB_WARN", ticker + " orb_set without levels — auto-fetching from Yahoo");
     var range = await orbUtil.fetchOpeningRange(ticker);
     if (range && range.high && range.low) {
       stateModule.setORB(ticker, range.high, range.low, "yahoo");
@@ -100,7 +119,11 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var sl1 = stopLabel(pos);
     stateModule.logEvent("STOP_LOSS", ticker + " " + sl1 + " stop hit — closing long");
     await notify("onStop", [ticker, optPrice || 0, sl1]);
-    await trayd.closePartialPosition({ ticker: ticker, contracts: pos.contracts, reason: sl1 });
+    try {
+      await trayd.closePartialPosition({ ticker: ticker, contracts: pos.contracts, reason: sl1 });
+    } catch (e) {
+      stateModule.logEvent("ORDER_ERROR", ticker + " stop_long close failed: " + e.message);
+    }
     if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, pos.contracts);
     stateModule.closePosition(ticker, sl1);
     return { ok: true, message: ticker + " long stopped" };
@@ -112,7 +135,11 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var sl2 = stopLabel(pos);
     stateModule.logEvent("STOP_LOSS", ticker + " " + sl2 + " stop hit — closing short");
     await notify("onStop", [ticker, optPrice || 0, sl2]);
-    await trayd.closePartialPosition({ ticker: ticker, contracts: pos.contracts, reason: sl2 });
+    try {
+      await trayd.closePartialPosition({ ticker: ticker, contracts: pos.contracts, reason: sl2 });
+    } catch (e) {
+      stateModule.logEvent("ORDER_ERROR", ticker + " stop_short close failed: " + e.message);
+    }
     if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, pos.contracts);
     stateModule.closePosition(ticker, sl2);
     return { ok: true, message: ticker + " short stopped" };
@@ -135,13 +162,14 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       stateModule.logEvent("ENTRY", ticker + " call @ breakout_long half=" + half + "/" + total);
       stateModule.openHalfPosition(ticker, "call", half, optPrice || close || 0);
       var und = await underlyingForNotify(ticker, close);
-      await notify("onEntry", [ticker, "call", optPrice || 0, s.orb[ticker].high || orbHigh || 0, s.orb[ticker].low || orbLow || 0, und]);
+      await notify("onEntry", [ticker, "call", optPrice || 0, orbHigh, orbLow, und]);
       var order;
       try {
         order = await trayd.placeOrder({ ticker: ticker, side: "call", contracts: half });
       } catch (e) {
         stateModule.closePosition(ticker, "entry order failed");
-        throw e;
+        stateModule.logEvent("ORDER_ERROR", ticker + " breakout_long failed: " + e.message);
+        return { ok: true, paper: true, orderError: e.message };
       }
 
       var cross = null;
@@ -153,7 +181,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         stateModule.logEvent("CROSS_ENTRY", "IWM long → SPY call half=" + spyHalf + " stop=SPY ORB low");
         stateModule.openHalfPosition("SPY", "call", spyHalf, optPrice || close || 0, { crossEntry: true, stopMode: "orb_low" });
         var spyUnd = await underlyingForNotify("SPY", null);
-        await notify("onEntry", ["SPY", "call", 0, s.orb.SPY.high || 0, s.orb.SPY.low || 0, spyUnd]);
+        await notify("onEntry", ["SPY", "call", 0, s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, spyUnd]);
         try {
           cross = await trayd.placeOrder({ ticker: "SPY", side: "call", contracts: spyHalf });
         } catch (e) {
@@ -197,13 +225,14 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       stateModule.logEvent("ENTRY", ticker + " put @ breakout_short half=" + half2 + "/" + total2);
       stateModule.openHalfPosition(ticker, "put", half2, optPrice || close || 0);
       var und2 = await underlyingForNotify(ticker, close);
-      await notify("onEntry", [ticker, "put", optPrice || 0, s.orb[ticker].high || orbHigh || 0, s.orb[ticker].low || orbLow || 0, und2]);
+      await notify("onEntry", [ticker, "put", optPrice || 0, orbHigh, orbLow, und2]);
       var order2;
       try {
         order2 = await trayd.placeOrder({ ticker: ticker, side: "put", contracts: half2 });
       } catch (e) {
         stateModule.closePosition(ticker, "entry order failed");
-        throw e;
+        stateModule.logEvent("ORDER_ERROR", ticker + " breakout_short failed: " + e.message);
+        return { ok: true, paper: true, orderError: e.message };
       }
 
       var cross2 = null;
@@ -215,7 +244,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         stateModule.logEvent("CROSS_ENTRY", "IWM short → SPY put half=" + spyHalf2 + " stop=SPY ORB high");
         stateModule.openHalfPosition("SPY", "put", spyHalf2, optPrice || close || 0, { crossEntry: true, stopMode: "orb_high" });
         var spyUnd2 = await underlyingForNotify("SPY", null);
-        await notify("onEntry", ["SPY", "put", 0, s.orb.SPY.high || 0, s.orb.SPY.low || 0, spyUnd2]);
+        await notify("onEntry", ["SPY", "put", 0, s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, spyUnd2]);
         try {
           cross2 = await trayd.placeOrder({ ticker: "SPY", side: "put", contracts: spyHalf2 });
         } catch (e) {

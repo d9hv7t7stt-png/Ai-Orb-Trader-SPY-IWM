@@ -40,11 +40,21 @@ async function resolveUnderlying(ticker, underlying) {
 
 async function fetchOptionMark(ticker, side, strike, expiry) {
   try {
-    return await rh.getOptionMark(ticker, side, strike, expiry);
+    var m = await rh.getOptionMark(ticker, side, strike, expiry);
+    if (m && m.price > 0) return m;
   } catch (e) {
-    console.log("[PAPER] option mark failed " + ticker + " " + strike + ": " + e.message);
-    return null;
+    console.log("[PAPER] RH option mark failed " + ticker + " " + strike + ": " + e.message);
   }
+  try {
+    var y = await yahoo.getOptionMark(ticker, side, strike, expiry);
+    if (y && y.price > 0) {
+      console.log("[PAPER] Yahoo option mark " + ticker + " " + y.strike + " $" + y.price.toFixed(2));
+      return y;
+    }
+  } catch (e) {
+    console.log("[PAPER] Yahoo option mark failed " + ticker + ": " + e.message);
+  }
+  return null;
 }
 
 // ── low-level + format helpers ──────────────────────────────────────────────
@@ -457,30 +467,38 @@ function createChannel(cfg) {
       var und = await resolveUnderlying(ticker, null);
       if (und) pos.strike = Math.round(und);
     }
-    if (pos.strike && !pos.instrumentUrl && rhAvailable) {
+    if (pos.strike && !pos.instrumentUrl) {
       var resolved = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
       if (resolved) {
-        pos.instrumentUrl = resolved.instrument;
+        if (resolved.instrument) pos.instrumentUrl = resolved.instrument;
         if (resolved.expiry) pos.expiry = resolved.expiry;
         if (resolved.strike) pos.strike = resolved.strike;
       }
     }
 
-    if (!rhAvailable) return;
-
     var price = null;
-    try {
-      if (pos.instrumentUrl) price = await rh.getOptionMarkByUrl(pos.instrumentUrl);
-      if ((!price || price <= 0) && pos.strike) {
-        var m = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
-        if (m) {
-          price = m.price;
-          if (!pos.instrumentUrl) pos.instrumentUrl = m.instrument;
-          if (m.expiry) pos.expiry = m.expiry;
-          if (m.strike) pos.strike = m.strike;
+    if (rhAvailable) {
+      try {
+        if (pos.instrumentUrl) price = await rh.getOptionMarkByUrl(pos.instrumentUrl);
+        if ((!price || price <= 0) && pos.strike) {
+          var m = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
+          if (m) {
+            price = m.price;
+            if (m.instrument && !pos.instrumentUrl) pos.instrumentUrl = m.instrument;
+            if (m.expiry) pos.expiry = m.expiry;
+            if (m.strike) pos.strike = m.strike;
+          }
         }
+      } catch (e) { console.log("[PAPER_ENGINE][" + cfg.id + "] price " + ticker + ": " + e.message); }
+    } else if (pos.strike) {
+      var ym = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
+      if (ym) {
+        price = ym.price;
+        if (ym.expiry) pos.expiry = ym.expiry;
+        if (ym.strike) pos.strike = ym.strike;
       }
-    } catch (e) { console.log("[PAPER_ENGINE][" + cfg.id + "] price " + ticker + ": " + e.message); }
+    }
+
     if (!price || price <= 0) return;
 
     if (!pos.entryPrice || pos.entryPrice <= 0) { pos.entryPrice = price; pos.posValue = price * pos.contracts * 100; pos.lastKnownPrice = price; pos.maxPrice = price; return; }
