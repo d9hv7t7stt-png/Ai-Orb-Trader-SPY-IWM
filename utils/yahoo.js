@@ -264,6 +264,16 @@ function getATMStraddle(ticker, expiryYmd) {
   });
 }
 
+function getExpirationDates(ticker) {
+  return fetchOptionsChain(ticker, null).then(function(data) {
+    try {
+      var result = data && data.optionChain && data.optionChain.result && data.optionChain.result[0];
+      if (!result || !result.expirationDates) return [];
+      return result.expirationDates.map(unixToYmd).filter(Boolean).sort();
+    } catch (e) { return []; }
+  });
+}
+
 module.exports = {
   getUnderlyingPrice: getUnderlyingPrice,
   getQuoteSnapshot: getQuoteSnapshot,
@@ -271,5 +281,6 @@ module.exports = {
   getOptionMark: getOptionMark,
   getChainForExpiry: getChainForExpiry,
   getATMStraddle: getATMStraddle,
+  getExpirationDates: getExpirationDates,
   SYMBOLS: SYMBOLS
 };

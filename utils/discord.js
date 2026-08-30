@@ -428,33 +428,36 @@ function createChannel(cfg) {
   }
 
   async function expectedMoves() {
-    var data = await expectedMoveUtil.computeNextSessionMoves(cfg.tickers);
+    var data = await expectedMoveUtil.computeFullMoves(cfg.tickers);
     if (!data.tickers.length) {
       console.log("[DISCORD][" + cfg.id + "] expected move: no data for " + cfg.tickers.join("+"));
       return;
     }
 
-    var fields = data.tickers.map(function(m) {
-      var pct = (m.movePct >= 0 ? "+" : "") + m.movePct.toFixed(2) + "%";
+    var fields = data.tickers.map(function(t) {
+      var lines = [];
+      t.sessions.forEach(function(s) { lines.push(expectedMoveUtil.formatHorizonLine(s)); });
+      if (t.weekly) lines.push(expectedMoveUtil.formatHorizonLine(t.weekly));
+      if (t.monthly) lines.push(expectedMoveUtil.formatHorizonLine(t.monthly));
+      var priceStr = t.price ? "$" + t.price.toFixed(2) : "—";
       return {
-        name: m.ticker + " @ $" + m.price.toFixed(2),
-        value: "**Expected:** ±$" + m.moveDollars.toFixed(2) + " (" + pct + ")\n"
-          + "**Range:** $" + m.lower.toFixed(2) + " — $" + m.upper.toFixed(2) + "\n"
-          + "ATM " + m.strike + " straddle · Call $" + m.callPrice.toFixed(2) + " + Put $" + m.putPrice.toFixed(2),
+        name: t.ticker + " @ " + priceStr,
+        value: lines.join("\n\n") || "—",
         inline: false
       };
     });
 
     await send({
       color: 0x4da6ff,
-      title: "📐 Tomorrow's Expected Moves — " + data.sessionLabel,
-      description: "Implied move from ATM straddle (0DTE options expiring next session). "
-        + "Useful for profit targets and ORB range context.",
+      title: "📐 Expected Moves — Multi-Timeframe",
+      description: "Implied ranges from ATM straddles · **Next 2 sessions**, **weekly** (~7 days), "
+        + "and **monthly** (~30 days). Posted after the close.",
       fields: fields,
       footer: { text: cfg.name + " · Computed at " + etTimeLabel() + " · Not financial advice" },
       timestamp: new Date().toISOString()
     }, false);
-    console.log("[DISCORD][" + cfg.id + "] expected moves posted for " + data.tickers.map(function(t){ return t.ticker; }).join("+"));
+    console.log("[DISCORD][" + cfg.id + "] multi-timeframe expected moves posted for "
+      + data.tickers.map(function(t){ return t.ticker; }).join("+"));
   }
 
   async function openPositions(label) {
