@@ -673,7 +673,6 @@ function createChannel(cfg) {
   }
 
   async function sundayPremarket() {
-    if (cfg.id !== "main") return;
     var data = await closeDigestUtil.buildSundayPremarket();
     var fields = data.blocks.map(function(b) {
       return {
@@ -979,7 +978,6 @@ function scheduleDaily(channel) {
 }
 
 function scheduleSundayPremarket(channel) {
-  if (channel.cfg.id !== "main") return;
   (function next() {
     setTimeout(async function() {
       var wd = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" }).format(new Date());
@@ -1062,7 +1060,12 @@ module.exports = {
   postDailySummary: function() { return first().dailySummary(); },
   postExpectedMoves: function() { return first().closeDigest(); },
   postCloseDigest: function() { return first().closeDigest(); },
-  postSundayPremarket: function() { return first().sundayPremarket(); },
+  postSundayPremarket: function() {
+    var list = channels.length ? channels : [first()];
+    return Promise.all(list.map(function(c) { return c.sundayPremarket(); })).then(function() {
+      return list.map(function(c) { return c.cfg.id; });
+    });
+  },
   postOpenPositions: function(l) { return first().openPositions(l); },
   postEntry: function(ticker, side, optPrice, orbHigh, orbLow, underlying) {
     var c = first();

@@ -240,6 +240,15 @@ app.post("/api/contracts", authguard.requireSecret, (req, res) => {
   }
 });
 
+app.get("/api/discord/sunday", authguard.requireSecret, async (req, res) => {
+  try {
+    var posted = await discord.postSundayPremarket();
+    res.json({ ok: true, posted: posted || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 if (authguard.allowTestRoutes()) {
   app.get("/test/discord/:type", authguard.requireSecret, async (req, res) => {
     try {
@@ -287,6 +296,21 @@ if (authguard.allowTestRoutes()) {
       else if (ch === "bc") targets = chans.filter(function(c){ return c.cfg.id === "free" || c.cfg.id === "spy0dte"; });
       else targets = chans.filter(function(c){ return c.cfg.id === ch; });
       for (var i = 0; i < targets.length; i++) await targets[i].closeDigest();
+      res.json({ ok: true, tested: targets.map(function(c){ return c.cfg.id; }), active: chans.map(function(c){ return c.cfg.id; }) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get("/test/discord/sunday/:channel", authguard.requireSecret, async (req, res) => {
+    try {
+      var ch = req.params.channel;
+      var chans = (typeof discord.getChannels === "function") ? discord.getChannels() : [];
+      var targets;
+      if (ch === "all") targets = chans;
+      else if (ch === "bc") targets = chans.filter(function(c){ return c.cfg.id === "free" || c.cfg.id === "spy0dte"; });
+      else targets = chans.filter(function(c){ return c.cfg.id === ch; });
+      for (var i = 0; i < targets.length; i++) await targets[i].sundayPremarket();
       res.json({ ok: true, tested: targets.map(function(c){ return c.cfg.id; }), active: chans.map(function(c){ return c.cfg.id; }) });
     } catch (e) {
       res.status(500).json({ error: e.message });
