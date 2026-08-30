@@ -1,12 +1,10 @@
 // Discord Paper Trading — MULTI-CHANNEL
-// Each channel is an independent paper account posting to its own webhook, with
-// its own balance, contract size, ticker filter, DTE, update cadence and morning
-// theme. A signal fans out to every channel that trades that ticker.
+// Paper accounts: percent sizing, 0DTE ATM + 1DTE expected-move legs, touch-based move exits.
 //
-// Channels activate only if their webhook env var is set (backward compatible):
-//   A "main"     DISCORD_WEBHOOK_URL      SPY+IWM  $50k  50c  global DTE  15-min  default theme
-//   B "free"     DISCORD_WEBHOOK_FREE     IWM      $10k  10c  0DTE        30-min  vibey theme
-//   C "spy0dte"  DISCORD_WEBHOOK_SPY0DTE  SPY      $10k   5c  0DTE        30-min  vibey theme
+// Channels (webhook env vars):
+//   main     DISCORD_WEBHOOK_URL      SPXW from SPY signals  $50k  5%/trade  15-min
+//   free     DISCORD_WEBHOOK_FREE     IWM                    $10k  5%/trade  30-min
+//   spy0dte  DISCORD_WEBHOOK_SPY0DTE  SPY                    $10k  5%/trade  30-min
 
 const https = require("https");
 const rh = require("./robinhood");
@@ -18,6 +16,9 @@ const expectedMoveUtil = require("./expectedMove");
 const closeDigestUtil = require("./closeDigest");
 const technicalsUtil = require("./technicals");
 const yahooUtil = require("./yahoo");
+const paperLegs = require("./paperLegs");
+
+var underlyingSnaps = {};
 
 function etTimeLabel() {
   return new Date().toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET";
@@ -59,6 +60,22 @@ async function fetchOptionMark(ticker, side, strike, expiry) {
     console.log("[PAPER] Yahoo option mark failed " + ticker + ": " + e.message);
   }
   return null;
+}
+
+async function getUnderlyingSnap(tradeTicker, maxAgeMs) {
+  var now = Date.now();
+  var cached = underlyingSnaps[tradeTicker];
+  if (cached && (now - cached.ts) < maxAgeMs) return cached;
+  var price = await yahoo.getUnderlyingPrice(tradeTicker);
+  var bar = await yahoo.getIntradayBar(tradeTicker);
+  var snap = {
+    price: price,
+    high: bar && bar.high != null ? bar.high : price,
+    low: bar && bar.low != null ? bar.low : price,
+    ts: now
+  };
+  underlyingSnaps[tradeTicker] = snap;
+  return snap;
 }
 
 // ── low-level + format helpers ──────────────────────────────────────────────
@@ -125,14 +142,14 @@ function morningMessages(theme, name) {
         footer: "SPY 0DTE • Options trading carries substantial risk of loss." }
     };
   }
-  // default theme (Channel A)
+  // default theme (main 50K — SPXW paper)
   return {
-    45: { color: 0x4da6ff, title: "👁️ 45 Minutes to Open — Argus Pre-Market Check",
-      description: "Morning rundown incoming. Reviewing all open ORB positions before the bell. Stay sharp — the edge goes to those who prepare. 📋",
-      footer: "Not financial advice. Options trading involves significant risk of loss." },
+    45: { color: 0x4da6ff, title: "👁️ 45 Minutes to Open — SPX Paper Check",
+      description: "Morning rundown incoming. Reviewing SPX 0DTE + 1DTE paper legs before the bell. 📋",
+      footer: "Paper SPXW · 5% risk/trade · Not financial advice." },
     60: { color: 0xf5c518, content: "@everyone", title: "☀️ Good Morning, Traders!",
-      description: "Rise and shine — market opens in one hour. Grab your coffee, check your charts, and get settled in. Today is a new opportunity.\n\nArgus is awake, warmed up, and ready to work for you. 👁️",
-      footer: "Not financial advice. Options trading involves significant risk of loss." },
+      description: "Market opens in one hour. **50K paper** is tracking **SPXW** off SPY ORB — 0DTE ATM + 1DTE expected-move strikes, 5% per play.\n\nArgus is warmed up and ready. 👁️",
+      footer: "Paper trading only · Not financial advice." },
     30: { color: 0xf5a623, content: "@everyone", title: "🌅 30 Minutes Out",
       description: "Half hour to go. Argus is authenticated, connected, and on standby. All systems green.\n\nTake a breath. Trust the process. Let Argus do its thing. 💚",
       footer: "Not financial advice. Trade at your own risk." },
@@ -163,7 +180,7 @@ function createChannel(cfg) {
     closedToday: [],     // per-play summaries for the daily report
     wins: 0, losses: 0, totalTrades: 0
   };
-  cfg.tickers.forEach(function(t){ account.positions[t] = null; });
+  account.positions = {};
 
   function savePnl() { try { require("fs").writeFileSync(pnlFile, JSON.stringify(pnlStore)); } catch (e) { console.log("[DISCORD] pnl save failed: " + e.message); } }
   function realize(amount) {
@@ -175,9 +192,20 @@ function createChannel(cfg) {
   }
 
   function footer() { return cfg.name + ": " + formatMoney(account.balance); }
-  function posLabel(ticker, pos) { return expiryUtil.contractLabel(ticker, pos.side, pos.strike, pos.expiry); }
-  function chanExpiry(ticker) { return (cfg.dte === null || cfg.dte === undefined) ? expiryUtil.getExpiry(ticker) : expiryUtil.getExpiryForDTE(cfg.dte); }
-  function chanDTELabel(ticker) { return (cfg.dte === null || cfg.dte === undefined) ? expiryUtil.getDTELabel(ticker) : (cfg.dte + "DTE"); }
+  function acceptsSignal(t) { return (cfg.signalTickers || []).indexOf(t) !== -1; }
+  function tradeTickerForSignal(t) { return cfg.tradeTicker || t; }
+  function posLabelFromPos(pos) {
+    return expiryUtil.contractLabel(pos.tradeTicker, pos.side, pos.strike, pos.expiry)
+      + (pos.dteTag === 0 ? " · 0DTE" : " · 1DTE");
+  }
+  function openLegKeys() {
+    return Object.keys(account.positions).filter(function(k) {
+      var p = account.positions[k];
+      return p && p.contracts > 0;
+    });
+  }
+  function riskPct() { return cfg.riskPct || 5; }
+  function legFraction() { return 0.5; }
 
   async function send(embed, pingEveryone) {
     if (!cfg.webhook) return;
@@ -195,177 +223,228 @@ function createChannel(cfg) {
     } catch (err) { console.log("[DISCORD_ERROR][" + cfg.id + "] " + err.message); }
   }
 
-  function recordClose(ticker, pos, finalSalePnl) {
+  function recordClose(pos, finalSalePnl, legKey) {
     var totalProfit = (pos.realizedPnl || 0) + finalSalePnl;
     var maxPrice = pos.maxPrice || pos.entryPrice || 0;
     var maxGainPct = pos.entryPrice > 0 ? ((maxPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
-    account.closedToday.push({ ticker: ticker, side: pos.side, entry: pos.entryPrice, maxPrice: maxPrice, maxGainPct: maxGainPct, totalProfit: totalProfit });
+    account.closedToday.push({
+      ticker: pos.tradeTicker + (pos.dteTag === 0 ? " 0DTE" : " 1DTE"),
+      side: pos.side, entry: pos.entryPrice, maxPrice: maxPrice,
+      maxGainPct: maxGainPct, totalProfit: totalProfit, leg: legKey
+    });
     if (totalProfit >= 0) account.wins++; else account.losses++;
     account.totalTrades++;
   }
 
-  async function entry(ticker, side, optionPrice, orbHigh, orbLow, underlying) {
-    var contracts = cfg.contracts;
-    var expiry = chanExpiry(ticker);
-    var und = await resolveUnderlying(ticker, underlying);
-    var strike = und ? Math.round(und) : null;
-    var instrumentUrl = null;
-    var price = optionPrice && optionPrice > 0 ? parseFloat(optionPrice) : null;
-    if (strike) {
-      var m = await fetchOptionMark(ticker, side, strike, expiry);
-      if (m) {
-        instrumentUrl = m.instrument;
-        if (!price && m.price) price = m.price;
-        if (m.strike) strike = m.strike;
-        if (m.expiry) expiry = m.expiry;
-      } else {
-        console.log("[PAPER][" + cfg.id + "] entry: strike=" + strike + " but no option mark — will retry on poll");
-      }
-    } else {
-      console.log("[PAPER][" + cfg.id + "] entry: could not resolve underlying for " + ticker);
+  async function openLeg(tradeTicker, side, dteTag, orbHigh, orbLow, underlying, moveTargets, optionPriceHint) {
+    var expiry = expiryUtil.getExpiryForDTE(dteTag);
+    var und = await resolveUnderlying(tradeTicker, underlying);
+    if (!und) return null;
+    var strike = paperLegs.strikeForLegTicker(tradeTicker, side, dteTag, und, moveTargets);
+    var m = await fetchOptionMark(tradeTicker, side, strike, expiry);
+    var price = (dteTag === 0 && optionPriceHint && optionPriceHint > 0) ? optionPriceHint : (m && m.price) || 0;
+    var contracts = paperLegs.sizeContracts(account.balance, riskPct(), legFraction(), price);
+    if (contracts < 1) {
+      console.log("[PAPER][" + cfg.id + "] skip " + tradeTicker + " " + dteTag + "DTE — premium too high for " + (riskPct() * legFraction()) + "% sizing");
+      return null;
     }
-    if (!price) price = 0;
+    var key = paperLegs.legKey(tradeTicker, dteTag);
+    var pos = {
+      tradeTicker: tradeTicker, side: side, dteTag: dteTag,
+      contracts: contracts, totalContracts: contracts,
+      entryPrice: price, posValue: price * contracts * 100,
+      orbHigh: orbHigh, orbLow: orbLow,
+      realizedPnl: 0, lastProfitTier: 0, breakEvenActivated: false, stopPct: null,
+      strike: m && m.strike ? m.strike : strike,
+      expiry: m && m.expiry ? m.expiry : expiry,
+      instrumentUrl: m && m.instrument ? m.instrument : null,
+      lastKnownPrice: price, maxPrice: price,
+      targetUpper: moveTargets ? moveTargets.upper : null,
+      targetLower: moveTargets ? moveTargets.lower : null,
+      moveExitDone: false
+    };
+    account.positions[key] = pos;
+    return { key: key, pos: pos, label: posLabelFromPos(pos), contracts: contracts, price: price };
+  }
 
-    var posValue = price * contracts * 100;
-    var stop = (((parseFloat(orbHigh) || 0) + (parseFloat(orbLow) || 0)) / 2).toFixed(2);
-    var label = expiryUtil.contractLabel(ticker, side, strike, expiry);
+  async function entry(tradeTicker, side, optionPrice, orbHigh, orbLow, underlying, signalTicker) {
+    var moveTargets = await paperLegs.getEntryMoveTargets(tradeTicker);
+    var opened = [];
+    var leg0 = await openLeg(tradeTicker, side, 0, orbHigh, orbLow, underlying, moveTargets, optionPrice);
+    if (leg0) opened.push(leg0);
+    var leg1 = await openLeg(tradeTicker, side, 1, orbHigh, orbLow, underlying, moveTargets, null);
+    if (leg1) opened.push(leg1);
+    if (!opened.length) {
+      console.log("[PAPER][" + cfg.id + "] no legs opened for " + tradeTicker);
+      return;
+    }
+
     var dirLabel = side === "call" ? "LONG" : "SHORT";
     var color = side === "call" ? 0x00e5a0 : 0xff4d6a;
-
-    account.positions[ticker] = {
-      side: side, contracts: contracts, totalContracts: contracts,
-      entryPrice: price, posValue: posValue, orbHigh: orbHigh, orbLow: orbLow,
-      halfIn: true, fullIn: false, realizedPnl: 0, lastProfitTier: 0,
-      breakEvenActivated: false, stopPct: null, strike: strike, expiry: expiry,
-      instrumentUrl: instrumentUrl, lastKnownPrice: price, maxPrice: price
-    };
+    var stop = (((parseFloat(orbHigh) || 0) + (parseFloat(orbLow) || 0)) / 2).toFixed(2);
+    var fields = opened.map(function(o) {
+      var tgt = side === "call"
+        ? (o.pos.targetUpper ? "$" + o.pos.targetUpper.toFixed(2) : "—")
+        : (o.pos.targetLower ? "$" + o.pos.targetLower.toFixed(2) : "—");
+      return {
+        name: o.label,
+        value: o.contracts + "c @ $" + (o.price > 0 ? o.price.toFixed(2) : "—")
+          + "\nRisk: " + (riskPct() * legFraction()).toFixed(2) + "% of " + formatMoney(account.balance)
+          + (o.pos.dteTag === 1 ? "\nMove target: " + tgt : ""),
+        inline: false
+      };
+    });
+    var sigNote = signalTicker && signalTicker !== tradeTicker
+      ? "Signal: **" + signalTicker + "** ORB → **" + yahooUtil.displaySymbol(tradeTicker) + "** paper\n" : "";
 
     await send({
-      color: color, title: (side === "call" ? "🟢" : "🔴") + " " + dirLabel + " ENTRY — " + label,
-      description: "Signal at " + etTimeLabel() + " · 5m bar close confirmed",
-      fields: [
-        { name: "Contract", value: label + " (" + chanDTELabel(ticker) + ")", inline: false },
-        { name: "Contracts", value: String(contracts), inline: true },
-        { name: "Entry Price", value: price > 0 ? "$" + price.toFixed(2) : "Resolving…", inline: true },
-        { name: "Position Value", value: price > 0 ? formatMoney(posValue) : "—", inline: true },
+      color: color,
+      title: (side === "call" ? "🟢" : "🔴") + " " + dirLabel + " ENTRY — " + yahooUtil.displaySymbol(tradeTicker) + " (0DTE + 1DTE)",
+      description: sigNote + "Signal at " + etTimeLabel() + " · 5m bar close · **" + riskPct() + "%** total (2.5% per leg)",
+      fields: fields.concat([
         { name: "ORB High", value: "$" + (parseFloat(orbHigh) || 0).toFixed(2), inline: true },
-        { name: "ORB Low",  value: "$" + (parseFloat(orbLow) || 0).toFixed(2),  inline: true },
+        { name: "ORB Low", value: "$" + (parseFloat(orbLow) || 0).toFixed(2), inline: true },
         { name: "Stop (Mid)", value: "$" + stop, inline: true }
-      ],
+      ]),
       footer: { text: footer() }, timestamp: new Date().toISOString()
     }, true);
   }
 
-  async function add(ticker, optionPrice) {
-    var pos = account.positions[ticker];
+  async function add(tradeTicker, optionPrice) {
+    var key = paperLegs.legKey(tradeTicker, 0);
+    var pos = account.positions[key];
     if (!pos) return;
-    if (!optionPrice || optionPrice <= 0) optionPrice = pos.lastKnownPrice || pos.entryPrice || 0;
-    pos.contracts += cfg.contracts; pos.totalContracts = pos.contracts; pos.fullIn = true; pos.halfIn = false;
-    var avgEntry = ((pos.entryPrice + optionPrice) / 2).toFixed(2);
+    if (!optionPrice || optionPrice <= 0) {
+      var m = await fetchOptionMark(tradeTicker, pos.side, pos.strike, pos.expiry);
+      optionPrice = m && m.price ? m.price : pos.lastKnownPrice || pos.entryPrice || 0;
+    }
+    var addQty = paperLegs.sizeContracts(account.balance, riskPct(), legFraction(), optionPrice);
+    if (addQty < 1) return;
+    pos.contracts += addQty;
+    pos.totalContracts += addQty;
     await send({
-      color: 0x4da6ff, title: "➕ ADD — " + posLabel(ticker, pos) + " (Retest Confirmed)",
+      color: 0x4da6ff, title: "➕ RETEST ADD — " + posLabelFromPos(pos),
+      description: "Retest adds **0DTE leg only** (+2.5% risk)",
       fields: [
-        { name: "Added", value: "+" + cfg.contracts + " contracts @ $" + optionPrice.toFixed(2), inline: true },
-        { name: "Total", value: String(pos.contracts) + " contracts", inline: true },
-        { name: "Avg Entry", value: "$" + avgEntry, inline: true }
+        { name: "Added", value: "+" + addQty + "c @ $" + optionPrice.toFixed(2), inline: true },
+        { name: "Total", value: String(pos.contracts) + " contracts", inline: true }
       ],
       footer: { text: footer() }, timestamp: new Date().toISOString()
     }, false);
   }
 
-  async function breakeven(ticker) {
-    var pos = account.positions[ticker]; if (!pos) return;
+  async function breakevenLeg(key) {
+    var pos = account.positions[key]; if (!pos) return;
     await send({
-      color: 0xf5a623, title: "🟡 BREAKEVEN STOP ACTIVATED — " + posLabel(ticker, pos),
+      color: 0xf5a623, title: "🟡 BREAKEVEN STOP — " + posLabelFromPos(pos),
       fields: [
-        { name: "Stop Level", value: "$" + pos.entryPrice.toFixed(2) + " (entry price)", inline: true },
-        { name: "Contracts", value: String(pos.contracts), inline: true },
-        { name: "Status", value: "Gains protected ✅", inline: true }
+        { name: "Stop Level", value: "$" + pos.entryPrice.toFixed(2) + " (entry)", inline: true },
+        { name: "Contracts", value: String(pos.contracts), inline: true }
       ],
       footer: { text: footer() }, timestamp: new Date().toISOString()
     }, true);
+  }
+
+  async function partialExitLeg(key, sellContracts, currentPrice, reason, tierNum) {
+    var pos = account.positions[key]; if (!pos || sellContracts <= 0) return;
+    if (!currentPrice || currentPrice <= 0) currentPrice = pos.lastKnownPrice || pos.entryPrice || 0;
+    var tierPnl = sellContracts * (currentPrice - pos.entryPrice) * 100;
+    pos.realizedPnl = (pos.realizedPnl || 0) + tierPnl;
+    pos.contracts -= sellContracts;
+    realize(tierPnl);
+    var gainPct = pos.entryPrice > 0 ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
+    var title = tierNum === 3 ? "🎯 EXPECTED MOVE EXIT — " + posLabelFromPos(pos)
+      : tierNum === 2 ? "💰💰 RUNNER TRIM — " + posLabelFromPos(pos)
+      : "💰 TIER — " + posLabelFromPos(pos);
+    await send({
+      color: tierNum === 3 ? 0xf5a623 : 0xf5a623, title: title,
+      fields: [
+        { name: "Sold", value: sellContracts + "c @ $" + currentPrice.toFixed(2), inline: true },
+        { name: "Gain", value: formatPct(gainPct), inline: true },
+        { name: "P&L Sale", value: formatMoney(tierPnl), inline: true },
+        { name: "Remaining", value: String(pos.contracts) + "c", inline: true },
+        { name: "Reason", value: reason, inline: false }
+      ],
+      footer: { text: footer() }, timestamp: new Date().toISOString()
+    }, tierNum === 3);
+    if (pos.contracts <= 0) {
+      recordClose(pos, 0, key);
+      account.positions[key] = null;
+    }
+  }
+
+  async function eodSellLeg(key, sellContracts, currentPrice, gainPct) {
+    await partialExitLeg(key, sellContracts, currentPrice, "15 min before close", 0);
+  }
+
+  async function profitTierLeg(key, tierNum, sellContracts, currentPrice, gainPct) {
+    await partialExitLeg(key, sellContracts, currentPrice, "+" + Math.floor(gainPct) + "% scale-out", tierNum);
+    if (account.positions[key]) account.positions[key].lastProfitTier = tierNum;
+  }
+
+  async function stopLeg(key, currentPrice, reason) {
+    var pos = account.positions[key]; if (!pos) return;
+    if (!currentPrice || currentPrice <= 0) currentPrice = pos.lastKnownPrice || pos.entryPrice || 0;
+    var salePnl = pos.contracts * (currentPrice - pos.entryPrice) * 100;
+    var pct = pos.entryPrice > 0 ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
+    realize(salePnl);
+    recordClose(pos, salePnl, key);
+    var totalPnl = salePnl + (pos.realizedPnl || 0);
+    var contracts = pos.contracts;
+    account.positions[key] = null;
+    await send({
+      color: 0xff4d6a, title: "🔴 STOP — " + posLabelFromPos(pos),
+      fields: [
+        { name: "Closed", value: contracts + "c @ $" + currentPrice.toFixed(2), inline: true },
+        { name: "P&L", value: formatMoney(totalPnl) + " (" + formatPct(pct) + ")", inline: true },
+        { name: "Reason", value: reason, inline: false }
+      ],
+      footer: { text: footer() }, timestamp: new Date().toISOString()
+    }, true);
+  }
+
+  async function stop(signalTicker, currentPrice, reason) {
+    var tradeTicker = tradeTickerForSignal(signalTicker);
+    var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
+    for (var i = 0; i < keys.length; i++) await stopLeg(keys[i], currentPrice, reason);
+  }
+
+  async function fullClose(signalTicker, currentPrice) {
+    var tradeTicker = tradeTickerForSignal(signalTicker);
+    var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
+    for (var i = 0; i < keys.length; i++) await stopLeg(keys[i], currentPrice, "Position fully closed");
+  }
+
+  async function breakeven(ticker) {
+    var tradeTicker = tradeTickerForSignal(ticker);
+    paperLegs.listLegsForTrade(account.positions, tradeTicker).forEach(function(k) {
+      var p = account.positions[k];
+      if (p) p.breakEvenActivated = true;
+    });
+    var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
+    if (keys.length) await breakevenLeg(keys[0]);
+  }
+
+  async function profitTier(ticker, tierNum, sell, price, gain) {
+    var tradeTicker = tradeTickerForSignal(ticker);
+    var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
+    for (var i = 0; i < keys.length; i++) {
+      var pos = account.positions[keys[i]];
+      if (!pos) continue;
+      var s10 = Math.max(1, Math.floor(pos.contracts * exitlogic.SCALE_SELL_FRAC));
+      await profitTierLeg(keys[i], tierNum, s10, price, gain);
+    }
   }
 
   async function eodSell(ticker, sellContracts, currentPrice, gainPct) {
-    var pos = account.positions[ticker]; if (!pos) return;
-    if (!currentPrice || currentPrice <= 0) currentPrice = pos.lastKnownPrice || pos.entryPrice || 0;
-    var tierPnl = sellContracts * (currentPrice - pos.entryPrice) * 100;
-    pos.realizedPnl += tierPnl; pos.contracts -= sellContracts; realize(tierPnl);
-    await send({
-      color: 0x4da6ff, title: "🕒 END OF DAY — Selling 50% — " + posLabel(ticker, pos),
-      fields: [
-        { name: "Sold", value: sellContracts + "c @ $" + currentPrice.toFixed(2), inline: true },
-        { name: "Gain", value: formatPct(gainPct), inline: true },
-        { name: "P&L This Sale", value: formatMoney(tierPnl), inline: true },
-        { name: "Remaining", value: String(pos.contracts) + " contracts", inline: true },
-        { name: "Reason", value: "15 min before close", inline: true }
-      ],
-      footer: { text: footer() }, timestamp: new Date().toISOString()
-    }, true);
-    if (pos.contracts <= 0) { recordClose(ticker, pos, 0); account.positions[ticker] = null; }
-  }
-
-  async function profitTier(ticker, tierNum, sellContracts, currentPrice, gainPct) {
-    var pos = account.positions[ticker]; if (!pos) return;
-    var tierPnl = sellContracts * (currentPrice - pos.entryPrice) * 100;
-    pos.realizedPnl += tierPnl; pos.contracts -= sellContracts; realize(tierPnl);
-    var title = tierNum === 3 ? "🎯 EXPECTED MOVE — " + posLabel(ticker, pos)
-      : tierNum === 2 ? "💰💰 +100% RUNNER TRIM — " + posLabel(ticker, pos)
-      : "💰 +" + Math.floor(gainPct) + "% TIER — Sold 10% — " + posLabel(ticker, pos);
-    await send({
-      color: 0xf5a623, title: title,
-      fields: [
-        { name: "Sold", value: sellContracts + "c @ $" + currentPrice.toFixed(2), inline: true },
-        { name: "Gain", value: formatPct(gainPct), inline: true },
-        { name: "P&L This Sale", value: formatMoney(tierPnl), inline: true },
-        { name: "Remaining", value: String(pos.contracts) + " contracts", inline: true },
-        { name: "Realized P&L", value: formatMoney(pos.realizedPnl), inline: true }
-      ],
-      footer: { text: footer() }, timestamp: new Date().toISOString()
-    }, true);
-  }
-
-  async function stop(ticker, currentPrice, reason) {
-    var pos = account.positions[ticker]; if (!pos) return;
-    if (!currentPrice || currentPrice <= 0) currentPrice = pos.lastKnownPrice || pos.entryPrice || 0;
-    var salelPnl = pos.contracts * (currentPrice - pos.entryPrice) * 100;
-    var pct = pos.entryPrice > 0 ? ((currentPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
-    realize(salelPnl);
-    recordClose(ticker, pos, salelPnl);
-    var totalPnl = salelPnl + (pos.realizedPnl || 0);
-    account.positions[ticker] = null;
-    var stopTitle = reason.indexOf("Trailing") !== -1 ? "📉 TRAILING STOP"
-      : reason.indexOf("Mid") !== -1 || reason.indexOf("mid") !== -1 ? "🛑 ORB STOP"
-      : "🔴 STOP OUT";
-    await send({
-      color: 0xff4d6a, title: stopTitle + " — " + posLabel(ticker, pos),
-      fields: [
-        { name: "Closed", value: pos.contracts + "c @ $" + currentPrice.toFixed(2), inline: true },
-        { name: "Total P&L", value: formatMoney(totalPnl) + " (" + formatPct(pct) + ")", inline: true },
-        { name: "Reason", value: reason, inline: true }
-      ],
-      footer: { text: footer() }, timestamp: new Date().toISOString()
-    }, true);
-  }
-
-  async function fullClose(ticker, currentPrice) {
-    var pos = account.positions[ticker]; if (!pos || pos.contracts <= 0) return;
-    if (!currentPrice || currentPrice <= 0) currentPrice = pos.lastKnownPrice || pos.entryPrice || 0;
-    var salePnl = pos.contracts * (currentPrice - pos.entryPrice) * 100;
-    var finalPnl = salePnl + (pos.realizedPnl || 0);
-    var totalPct = pos.totalContracts > 0 && pos.entryPrice > 0 ? (finalPnl / (pos.totalContracts * pos.entryPrice * 100)) * 100 : 0;
-    realize(salePnl);
-    recordClose(ticker, pos, salePnl);
-    account.positions[ticker] = null;
-    await send({
-      color: 0x00e5a0, title: "✅ POSITION FULLY CLOSED — " + posLabel(ticker, pos),
-      fields: [
-        { name: "Final Sale", value: pos.contracts + "c @ $" + currentPrice.toFixed(2), inline: true },
-        { name: "Total P&L", value: formatMoney(finalPnl) + " (" + formatPct(totalPct) + ")", inline: true },
-        { name: "Account", value: formatMoney(account.balance), inline: true }
-      ],
-      footer: { text: footer() }, timestamp: new Date().toISOString()
-    }, true);
+    var tradeTicker = tradeTickerForSignal(ticker);
+    var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
+    for (var i = 0; i < keys.length; i++) {
+      var pos = account.positions[keys[i]];
+      if (!pos) continue;
+      var qty = Math.max(1, Math.floor(pos.contracts * exitlogic.EOD_SELL_FRAC));
+      await eodSellLeg(keys[i], qty, currentPrice, gainPct);
+    }
   }
 
   function unrealized() {
@@ -541,24 +620,32 @@ function createChannel(cfg) {
   }
 
   async function openPositions(label) {
-    var entries = Object.keys(account.positions).map(function(t){ return [t, account.positions[t]]; }).filter(function(e){ return e[1] && !e[1].stopped; });
-    if (entries.length === 0) return;
-    var fields = entries.map(function(e) {
-      var ticker = e[0], pos = e[1];
+    var keys = openLegKeys();
+    if (!keys.length) return;
+    var fields = keys.map(function(key) {
+      var pos = account.positions[key];
       var cur = pos.lastKnownPrice || pos.entryPrice;
       var pending = cur <= 0;
       if (pending) cur = 0;
       var pnl = (cur - pos.entryPrice) * pos.contracts * 100;
       var pct = pos.entryPrice > 0 ? ((cur - pos.entryPrice) / pos.entryPrice * 100).toFixed(1) : "0.0";
       var pnlStr = pending ? "⚠️ Price feed delayed" : (pnl >= 0 ? "+" : "") + "$" + Math.abs(pnl).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      return { name: posLabel(ticker, pos),
-        value: "Entry: $" + pos.entryPrice.toFixed(2) + "\nCurrent: $" + (pending ? "—" : cur.toFixed(2)) + "\nMax: $" + (pos.maxPrice || pos.entryPrice).toFixed(2) + "\nP&L: " + pnlStr + (pending ? "" : " (" + (pnl >= 0 ? "+" : "") + pct + "%)") + "\nContracts: " + pos.contracts, inline: true };
+      var tgt = pos.side === "call" && pos.targetUpper ? "Move ▲ $" + pos.targetUpper.toFixed(2)
+        : pos.side === "put" && pos.targetLower ? "Move ▼ $" + pos.targetLower.toFixed(2) : "";
+      return {
+        name: posLabelFromPos(pos),
+        value: "Entry: $" + pos.entryPrice.toFixed(2) + "\nCurrent: $" + (pending ? "—" : cur.toFixed(2))
+          + "\nP&L: " + pnlStr + (pending ? "" : " (" + (pnl >= 0 ? "+" : "") + pct + "%)")
+          + "\nContracts: " + pos.contracts
+          + (tgt ? "\n" + tgt : ""),
+        inline: true
+      };
     });
     await send({
       color: 0x4da6ff,
       title: "📊 " + cfg.name + " · " + label + " Update",
       fields: fields,
-      footer: { text: footer() },
+      footer: { text: footer() + " · " + riskPct() + "% risk/trade" },
       timestamp: new Date().toISOString()
     }, false);
   }
@@ -571,85 +658,129 @@ function createChannel(cfg) {
     if (minutesBefore === 45) await openPositions("Pre-Market 45 Min");
   }
 
-  function updateLastKnownPrice(ticker, price) { if (account.positions[ticker] && price) account.positions[ticker].lastKnownPrice = price; }
-
-  async function pollPosition(ticker, rhAvailable) {
-    var pos = account.positions[ticker]; if (!pos) return;
-
-    // Backfill strike/instrument for positions opened without webhook `close`.
+  async function fetchLegOptionPrice(pos, rhAvailable) {
     if (!pos.strike) {
-      var und = await resolveUnderlying(ticker, null);
-      if (und) pos.strike = Math.round(und);
+      var und = await resolveUnderlying(pos.tradeTicker, null);
+      if (und) pos.strike = paperLegs.roundStrike(pos.tradeTicker, und);
     }
     if (pos.strike && !pos.instrumentUrl) {
-      var resolved = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
+      var resolved = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry);
       if (resolved) {
         if (resolved.instrument) pos.instrumentUrl = resolved.instrument;
         if (resolved.expiry) pos.expiry = resolved.expiry;
         if (resolved.strike) pos.strike = resolved.strike;
       }
     }
-
     var price = null;
     if (rhAvailable) {
       try {
         if (pos.instrumentUrl) price = await rh.getOptionMarkByUrl(pos.instrumentUrl);
         if ((!price || price <= 0) && pos.strike) {
-          var m = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
+          var m = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry);
           if (m) {
             price = m.price;
             if (m.instrument && !pos.instrumentUrl) pos.instrumentUrl = m.instrument;
-            if (m.expiry) pos.expiry = m.expiry;
-            if (m.strike) pos.strike = m.strike;
           }
         }
-      } catch (e) { console.log("[PAPER_ENGINE][" + cfg.id + "] price " + ticker + ": " + e.message); }
+      } catch (e) { console.log("[PAPER_ENGINE][" + cfg.id + "] mark: " + e.message); }
     } else if (pos.strike) {
-      var ym = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
-      if (ym) {
-        price = ym.price;
-        if (ym.expiry) pos.expiry = ym.expiry;
-        if (ym.strike) pos.strike = ym.strike;
+      var ym = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry);
+      if (ym) price = ym.price;
+    }
+    return price;
+  }
+
+  async function pollMoveTargets() {
+    var keys = openLegKeys();
+    if (!keys.length) return;
+    var tradeTickers = {};
+    keys.forEach(function(k) {
+      var p = account.positions[k];
+      if (p) tradeTickers[p.tradeTicker] = true;
+    });
+    var tickerList = Object.keys(tradeTickers);
+    for (var t = 0; t < tickerList.length; t++) {
+      var tt = tickerList[t];
+      var hot = keys.some(function(k) {
+        var p = account.positions[k];
+        return p && p.tradeTicker === tt && !p.moveExitDone && paperLegs.isNearMoveTarget(p, underlyingSnaps[tt] && underlyingSnaps[tt].price);
+      });
+      var maxAge = hot ? paperLegs.MONITOR_INTERVAL_MS : paperLegs.MARK_INTERVAL_MS;
+      var snap = await getUnderlyingSnap(tt, maxAge);
+      for (var i = 0; i < keys.length; i++) {
+        var key = keys[i];
+        var pos = account.positions[key];
+        if (!pos || pos.tradeTicker !== tt || pos.moveExitDone) continue;
+        var hit = paperLegs.checkMoveTouch(pos, snap);
+        if (!hit) continue;
+        var rhAvailable = !!rh.getToken();
+        var optPrice = await fetchLegOptionPrice(pos, rhAvailable);
+        if (!optPrice || optPrice <= 0) optPrice = pos.lastKnownPrice || pos.entryPrice || 0;
+        var frac = paperLegs.exitFractionForLeg(pos.dteTag);
+        var qty = paperLegs.sellQtyForLeg(pos, frac);
+        var sideLabel = hit === "upper" ? "upper" : "lower";
+        pos.moveExitDone = true;
+        await partialExitLeg(key, qty, optPrice,
+          "Expected move " + sideLabel + " touch (underlying $" + (snap.price || 0).toFixed(2) + ")", 3);
+        console.log("[PAPER][" + cfg.id + "] move exit " + key + " " + sideLabel + " qty=" + qty);
       }
     }
+  }
 
-    if (!price || price <= 0) return;
+  async function pollOptionMarks(rhAvailable) {
+    var keys = openLegKeys();
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      var pos = account.positions[key];
+      if (!pos) continue;
+      var price = await fetchLegOptionPrice(pos, rhAvailable);
+      if (!price || price <= 0) continue;
+      if (!pos.entryPrice || pos.entryPrice <= 0) {
+        pos.entryPrice = price;
+        pos.posValue = price * pos.contracts * 100;
+        pos.lastKnownPrice = price;
+        pos.maxPrice = price;
+        continue;
+      }
+      pos.lastKnownPrice = price;
+      if (!pos.maxPrice || price > pos.maxPrice) pos.maxPrice = price;
 
-    if (!pos.entryPrice || pos.entryPrice <= 0) { pos.entryPrice = price; pos.posValue = price * pos.contracts * 100; pos.lastKnownPrice = price; pos.maxPrice = price; return; }
+      var decision = exitlogic.evaluate(pos, price);
+      pos.stopPct = decision.newStopPct;
 
-    updateLastKnownPrice(ticker, price);
-    if (!pos.maxPrice || price > pos.maxPrice) pos.maxPrice = price;   // track day's high mark
-
-    var decision = exitlogic.evaluate(pos, price);
-    pos.stopPct = decision.newStopPct;
-
-    if (exitlogic.isEndOfDayWindow() && pos.eodSold !== exitlogic.etDateKey()) {
-      var eodQty = Math.max(1, Math.floor(pos.contracts * exitlogic.EOD_SELL_FRAC));
-      pos.eodSold = exitlogic.etDateKey();
-      await eodSell(ticker, eodQty, price, decision.gain);
-      return;
-    }
-    if (decision.activateBreakeven) { pos.breakEvenActivated = true; await breakeven(ticker); }
-    if (decision.stopOut) {
-      var still = account.positions[ticker];
-      if (still) { var reason = still.breakEvenActivated ? "Trailing Stop " + decision.newStopPct + "%" : "Initial Stop -15%"; await stop(ticker, price, reason); }
-      return;
-    }
-    if (decision.scaleOut) {
-      var s10 = Math.max(1, Math.floor(pos.contracts * decision.sellFraction));
-      await profitTier(ticker, 1, s10, price, decision.gain);
-      if (account.positions[ticker]) account.positions[ticker].lastProfitTier = decision.newTier;
+      if (exitlogic.isEndOfDayWindow() && pos.eodSold !== exitlogic.etDateKey()) {
+        pos.eodSold = exitlogic.etDateKey();
+        var eodQty = Math.max(1, Math.floor(pos.contracts * exitlogic.EOD_SELL_FRAC));
+        await eodSellLeg(key, eodQty, price, decision.gain);
+        continue;
+      }
+      if (decision.activateBreakeven && !pos.breakEvenActivated) {
+        pos.breakEvenActivated = true;
+        await breakevenLeg(key);
+      }
+      if (decision.stopOut) {
+        var reason = pos.breakEvenActivated ? "Trailing Stop " + decision.newStopPct + "%" : "Initial Stop -15%";
+        await stopLeg(key, price, reason);
+        continue;
+      }
+      if (decision.scaleOut) {
+        var s10 = Math.max(1, Math.floor(pos.contracts * decision.sellFraction));
+        await profitTierLeg(key, 1, s10, price, decision.gain);
+        if (account.positions[key]) account.positions[key].lastProfitTier = decision.newTier;
+      }
     }
   }
 
   return {
     cfg: cfg, account: account,
-    trades: function(t) { return cfg.tickers.indexOf(t) !== -1; },
+    acceptsSignal: acceptsSignal,
+    tradeTickerForSignal: tradeTickerForSignal,
+    trades: acceptsSignal,
     entry: entry, add: add, stop: stop, fullClose: fullClose,
     breakeven: breakeven, profitTier: profitTier, eodSell: eodSell,
     openPositions: openPositions, dailySummary: dailySummary, morning: morning,
     closeDigest: closeDigest, sundayPremarket: sundayPremarket, expectedMoves: expectedMoves,
-    pollPosition: pollPosition, updateLastKnownPrice: updateLastKnownPrice,
+    pollMoveTargets: pollMoveTargets, pollOptionMarks: pollOptionMarks,
     getAccount: function() { return account; }
   };
 }
@@ -661,20 +792,47 @@ function buildChannelConfigs() {
   var watchlist = closeDigestUtil.MAIN_WATCHLIST;
   var list = [];
   if (process.env.DISCORD_WEBHOOK_URL)
-    list.push({ id: "main", name: "Argus ORB Trader 50K", webhook: process.env.DISCORD_WEBHOOK_URL, startBalance: 50000, contracts: 50, tickers: ["SPY", "IWM"], watchlist: watchlist, dte: null, updateMins: 15, theme: "default" });
+    list.push({
+      id: "main", name: "Argus ORB Trader 50K", webhook: process.env.DISCORD_WEBHOOK_URL,
+      startBalance: 50000, riskPct: 5, signalTickers: ["SPY"], tradeTicker: "SPXW",
+      tickers: ["SPXW"], watchlist: watchlist, updateMins: 15, theme: "default"
+    });
   if (process.env.DISCORD_WEBHOOK_FREE)
-    list.push({ id: "free", name: "Free Alerts", webhook: process.env.DISCORD_WEBHOOK_FREE, startBalance: 10000, contracts: 10, tickers: ["IWM"], watchlist: ["IWM"], dte: 0, updateMins: 30, theme: "free" });
+    list.push({
+      id: "free", name: "Free Alerts", webhook: process.env.DISCORD_WEBHOOK_FREE,
+      startBalance: 10000, riskPct: 5, signalTickers: ["IWM"], tradeTicker: "IWM",
+      tickers: ["IWM"], watchlist: ["IWM"], updateMins: 30, theme: "free"
+    });
   if (process.env.DISCORD_WEBHOOK_SPY0DTE)
-    list.push({ id: "spy0dte", name: "SPY 0DTE", webhook: process.env.DISCORD_WEBHOOK_SPY0DTE, startBalance: 10000, contracts: 5, tickers: ["SPY"], watchlist: ["SPY"], dte: 0, updateMins: 30, theme: "spy" });
+    list.push({
+      id: "spy0dte", name: "SPY 0DTE", webhook: process.env.DISCORD_WEBHOOK_SPY0DTE,
+      startBalance: 10000, riskPct: 5, signalTickers: ["SPY"], tradeTicker: "SPY",
+      tickers: ["SPY"], watchlist: ["SPY"], updateMins: 30, theme: "spy"
+    });
   return list;
 }
 
-function forTicker(ticker, fn) { return Promise.all(channels.filter(function(c){ return c.trades(ticker); }).map(fn)); }
+function forSignal(ticker, fn) {
+  return Promise.all(channels.filter(function(c) { return c.acceptsSignal(ticker); }).map(fn));
+}
 
-async function onEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying) { await forTicker(ticker, function(c){ return c.entry(ticker, side, optionPrice, orbHigh, orbLow, underlying); }); }
-async function onAdd(ticker, optionPrice) { await forTicker(ticker, function(c){ return c.add(ticker, optionPrice); }); }
-async function onStop(ticker, optionPrice, reason) { await forTicker(ticker, function(c){ return c.stop(ticker, optionPrice, reason); }); }
-async function onFullClose(ticker, optionPrice) { await forTicker(ticker, function(c){ return c.fullClose(ticker, optionPrice); }); }
+async function onEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying) {
+  await forSignal(ticker, function(c) {
+    var trade = c.tradeTickerForSignal(ticker);
+    return c.entry(trade, side, optionPrice, orbHigh, orbLow, underlying, ticker);
+  });
+}
+async function onAdd(ticker, optionPrice) {
+  await forSignal(ticker, function(c) {
+    return c.add(c.tradeTickerForSignal(ticker), optionPrice);
+  });
+}
+async function onStop(ticker, optionPrice, reason) {
+  await forSignal(ticker, function(c) { return c.stop(ticker, optionPrice, reason); });
+}
+async function onFullClose(ticker, optionPrice) {
+  await forSignal(ticker, function(c) { return c.fullClose(ticker, optionPrice); });
+}
 
 // ── schedulers ──────────────────────────────────────────────────────────────
 function scheduleMorning(channel) {
@@ -748,28 +906,39 @@ function scheduleCloseDigest(channel) {
 function initChannels(getToken) {
   channels = buildChannelConfigs().map(createChannel);
   if (channels.length === 0) { console.log("[DISCORD] no channels active (set DISCORD_WEBHOOK_URL / _FREE / _SPY0DTE)"); return; }
-  console.log("[DISCORD] active channels: " + channels.map(function(c){ return c.cfg.id + "(" + c.cfg.tickers.join("+") + "," + c.cfg.contracts + "c)"; }).join(", "));
+  console.log("[DISCORD] active channels: " + channels.map(function(c) {
+    return c.cfg.id + "(" + (c.cfg.tradeTicker || c.cfg.signalTickers.join("+")) + "," + (c.cfg.riskPct || 5) + "%)";
+  }).join(", "));
   channels.forEach(function(c) { scheduleMorning(c); scheduleUpdates(c); scheduleDaily(c); scheduleCloseDigest(c); scheduleSundayPremarket(c); });
-  // shared paper engine: one 30s loop pricing every channel's positions
+
+  setInterval(async function() {
+    try {
+      if (!paperMarketHours()) return;
+      for (var i = 0; i < channels.length; i++) await channels[i].pollMoveTargets();
+    } catch (e) { console.log("[PAPER_MOVE_ERROR] " + e.message); }
+  }, paperLegs.MONITOR_INTERVAL_MS);
+
   setInterval(async function() {
     try {
       if (!paperMarketHours()) return;
       var rhAvailable = !!(getToken && getToken());
       if (!rhAvailable) {
-        // Still backfill strikes from Yahoo so position labels aren't "?".
         try { await rh.reauthorize(); rhAvailable = !!(getToken && getToken()); } catch (e) {}
       }
-      for (var i = 0; i < channels.length; i++) {
-        var c = channels[i];
-        for (var j = 0; j < c.cfg.tickers.length; j++) { await c.pollPosition(c.cfg.tickers[j], rhAvailable); }
-      }
+      for (var i = 0; i < channels.length; i++) await channels[i].pollOptionMarks(rhAvailable);
     } catch (e) { console.log("[PAPER_ENGINE_ERROR] " + e.message); }
-  }, 30 * 1000);
-  console.log("[DISCORD] paper engine started — marks every 30s");
+  }, paperLegs.MARK_INTERVAL_MS);
+  console.log("[DISCORD] paper engine — move monitor " + (paperLegs.MONITOR_INTERVAL_MS / 1000) + "s · marks " + (paperLegs.MARK_INTERVAL_MS / 1000) + "s");
 }
 
 // ── compat shims for /test/discord routes (target the first active channel) ──
-function first() { return channels[0] || createChannel({ id: "main", name: "Argus ORB Trader 50K", webhook: process.env.DISCORD_WEBHOOK_URL, startBalance: 50000, contracts: 50, tickers: ["SPY", "IWM"], dte: null, updateMins: 15, theme: "default" }); }
+function first() {
+  return channels[0] || createChannel({
+    id: "main", name: "Argus ORB Trader 50K", webhook: process.env.DISCORD_WEBHOOK_URL,
+    startBalance: 50000, riskPct: 5, signalTickers: ["SPY"], tradeTicker: "SPXW",
+    tickers: ["SPXW"], watchlist: closeDigestUtil.MAIN_WATCHLIST, updateMins: 15, theme: "default"
+  });
+}
 
 module.exports = {
   initChannels: initChannels,
@@ -782,7 +951,10 @@ module.exports = {
   postCloseDigest: function() { return first().closeDigest(); },
   postSundayPremarket: function() { return first().sundayPremarket(); },
   postOpenPositions: function(l) { return first().openPositions(l); },
-  postEntry: function(ticker, side, optPrice, orbHigh, orbLow, underlying) { return first().entry(ticker, side, optPrice, orbHigh, orbLow, underlying); },
+  postEntry: function(ticker, side, optPrice, orbHigh, orbLow, underlying) {
+    var c = first();
+    return c.entry(c.tradeTickerForSignal(ticker), side, optPrice, orbHigh, orbLow, underlying, ticker);
+  },
   postStopLoss: function(ticker, price, reason) { return first().stop(ticker, price, reason); },
   postProfitTier: function(ticker, tierNum, sell, price, gain) { return first().profitTier(ticker, tierNum, sell, price, gain); }
 };
