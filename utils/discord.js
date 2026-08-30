@@ -673,7 +673,8 @@ function createChannel(cfg) {
   }
 
   async function sundayPremarket() {
-    var data = await closeDigestUtil.buildSundayPremarket();
+    var tickers = closeDigestUtil.sundayTickersForChannel(cfg);
+    var data = await closeDigestUtil.buildSundayPremarket(tickers);
     var fields = data.blocks.map(function(b) {
       return {
         name: closeDigestUtil.formatSundayHeader(b),
@@ -687,9 +688,13 @@ function createChannel(cfg) {
       return;
     }
 
+    var fullWatchlist = cfg.id === "main";
+    var title = fullWatchlist
+      ? "🌙 Sunday Premarket — Full Watchlist"
+      : "🌙 Sunday Premarket — " + yahoo.displaySymbol(tickers[0] || cfg.tradeTicker || "ORB");
     await send({
       color: 0x00e5a0,
-      title: "🌙 Sunday Premarket — Full Watchlist",
+      title: title,
       description: "Friday close · **21 EMA** · **55 SMA** · **Monday** expected move · **this week** expected move.\n\nNext session: **" + data.sessionLabel + "**",
       fields: fields,
       footer: { text: cfg.name + " · " + etTimeLabel() + " · Not financial advice" },

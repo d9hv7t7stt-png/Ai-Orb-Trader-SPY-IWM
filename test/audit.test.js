@@ -277,6 +277,21 @@ test("Sunday digest header and implied-move levels", function() {
   assert.ok(spyIdx === -1, "ticker header lives in the field name, not the body");
 });
 
+test("Sunday premarket tickers scoped per Discord channel", function() {
+  assert.deepStrictEqual(
+    closeDigest.sundayTickersForChannel({ id: "main", tickers: ["SPXW"] }),
+    closeDigest.MAIN_WATCHLIST
+  );
+  assert.deepStrictEqual(
+    closeDigest.sundayTickersForChannel({ id: "spy0dte", tickers: ["SPY"] }),
+    ["SPY"]
+  );
+  assert.deepStrictEqual(
+    closeDigest.sundayTickersForChannel({ id: "free", tickers: ["IWM"] }),
+    ["IWM"]
+  );
+});
+
 if (process.exitCode) {
   console.error("\nAUDIT TESTS FAILED");
   process.exit(1);
