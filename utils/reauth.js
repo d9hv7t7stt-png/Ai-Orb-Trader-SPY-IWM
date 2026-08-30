@@ -139,7 +139,7 @@ function scheduleDailyReauth() {
   var exitlogic = require("./exitlogic");
   stateModule.logEvent("AUTH", "Daily reauth scheduler started (9:00 AM ET)");
   function scheduleNext() {
-    var delay = exitlogic.msUntilNextTimeET(9, 0);
+    var delay = exitlogic.msUntilNextTradingTimeET(9, 0);
     stateModule.logEvent("AUTH", "Next reauth in " + Math.round(delay / 60000) + " min");
     setTimeout(async function() {
       rh.setToken(null);

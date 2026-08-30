@@ -576,9 +576,9 @@ function scheduleMorning(channel) {
     var min = fireMin % 60;
     (function next() {
       setTimeout(async function() {
-        await channel.morning(a.m);
+        if (exitlogic.isWeekdayET()) await channel.morning(a.m);
         next();
-      }, exitlogic.msUntilNextTimeET(hour, min));
+      }, exitlogic.msUntilNextTradingTimeET(hour, min));
     })();
   });
 }
@@ -595,9 +595,9 @@ function scheduleUpdates(channel) {
 function scheduleDaily(channel) {
   (function next() {
     setTimeout(async function() {
-      await channel.dailySummary();
+      if (exitlogic.isWeekdayET()) await channel.dailySummary();
       next();
-    }, exitlogic.msUntilNextTimeET(16, 0));
+    }, exitlogic.msUntilNextTradingTimeET(16, 0));
   })();
 }
 
