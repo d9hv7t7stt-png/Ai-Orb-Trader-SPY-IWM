@@ -179,10 +179,97 @@ function parseOptionMark(result, optionType, wantStrike, expiryYmd) {
   return { price: price, strike: best.strike, expiry: expiry, instrument: null, source: "yahoo" };
 }
 
+function findStrikeOption(list, strike) {
+  if (!list || !list.length) return null;
+  var want = Math.round(strike);
+  var best = null;
+  var bestDiff = Infinity;
+  for (var i = 0; i < list.length; i++) {
+    var diff = Math.abs(list[i].strike - want);
+    if (diff < bestDiff) { bestDiff = diff; best = list[i]; }
+  }
+  return best;
+}
+
+function getChainForExpiry(ticker, expiryYmd) {
+  return fetchOptionsChain(ticker, null).then(function(data) {
+    try {
+      var result = data && data.optionChain && data.optionChain.result && data.optionChain.result[0];
+      if (!result) return null;
+      var expDates = result.expirationDates || [];
+      var targetUnix = null;
+      if (expiryYmd) {
+        for (var i = 0; i < expDates.length; i++) {
+          if (unixToYmd(expDates[i]) === expiryYmd) { targetUnix = expDates[i]; break; }
+        }
+      }
+      if (!targetUnix && expDates.length) targetUnix = expDates[0];
+      if (!targetUnix) return null;
+
+      function packChain(chainResult) {
+        if (!chainResult || !chainResult.options || !chainResult.options.length) return null;
+        var bucket = chainResult.options[0];
+        var quote = chainResult.quote || {};
+        var price = quote.regularMarketPrice || quote.postMarketPrice || quote.preMarketPrice || null;
+        return {
+          price: price ? parseFloat(price) : null,
+          expiryYmd: unixToYmd(bucket.expirationDate),
+          calls: bucket.calls || [],
+          puts: bucket.puts || []
+        };
+      }
+
+      if (targetUnix && result.options && result.options[0] && result.options[0].expirationDate !== targetUnix) {
+        return fetchOptionsChain(ticker, targetUnix).then(function(data2) {
+          var r2 = data2 && data2.optionChain && data2.optionChain.result && data2.optionChain.result[0];
+          return packChain(r2);
+        });
+      }
+      return packChain(result);
+    } catch (e) { return null; }
+  });
+}
+
+function getATMStraddle(ticker, expiryYmd) {
+  return getChainForExpiry(ticker, expiryYmd).then(async function(chain) {
+    if (!chain) return null;
+    var price = chain.price;
+    if (!price || price <= 0) price = await getUnderlyingPrice(ticker);
+    if (!price || price <= 0) return null;
+
+    var strike = Math.round(price);
+    var call = findStrikeOption(chain.calls, strike);
+    var put = findStrikeOption(chain.puts, strike);
+    if (!call || !put) return null;
+
+    var callPx = pickOptionPrice(call);
+    var putPx = pickOptionPrice(put);
+    if (!callPx || !putPx || callPx <= 0 || putPx <= 0) return null;
+
+    var straddle = callPx + putPx;
+    var movePct = (straddle / price) * 100;
+    return {
+      ticker: ticker,
+      price: price,
+      strike: call.strike,
+      expiry: chain.expiryYmd,
+      callPrice: callPx,
+      putPrice: putPx,
+      straddle: straddle,
+      moveDollars: straddle,
+      movePct: movePct,
+      upper: price + straddle,
+      lower: price - straddle
+    };
+  });
+}
+
 module.exports = {
   getUnderlyingPrice: getUnderlyingPrice,
   getQuoteSnapshot: getQuoteSnapshot,
   getChart: getChart,
   getOptionMark: getOptionMark,
+  getChainForExpiry: getChainForExpiry,
+  getATMStraddle: getATMStraddle,
   SYMBOLS: SYMBOLS
 };

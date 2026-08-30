@@ -2,6 +2,7 @@
 // Configurable days-to-expiry per ticker. Source of truth: persisted settings (dashboard).
 
 var settings = require("./settings");
+var marketCal = require("./marketCalendar");
 
 var MONTHS = ["January", "February", "March", "April", "May", "June", "July",
   "August", "September", "October", "November", "December"];
@@ -10,49 +11,20 @@ function getDTE(ticker) {
   return settings.getDTE(ticker);
 }
 
-function weekdayET(date) {
-  return new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" }).format(date);
-}
-
-function ymdInET(date) {
-  return date.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-}
-
-function nextTradingDay(from) {
-  var cursor = new Date(from || Date.now());
-  for (var i = 0; i < 8; i++) {
-    var wd = weekdayET(cursor);
-    if (wd !== "Sat" && wd !== "Sun") return cursor;
-    cursor = new Date(cursor.getTime() + 86400000);
-  }
-  return cursor;
-}
-
-function addTradingDaysFromToday(dte) {
-  var cursor = nextTradingDay(new Date());
-  var added = 0;
-  while (added < dte) {
-    cursor = new Date(cursor.getTime() + 86400000);
-    var wd = weekdayET(cursor);
-    if (wd !== "Sat" && wd !== "Sun") added++;
-  }
-  return cursor;
-}
-
 function getExpiryDate(ticker) {
-  return addTradingDaysFromToday(getDTE(ticker));
+  return marketCal.addTradingDays(new Date(), getDTE(ticker));
 }
 
 function getExpiryDateForDTE(dte) {
-  return addTradingDaysFromToday(dte);
+  return marketCal.addTradingDays(new Date(), dte);
 }
 
 function getExpiry(ticker) {
-  return ymdInET(getExpiryDate(ticker));
+  return marketCal.ymdInET(getExpiryDate(ticker));
 }
 
 function getExpiryForDTE(dte) {
-  return ymdInET(getExpiryDateForDTE(dte));
+  return marketCal.ymdInET(getExpiryDateForDTE(dte));
 }
 
 function getDTELabel(ticker) {
