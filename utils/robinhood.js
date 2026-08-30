@@ -321,7 +321,7 @@ function pickRhPosition(open, matchOpts) {
     });
     if (bySide) return bySide;
   }
-  return open[0] || null;
+  return open.length === 1 ? open[0] : null;
 }
 
 async function closeOptionPosition(ticker, contracts, reason, matchOpts) {
