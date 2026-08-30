@@ -8,6 +8,7 @@ var expiryCal = require("./expiryCalendar");
 
 var ONE_SD_TICKERS = ["SPY", "IWM", "QQQ", "SPXW"];
 var ONE_SD_FACTOR = 1 / 0.85; // straddle ≈ 85% of 1 standard deviation
+var MOVE_PROXY = { SPXW: "SPY" }; // Yahoo ^GSPC options chain unavailable — scale SPY implied move
 
 function sessionLabel(date) {
   var d = date;
@@ -103,7 +104,42 @@ function formatHits(hits) {
   }).join("\n");
 }
 
-function computeTickerMoves(ticker) {
+function scaleHorizonFromProxy(h, price) {
+  if (!h || !price) return null;
+  var moveDollars = price * (h.movePct / 100);
+  var scaled = Object.assign({}, h, {
+    moveDollars: moveDollars,
+    price: price,
+    upper: price + moveDollars,
+    lower: price - moveDollars
+  });
+  if (h.oneSdPct) {
+    scaled.oneSdDollars = price * (h.oneSdPct / 100);
+    scaled.oneSdUpper = price + scaled.oneSdDollars;
+    scaled.oneSdLower = price - scaled.oneSdDollars;
+  }
+  return scaled;
+}
+
+function scaleMovesFromProxy(proxyMoves, ticker, price) {
+  if (!proxyMoves || !price) return null;
+  var sessions = (proxyMoves.sessions || []).map(function(s) { return scaleHorizonFromProxy(s, price); }).filter(Boolean);
+  return {
+    ticker: ticker,
+    price: price,
+    refPrice: proxyMoves.refPrice,
+    dayHigh: proxyMoves.dayHigh,
+    dayLow: proxyMoves.dayLow,
+    sessions: sessions,
+    weekly: scaleHorizonFromProxy(proxyMoves.weekly, price),
+    monthly: scaleHorizonFromProxy(proxyMoves.monthly, price),
+    quarterly: scaleHorizonFromProxy(proxyMoves.quarterly, price),
+    hitsToday: proxyMoves.hitsToday || [],
+    proxySource: proxyMoves.ticker
+  };
+}
+
+function computeTickerMovesDirect(ticker) {
   var includeOneSd = ONE_SD_TICKERS.indexOf(ticker) !== -1;
 
   return Promise.all([
@@ -160,6 +196,35 @@ function computeTickerMoves(ticker) {
         quarterly: quarterly,
         hitsToday: hitsToday
       };
+    });
+  });
+}
+
+function computeTickerMoves(ticker) {
+  var proxy = MOVE_PROXY[ticker];
+  if (!proxy) return computeTickerMovesDirect(ticker);
+
+  return computeTickerMovesDirect(proxy).then(function(proxyMoves) {
+    if (!proxyMoves) return null;
+    return Promise.all([
+      yahoo.getUnderlyingPrice(ticker),
+      yahoo.getIntradayBar(ticker)
+    ]).then(function(results) {
+      var price = results[0];
+      var bar = results[1];
+      if (!price) return null;
+      var scaled = scaleMovesFromProxy(proxyMoves, ticker, price);
+      if (!scaled) return null;
+      if (bar) {
+        scaled.refPrice = bar.prevClose || scaled.refPrice;
+        scaled.dayHigh = bar.high;
+        scaled.dayLow = bar.low;
+        scaled.hitsToday = detectHits(
+          scaled.sessions.concat([scaled.weekly, scaled.monthly, scaled.quarterly]),
+          scaled.refPrice, scaled.dayHigh, scaled.dayLow
+        );
+      }
+      return scaled;
     });
   });
 }

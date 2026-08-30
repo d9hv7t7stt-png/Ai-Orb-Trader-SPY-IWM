@@ -150,11 +150,12 @@ function buildDigest(channelCfg) {
 function formatSundayMoves(moves) {
   if (!moves) return "";
   var lines = [];
-  var monday = moves.sessions && moves.sessions[0];
-  if (monday) {
-    lines.push("**Monday** ±$" + monday.moveDollars.toFixed(2) + " (" + monday.movePct.toFixed(2) + "%)");
-    if (monday.oneSdDollars) {
-      lines.push("1σ Mon ±$" + monday.oneSdDollars.toFixed(2) + " (" + monday.oneSdPct.toFixed(2) + "%)");
+  var next = moves.sessions && moves.sessions[0];
+  if (next) {
+    var sessionLabel = next.shortLabel || next.horizon || "Next session";
+    lines.push("**" + sessionLabel + "** ±$" + next.moveDollars.toFixed(2) + " (" + next.movePct.toFixed(2) + "%)");
+    if (next.oneSdDollars) {
+      lines.push("1σ " + sessionLabel + " ±$" + next.oneSdDollars.toFixed(2) + " (" + next.oneSdPct.toFixed(2) + "%)");
     }
   }
   if (moves.weekly) {

@@ -75,7 +75,10 @@ function nextTradingFridayAfter(ymd) {
 
 function fridayOfTradingWeek(todayYmd) {
   var wd = weekdayET(todayYmd);
-  if (wd === "Fri") return nextTradingFridayAfter(todayYmd);
+  if (wd === "Fri") {
+    if (marketCal.isTradingDayET(new Date(todayYmd + "T12:00:00"))) return todayYmd;
+    return nextTradingFridayAfter(todayYmd);
+  }
   if (wd === "Sat" || wd === "Sun") return nextTradingFridayAfter(todayYmd);
   var toFri = { Mon: 4, Tue: 3, Wed: 2, Thu: 1 }[wd];
   var fri = addDaysYmd(todayYmd, toFri);
