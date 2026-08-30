@@ -106,10 +106,9 @@ async function reconcileRhPositions() {
     }
 
     statePos.contracts = qty;
-    stateModule.applyOrderFill(ticker, fill);
-    if (fill.entryPrice > 0 && statePos.entryPrice <= 0) {
-      stateModule.setEntryPrice(ticker, fill.entryPrice);
-    }
+    var meta = { instrumentUrl: fill.instrumentUrl, strike: fill.strike, expiry: fill.expiry };
+    if (!(statePos.entryPrice > 0)) meta.entryPrice = fill.entryPrice;
+    stateModule.applyOrderFill(ticker, meta);
     synced.push(ticker);
   }
 

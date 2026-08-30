@@ -18,9 +18,9 @@ function parseLegKey(key) {
 }
 
 function listLegsForTrade(positions, tradeTicker) {
-  var prefix = tradeTicker + ":";
   return Object.keys(positions || {}).filter(function(k) {
-    return k.indexOf(prefix) === 0 && positions[k] && positions[k].contracts > 0;
+    var parsed = parseLegKey(k);
+    return parsed.tradeTicker === tradeTicker && positions[k] && positions[k].contracts > 0;
   });
 }
 

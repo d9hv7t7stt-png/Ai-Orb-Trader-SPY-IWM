@@ -68,7 +68,9 @@ function etMinutesOfDay() {
     timeZone: "America/New_York", hour12: false, hour: "2-digit", minute: "2-digit"
   });
   var parts = s.split(":");
-  return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
+  var hour = parseInt(parts[0], 10);
+  if (hour === 24) hour = 0; // some engines report midnight as 24:00
+  return hour * 60 + parseInt(parts[1], 10);
 }
 function isEndOfDayWindow() {
   var m = etMinutesOfDay();
