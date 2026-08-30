@@ -136,8 +136,23 @@ test("2026 holidays include Good Friday and Independence Day", function() {
 });
 
 test("weekly expiry is this week's Friday", function() {
+  assert.strictEqual(expiryCal.fridayOfTradingWeek("2026-08-30"), "2026-09-04");
   assert.strictEqual(expiryCal.fridayOfTradingWeek("2026-08-31"), "2026-09-04");
   assert.strictEqual(expiryCal.thirdFriday(2026, 9), "2026-09-18");
+});
+
+test("Yahoo option expiries use UTC date not Eastern (Friday not Thursday)", function() {
+  var friMidnightUtc = Date.UTC(2026, 8, 4, 0, 0, 0) / 1000;
+  assert.strictEqual(yahoo.unixToYmd(friMidnightUtc), "2026-09-04");
+  var shiftedEt = new Date(friMidnightUtc * 1000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  assert.strictEqual(shiftedEt, "2026-09-03", "sanity: ET conversion would wrongly show Thursday");
+});
+
+test("weekly option pick prefers Friday over prior Thursday", function() {
+  var expiries = ["2026-08-31", "2026-09-01", "2026-09-02", "2026-09-03", "2026-09-04", "2026-09-11"];
+  assert.strictEqual(expiryCal.pickWeeklyExpiry(expiries, "2026-08-30"), "2026-09-04");
+  var noFriday = ["2026-08-31", "2026-09-01", "2026-09-02", "2026-09-03", "2026-09-11"];
+  assert.strictEqual(expiryCal.pickWeeklyExpiry(noFriday, "2026-08-30"), "2026-09-03");
 });
 
 test("0DTE is today on a trading day, 1DTE is next session", function() {
@@ -250,6 +265,11 @@ test("Sunday digest header and implied-move levels", function() {
   assert.ok(body.indexOf("Upper EM: $774.22") !== -1);
   assert.ok(body.indexOf("Lower EM: $764.48") !== -1);
   assert.ok(body.indexOf("Weekly Expected Move: 8/31- 9/4 +$8.27 (1.07%)") !== -1);
+  var thuWeek = JSON.parse(JSON.stringify(block));
+  thuWeek.moves.weekly.expiry = "2026-09-03";
+  var thuBody = closeDigest.formatSundayBlock(thuWeek);
+  assert.ok(thuBody.indexOf("Weekly Expected Move: 8/31- 9/4") !== -1, "week end is calendar Friday even if option expiry is Thursday");
+  assert.ok(thuBody.indexOf("9/3") === -1);
   assert.ok(body.indexOf("Upper EM: $777.62") !== -1);
   assert.ok(body.indexOf("Lower EM: $761.08") !== -1);
   assert.ok(body.indexOf("⚡") === -1);

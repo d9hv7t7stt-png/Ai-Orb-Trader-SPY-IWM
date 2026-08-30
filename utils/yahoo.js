@@ -128,7 +128,12 @@ function getChart(ticker, interval, range) {
 }
 
 function unixToYmd(unix) {
-  return new Date(unix * 1000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+  // Yahoo expirationDates are epoch seconds at UTC midnight of the listed day.
+  // America/New_York would shift Friday 00:00 UTC to Thursday evening ET.
+  if (unix == null || unix === "") return "";
+  var d = new Date(Number(unix) * 1000);
+  if (isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 10);
 }
 
 function pickOptionPrice(opt) {
@@ -348,5 +353,6 @@ module.exports = {
   getExpirationDates: getExpirationDates,
   resolveSymbol: resolveSymbol,
   displaySymbol: displaySymbol,
+  unixToYmd: unixToYmd,
   SYMBOLS: SYMBOLS
 };

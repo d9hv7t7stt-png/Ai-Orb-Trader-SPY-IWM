@@ -111,6 +111,8 @@ function quarterlyExpiry(todayYmd) {
 
 function pickWeeklyExpiry(expiries, todayYmd) {
   var target = fridayOfTradingWeek(todayYmd);
+  if (!expiries || !expiries.length) return target;
+  if (expiries.indexOf(target) !== -1) return target;
   return matchClosestExpiry(expiries, target, 3);
 }
 

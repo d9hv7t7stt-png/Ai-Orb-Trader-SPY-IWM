@@ -4,6 +4,7 @@ var yahoo = require("./yahoo");
 var marketCal = require("./marketCalendar");
 var technicals = require("./technicals");
 var expectedMove = require("./expectedMove");
+var expiryCal = require("./expiryCalendar");
 
 var MAIN_WATCHLIST = [
   "SPY", "SPXW", "QQQ", "IWM", "AAPL", "AMZN", "META", "NVDA", "MSFT", "TSLA",
@@ -198,8 +199,10 @@ function formatSundayMoves(moves, price) {
     ));
   }
   if (moves.weekly && moves.weekly.moveDollars) {
-    var start = next && next.expiry ? formatMd(next.expiry) : "";
-    var end = formatMd(moves.weekly.expiry);
+    var startYmd = next && next.expiry ? next.expiry : marketCal.ymdInET(new Date());
+    var start = formatMd(startYmd);
+    var weekEndYmd = expiryCal.fridayOfTradingWeek(startYmd);
+    var end = formatMd(weekEndYmd || moves.weekly.expiry);
     var range = start && end && start !== end ? start + "- " + end : (end || start);
     lines.push(formatSundayMoveSection(
       "Weekly Expected Move",
