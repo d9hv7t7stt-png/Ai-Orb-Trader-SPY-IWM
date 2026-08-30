@@ -368,6 +368,38 @@ async function closeOptionPosition(ticker, contracts, reason, matchOpts) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+async function getOptionOrder(orderId) {
+  return await authedRequest("GET", "/options/orders/" + orderId + "/", null, "json");
+}
+
+async function waitForFillPrice(orderId, instrumentUrl, opts) {
+  opts = opts || {};
+  var maxWait = opts.maxWaitMs || 15000;
+  var interval = opts.intervalMs || 500;
+  var deadline = Date.now() + maxWait;
+  while (Date.now() < deadline) {
+    try {
+      var order = await getOptionOrder(orderId);
+      if (order) {
+        var state = (order.state || "").toLowerCase();
+        var avg = parseFloat(order.average_price || order.price || 0);
+        if (state === "filled" && avg > 0) return avg;
+        if (state === "cancelled" || state === "rejected" || state === "failed") break;
+      }
+    } catch (e) {}
+    await sleep(interval);
+  }
+  if (instrumentUrl) {
+    var positions = await getOpenOptionPositions();
+    var pos = positions.find(function(p) { return p.option === instrumentUrl; });
+    if (pos) {
+      var fromPos = parseFloat(pos.average_price || pos.pending_average_price || 0);
+      if (fromPos > 0) return fromPos;
+    }
+  }
+  return 0;
+}
+
 async function refreshToken(refreshTokenValue) {
   var payload = {
     client_id: "c82SH0WZOsabOXGP2sxqcj34FxkvfnWRZBKlBjFS",
@@ -445,5 +477,6 @@ module.exports = {
   handleVerificationWorkflow, completeWorkflow,
   respondToSmsChallenge, waitForPushApproval,
   getQuote, placeOptionOrder, closeOptionPosition,
+  getOptionOrder, waitForFillPrice,
   getOptionMark, getOptionMarkByUrl, getOpenOptionPositions
 };
