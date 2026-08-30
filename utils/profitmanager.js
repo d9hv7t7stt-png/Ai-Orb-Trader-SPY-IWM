@@ -37,11 +37,8 @@ async function checkCrossEntryStop(ticker, pos, s) {
   var rhPos = reconcile.findRhPosition(rhPositions, ticker, pos);
   var exitPrice = 0;
   if (rhPos) exitPrice = await rh.getOptionMarkByUrl(rhPos.option) || 0;
-  var closed = await trayd.closePartialPosition({ ticker: ticker, contracts: contracts, reason: reason });
-  if (closed && closed.ok === false) {
-    stateModule.logEvent("ORDER_ERROR", ticker + " cross-entry stop RH close failed: " + (closed.error || "no position"));
-    return false;
-  }
+  var closed = await trayd.closeLiveOrLog(ticker, contracts, reason);
+  if (!closed) return false;
   if (exitPrice > 0) {
     pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, exitPrice, contracts);
   } else if (rhPos) {
@@ -132,10 +129,10 @@ async function checkProfitTiers() {
     if (exitlogic.isEndOfDayWindow() && pos.eodSold !== exitlogic.etDateKey()) {
       var eodQty = Math.max(1, Math.floor(contracts * exitlogic.EOD_SELL_FRAC));
       stateModule.logEvent("EOD_SELL", ticker + " 3:45 ET — selling 50% (" + eodQty + "c)");
-      await trayd.closePartialPosition({ ticker: ticker, contracts: eodQty, reason: "EOD 50% (15m before close)" });
+      if (!await trayd.closeLiveOrLog(ticker, eodQty, "EOD 50% (15m before close)")) continue;
       pnlUtil.logTradePnL(ticker, pos.side, entryPrice, optionPrice, eodQty);
+      stateModule.markEodSold(ticker, exitlogic.etDateKey());
       stateModule.reduceContracts(ticker, eodQty);
-      pos.eodSold = exitlogic.etDateKey();
       if (pos.contracts <= 0) { stateModule.closePosition(ticker, "EOD flat"); continue; }
       contracts = pos.contracts;
     }
@@ -150,7 +147,7 @@ async function checkProfitTiers() {
         ? "Trailing stop " + decision.newStopPct + "%"
         : "Initial stop -15%";
       stateModule.logEvent("STOP_OUT", ticker + " " + reason + " @ $" + optionPrice.toFixed(2));
-      await trayd.closePartialPosition({ ticker: ticker, contracts: contracts, reason: reason });
+      if (!await trayd.closeLiveOrLog(ticker, contracts, reason)) continue;
       pnlUtil.logTradePnL(ticker, pos.side, entryPrice, optionPrice, contracts);
       stateModule.closePosition(ticker, reason);
       continue;
@@ -160,7 +157,7 @@ async function checkProfitTiers() {
       var sellQty = Math.max(1, Math.floor(contracts * decision.sellFraction));
       stateModule.logEvent("PROFIT_TIER", ticker + " +" + gainPct.toFixed(1) +
         "% — selling 10% (" + sellQty + "c) @ $" + optionPrice.toFixed(2));
-      await trayd.closePartialPosition({ ticker: ticker, contracts: sellQty, reason: "+" + Math.floor(gainPct) + "% scale-out" });
+      if (!await trayd.closeLiveOrLog(ticker, sellQty, "+" + Math.floor(gainPct) + "% scale-out")) continue;
       pnlUtil.logTradePnL(ticker, pos.side, entryPrice, optionPrice, sellQty);
       stateModule.markProfitTier(ticker, decision.newTier);
       stateModule.reduceContracts(ticker, sellQty);
@@ -170,13 +167,19 @@ async function checkProfitTiers() {
   }
 }
 
+var profitBusy = false;
+
 function startProfitManager() {
   console.log("[PROFIT_MGR] Starting — checks every 30s during market hours (ET)");
   setInterval(async function() {
+    if (profitBusy) return;
+    profitBusy = true;
     try {
       await checkProfitTiers();
     } catch (e) {
       console.log("[PROFIT_MGR_ERROR]", e.message);
+    } finally {
+      profitBusy = false;
     }
   }, 30 * 1000);
 }

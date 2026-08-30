@@ -91,16 +91,40 @@ async function reconcileRhPositions() {
     var fill = fillFromRhPosition(rhPos, mark);
 
     if (!statePos || statePos.stopped) {
-      stateModule.importRhPosition(ticker, side, qty, fill.entryPrice, fill);
+      var meta = {
+        instrumentUrl: fill.instrumentUrl,
+        strike: fill.strike,
+        expiry: fill.expiry
+      };
+      if (statePos) {
+        meta.crossEntry = !!statePos.crossEntry;
+        meta.stopMode = statePos.stopMode || "mid";
+      }
+      if (!meta.crossEntry && ticker === "SPY") {
+        var iwm = stateModule.getPosition("IWM");
+        if (iwm && !iwm.stopped && iwm.side === side) {
+          meta.crossEntry = true;
+          meta.stopMode = side === "call" ? "orb_low" : "orb_high";
+        }
+      }
+      stateModule.importRhPosition(ticker, side, qty, fill.entryPrice, meta);
       stateModule.logEvent("RECONCILE", ticker + " imported RH " + side + " " + qty + "c" +
-        (fill.entryPrice ? " @ $" + fill.entryPrice.toFixed(2) : ""));
+        (fill.entryPrice ? " @ $" + fill.entryPrice.toFixed(2) : "") +
+        (meta.crossEntry ? " (cross-entry stop=" + meta.stopMode + ")" : ""));
       synced.push(ticker);
       continue;
     }
 
     if (statePos.side !== side) {
       stateModule.logEvent("RECONCILE_WARN", ticker + " state=" + statePos.side + " RH=" + side + " — syncing to RH");
-      stateModule.importRhPosition(ticker, side, qty, fill.entryPrice || statePos.entryPrice, fill);
+      var sideMeta = {
+        instrumentUrl: fill.instrumentUrl,
+        strike: fill.strike,
+        expiry: fill.expiry,
+        crossEntry: !!statePos.crossEntry,
+        stopMode: statePos.stopMode || "mid"
+      };
+      stateModule.importRhPosition(ticker, side, qty, fill.entryPrice || statePos.entryPrice, sideMeta);
       synced.push(ticker);
       continue;
     }

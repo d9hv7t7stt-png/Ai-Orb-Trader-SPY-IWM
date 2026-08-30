@@ -70,4 +70,22 @@ async function closePartialPosition(opts) {
   return await rh.closeOptionPosition(opts.ticker, opts.contracts, opts.reason, match);
 }
 
-module.exports = { placeOrder: placeOrder, closePartialPosition: closePartialPosition };
+async function closeLiveOrLog(ticker, contracts, reason) {
+  try {
+    var result = await closePartialPosition({ ticker: ticker, contracts: contracts, reason: reason });
+    if (result && result.ok === false) {
+      stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + (result.error || "no matching position"));
+      return false;
+    }
+    return true;
+  } catch (e) {
+    stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + e.message);
+    return false;
+  }
+}
+
+module.exports = {
+  placeOrder: placeOrder,
+  closePartialPosition: closePartialPosition,
+  closeLiveOrLog: closeLiveOrLog
+};

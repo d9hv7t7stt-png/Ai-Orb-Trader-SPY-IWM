@@ -175,15 +175,46 @@ function loadPnl(file) {
 function createChannel(cfg) {
   var pnlFile = persist.filePath("pnl-" + cfg.id + ".json");
   var pnlStore = loadPnl(pnlFile);
+  var paperFile = persist.filePath("paper-" + cfg.id + ".json");
 
   var account = {
     balance: cfg.startBalance + (pnlStore.allTime || 0),
     startingBalance: cfg.startBalance,
     positions: {},
-    closedToday: [],     // per-play summaries for the daily report
+    closedToday: [],
     wins: 0, losses: 0, totalTrades: 0
   };
-  account.positions = {};
+
+  function loadPaperState() {
+    try {
+      var fs = require("fs");
+      if (!fs.existsSync(paperFile)) return null;
+      return JSON.parse(fs.readFileSync(paperFile, "utf8"));
+    } catch (e) { return null; }
+  }
+  function savePaperState() {
+    try {
+      require("fs").writeFileSync(paperFile, JSON.stringify({
+        date: etISODate(),
+        positions: account.positions,
+        closedToday: account.closedToday,
+        wins: account.wins,
+        losses: account.losses,
+        totalTrades: account.totalTrades
+      }));
+    } catch (e) { console.log("[DISCORD] paper save failed: " + e.message); }
+  }
+  var savedPaper = loadPaperState();
+  if (savedPaper && savedPaper.date === etISODate()) {
+    account.positions = savedPaper.positions || {};
+    account.closedToday = savedPaper.closedToday || [];
+    account.wins = savedPaper.wins || 0;
+    account.losses = savedPaper.losses || 0;
+    account.totalTrades = savedPaper.totalTrades || 0;
+    console.log("[DISCORD][" + cfg.id + "] restored " + Object.keys(account.positions).filter(function(k) {
+      return account.positions[k] && account.positions[k].contracts > 0;
+    }).length + " paper leg(s)");
+  }
 
   function savePnl() { try { require("fs").writeFileSync(pnlFile, JSON.stringify(pnlStore)); } catch (e) { console.log("[DISCORD] pnl save failed: " + e.message); } }
   function realize(amount) {
@@ -192,6 +223,7 @@ function createChannel(cfg) {
     pnlStore.allTime = (pnlStore.allTime || 0) + amount;
     account.balance += amount;
     savePnl();
+    savePaperState();
   }
 
   function footer() { return cfg.name + ": " + formatMoney(account.balance); }
@@ -276,6 +308,7 @@ function createChannel(cfg) {
       moveExitDone: false
     };
     account.positions[key] = pos;
+    savePaperState();
     return { key: key, pos: pos, label: posLabelFromPos(pos), contracts: contracts, price: price };
   }
 
@@ -339,10 +372,13 @@ function createChannel(cfg) {
       var m = await fetchOptionMark(tradeTicker, pos.side, pos.strike, pos.expiry);
       optionPrice = m && m.price ? m.price : pos.lastKnownPrice || pos.entryPrice || 0;
     }
+    if (pos.retestAdded) return;
     var addQty = paperLegs.sizeContracts(account.balance, riskPct(), legFraction(), optionPrice);
     if (addQty < 1) return;
     pos.contracts += addQty;
     pos.totalContracts += addQty;
+    pos.retestAdded = true;
+    savePaperState();
     await send({
       color: 0x4da6ff, title: "➕ RETEST ADD — " + posLabelFromPos(pos),
       description: "Retest adds **0DTE leg only** (+2.5% risk)",
@@ -392,6 +428,7 @@ function createChannel(cfg) {
       recordClose(pos, 0, key);
       account.positions[key] = null;
     }
+    savePaperState();
   }
 
   async function eodSellLeg(key, sellContracts, currentPrice, gainPct) {
@@ -413,6 +450,7 @@ function createChannel(cfg) {
     var totalPnl = salePnl + (pos.realizedPnl || 0);
     var contracts = pos.contracts;
     account.positions[key] = null;
+    savePaperState();
     await send({
       color: 0xff4d6a, title: "🔴 STOP — " + posLabelFromPos(pos),
       fields: [
@@ -424,18 +462,25 @@ function createChannel(cfg) {
     }, true);
   }
 
-  async function expectedMoveExit(signalTicker, optionPrice, timeframe) {
+  async function expectedMoveNotice(signalTicker, optionPrice, timeframe) {
     var tradeTicker = tradeTickerForSignal(signalTicker);
     var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
-    for (var i = 0; i < keys.length; i++) {
-      var pos = account.positions[keys[i]];
-      if (!pos) continue;
-      var qty = Math.floor(pos.contracts * 0.9);
-      if (qty < 1) continue;
-      var price = await resolveLegExitPrice(pos, signalTicker, tradeTicker, optionPrice);
-      await partialExitLeg(keys[i], qty, price,
-        (timeframe || "daily") + " expected move — 90% exit", 3);
-    }
+    var remaining = keys.map(function(k) {
+      var p = account.positions[k];
+      return p ? posLabelFromPos(p) + " · " + p.contracts + "c" : null;
+    }).filter(Boolean).join("\n") || "No paper legs open";
+    await send({
+      color: 0xf5a623,
+      title: "🎯 LIVE EXPECTED MOVE — 90% sold at Robinhood",
+      description: yahoo.displaySymbol(tradeTicker) + " **" + (timeframe || "daily") +
+        "** expected move hit on the live account.\nPaper legs keep autonomous touch-based exits (not trimmed here).",
+      fields: [
+        { name: "Live fill hint", value: "$" + (optionPrice || 0).toFixed(2), inline: true },
+        { name: "Paper legs (unchanged)", value: remaining, inline: false }
+      ],
+      footer: { text: footer() },
+      timestamp: new Date().toISOString()
+    }, true);
   }
 
   async function stop(signalTicker, currentPrice, reason) {
@@ -767,7 +812,10 @@ function createChannel(cfg) {
         var sideLabel = hit === "upper" ? "upper" : "lower";
         await partialExitLeg(key, qty, optPrice,
           "Expected move " + sideLabel + " touch (underlying $" + (snap.price || 0).toFixed(2) + ")", 3);
-        if (account.positions[key]) account.positions[key].moveExitDone = true;
+        if (account.positions[key]) {
+          account.positions[key].moveExitDone = true;
+          savePaperState();
+        }
         console.log("[PAPER][" + cfg.id + "] move exit " + key + " " + sideLabel + " qty=" + qty);
       }
     }
@@ -813,8 +861,10 @@ function createChannel(cfg) {
         var s10 = Math.max(1, Math.floor(pos.contracts * decision.sellFraction));
         await profitTierLeg(key, 1, s10, price, decision.gain);
         if (account.positions[key]) account.positions[key].lastProfitTier = decision.newTier;
+        savePaperState();
       }
     }
+    savePaperState();
   }
 
   return {
@@ -824,7 +874,7 @@ function createChannel(cfg) {
     trades: acceptsSignal,
     entry: entry, add: add, stop: stop, fullClose: fullClose,
     breakeven: breakeven, profitTier: profitTier, eodSell: eodSell,
-    expectedMoveExit: expectedMoveExit,
+    expectedMoveExit: expectedMoveNotice,
     openPositions: openPositions, dailySummary: dailySummary, morning: morning,
     closeDigest: closeDigest, sundayPremarket: sundayPremarket, expectedMoves: expectedMoves,
     pollMoveTargets: pollMoveTargets, pollOptionMarks: pollOptionMarks,
@@ -969,14 +1019,21 @@ function initChannels(getToken) {
   }).join(", "));
   channels.forEach(function(c) { scheduleMorning(c); scheduleUpdates(c); scheduleDaily(c); scheduleCloseDigest(c); scheduleSundayPremarket(c); });
 
+  var moveBusy = false;
+  var markBusy = false;
   setInterval(async function() {
+    if (moveBusy) return;
+    moveBusy = true;
     try {
       if (!paperMarketHours()) return;
       for (var i = 0; i < channels.length; i++) await channels[i].pollMoveTargets();
     } catch (e) { console.log("[PAPER_MOVE_ERROR] " + e.message); }
+    finally { moveBusy = false; }
   }, paperLegs.MONITOR_INTERVAL_MS);
 
   setInterval(async function() {
+    if (markBusy) return;
+    markBusy = true;
     try {
       if (!paperMarketHours()) return;
       var rhAvailable = !!(getToken && getToken());
@@ -985,6 +1042,7 @@ function initChannels(getToken) {
       }
       for (var i = 0; i < channels.length; i++) await channels[i].pollOptionMarks(rhAvailable);
     } catch (e) { console.log("[PAPER_ENGINE_ERROR] " + e.message); }
+    finally { markBusy = false; }
   }, paperLegs.MARK_INTERVAL_MS);
   console.log("[DISCORD] paper engine — move monitor " + (paperLegs.MONITOR_INTERVAL_MS / 1000) + "s · marks " + (paperLegs.MARK_INTERVAL_MS / 1000) + "s");
 }

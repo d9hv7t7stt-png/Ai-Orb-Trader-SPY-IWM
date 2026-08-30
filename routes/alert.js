@@ -44,30 +44,30 @@ async function notifyEntryAfterFill(ticker, side, order, optPrice, orbHigh, orbL
 }
 
 async function closeLiveOrLog(ticker, contracts, reason) {
-  try {
-    var result = await trayd.closePartialPosition({ ticker: ticker, contracts: contracts, reason: reason });
-    if (result && result.ok === false) {
-      stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + (result.error || "no matching position"));
-      return false;
-    }
-    return true;
-  } catch (e) {
-    stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + e.message);
-    return false;
-  }
+  return trayd.closeLiveOrLog(ticker, contracts, reason);
 }
 
 var DEDUP_WINDOW_MS = parseInt(process.env.ORB_DEDUP_MS, 10) || 30000;
 var lastSignal = {};
 var processing = {};
 
-function recentlySeen(ticker, event) {
+function seenAgo(ticker, event) {
   var key = ticker + ":" + event;
   var now = Date.now();
   if (lastSignal[key] && (now - lastSignal[key]) < DEDUP_WINDOW_MS) {
     return (now - lastSignal[key]) || 1;
   }
-  lastSignal[key] = now;
+  return 0;
+}
+
+function markSeen(ticker, event) {
+  lastSignal[ticker + ":" + event] = Date.now();
+}
+
+function recentlySeen(ticker, event) {
+  var ago = seenAgo(ticker, event);
+  if (ago > 0) return ago;
+  markSeen(ticker, event);
   return 0;
 }
 
@@ -88,7 +88,7 @@ async function handleAlert(payload) {
       stateModule.logEvent("DUP_BLOCKED", ticker + " " + event + " ignored — order in progress");
       return { ok: true, deduped: true, message: ticker + " " + event + " ignored (in progress)" };
     }
-    var ago = recentlySeen(ticker, event);
+    var ago = seenAgo(ticker, event);
     if (ago > 0) {
       stateModule.logEvent("DUP_BLOCKED", ticker + " " + event + " ignored — duplicate " + Math.round(ago / 1000) + "s ago");
       return { ok: true, deduped: true, message: ticker + " " + event + " duplicate ignored (" + Math.round(ago / 1000) + "s)" };
@@ -98,7 +98,9 @@ async function handleAlert(payload) {
   }
 
   try {
-    return await processEvent(payload, ticker, event, lockedTickers);
+    var result = await processEvent(payload, ticker, event, lockedTickers);
+    if (guarded && result && result.ok && !result.retryable) markSeen(ticker, event);
+    return result;
   } finally {
     lockedTickers.forEach(function(t) { processing[t] = false; });
   }
@@ -151,7 +153,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var stopEntry1 = pos.entryPrice;
     var stopSide1 = pos.side;
     if (!await closeLiveOrLog(ticker, stopQty1, sl1)) {
-      return { ok: true, message: ticker + " stop skipped — RH close failed" };
+      return { ok: true, retryable: true, message: ticker + " stop skipped — RH close failed" };
     }
     await notify("onStop", [ticker, optPrice || 0, sl1]);
     if (optPrice) pnlUtil.logTradePnL(ticker, stopSide1, stopEntry1, optPrice, stopQty1);
@@ -168,7 +170,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var stopEntry2 = pos.entryPrice;
     var stopSide2 = pos.side;
     if (!await closeLiveOrLog(ticker, stopQty2, sl2)) {
-      return { ok: true, message: ticker + " stop skipped — RH close failed" };
+      return { ok: true, retryable: true, message: ticker + " stop skipped — RH close failed" };
     }
     await notify("onStop", [ticker, optPrice || 0, sl2]);
     if (optPrice) pnlUtil.logTradePnL(ticker, stopSide2, stopEntry2, optPrice, stopQty2);
@@ -186,7 +188,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       var flipEntry1 = pos.entryPrice;
       var flipSide1 = pos.side;
       if (!await closeLiveOrLog(ticker, flipQty1, "ORB breakout flip to long")) {
-        return { ok: true, message: ticker + " flip aborted — RH close failed" };
+        return { ok: true, retryable: true, message: ticker + " flip aborted — RH close failed" };
       }
       await notify("onFullClose", [ticker, optPrice || 0]);
       if (optPrice) pnlUtil.logTradePnL(ticker, flipSide1, flipEntry1, optPrice, flipQty1);
@@ -212,7 +214,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         processing["SPY"] = true; lockedTickers.push("SPY");
         var spyHalf = Math.ceil(s.contracts.SPY / 2);
         stateModule.logEvent("CROSS_ENTRY", "IWM long → SPY call half=" + spyHalf + " stop=SPY ORB low");
-        stateModule.openHalfPosition("SPY", "call", spyHalf, optPrice || 0, { crossEntry: true, stopMode: "orb_low" });
+        stateModule.openHalfPosition("SPY", "call", spyHalf, 0, { crossEntry: true, stopMode: "orb_low" });
         try {
           cross = await placeAndFill("SPY", "call", spyHalf);
           recentlySeen("SPY", "cross_long");
@@ -231,10 +233,11 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       var addQty = pos.totalContracts;
       stateModule.logEvent("RETEST", ticker + " retest add " + addQty + "c");
       try {
-        await placeAndFill(ticker, "call", addQty);
-        stateModule.addSecondHalf(ticker, addQty, optPrice || pos.entryPrice);
+        var addOrder = await placeAndFill(ticker, "call", addQty);
+        stateModule.addSecondHalf(ticker, addQty, (addOrder && addOrder.entryPrice) || optPrice || pos.entryPrice);
       } catch (e) {
         stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
+        return { ok: true, retryable: true, message: ticker + " retest skipped — RH add failed" };
       }
       await notify("onAdd", [ticker, optPrice || 0]);
       return { ok: true, message: ticker + " second half added on retest" };
@@ -253,7 +256,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       var flipEntry2 = pos.entryPrice;
       var flipSide2 = pos.side;
       if (!await closeLiveOrLog(ticker, flipQty2, "ORB breakout flip to short")) {
-        return { ok: true, message: ticker + " flip aborted — RH close failed" };
+        return { ok: true, retryable: true, message: ticker + " flip aborted — RH close failed" };
       }
       await notify("onFullClose", [ticker, optPrice || 0]);
       if (optPrice) pnlUtil.logTradePnL(ticker, flipSide2, flipEntry2, optPrice, flipQty2);
@@ -279,7 +282,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         processing["SPY"] = true; lockedTickers.push("SPY");
         var spyHalf2 = Math.ceil(s.contracts.SPY / 2);
         stateModule.logEvent("CROSS_ENTRY", "IWM short → SPY put half=" + spyHalf2 + " stop=SPY ORB high");
-        stateModule.openHalfPosition("SPY", "put", spyHalf2, optPrice || 0, { crossEntry: true, stopMode: "orb_high" });
+        stateModule.openHalfPosition("SPY", "put", spyHalf2, 0, { crossEntry: true, stopMode: "orb_high" });
         try {
           cross2 = await placeAndFill("SPY", "put", spyHalf2);
           recentlySeen("SPY", "cross_short");
@@ -298,10 +301,11 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       var addQty2 = pos.totalContracts;
       stateModule.logEvent("RETEST", ticker + " retest add " + addQty2 + "c");
       try {
-        await placeAndFill(ticker, "put", addQty2);
-        stateModule.addSecondHalf(ticker, addQty2, optPrice || pos.entryPrice);
+        var addOrder2 = await placeAndFill(ticker, "put", addQty2);
+        stateModule.addSecondHalf(ticker, addQty2, (addOrder2 && addOrder2.entryPrice) || optPrice || pos.entryPrice);
       } catch (e) {
         stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
+        return { ok: true, retryable: true, message: ticker + " retest skipped — RH add failed" };
       }
       await notify("onAdd", [ticker, optPrice || 0]);
       return { ok: true, message: ticker + " second half added on retest" };
@@ -323,10 +327,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var qty90 = Math.floor(pos.contracts * 0.9);
     if (qty90 < 1) return { ok: true, message: ticker + " not enough contracts" };
     stateModule.logEvent("PROFIT_TIER_3", ticker + " " + timeframe + " expected move — selling 90% (" + qty90 + "c)");
-    var closed = await trayd.closePartialPosition({ ticker: ticker, contracts: qty90, reason: timeframe + " expected move 90% exit" });
-    if (closed && closed.ok === false) {
-      stateModule.logEvent("ORDER_ERROR", ticker + " expected move close failed: " + (closed.error || "no RH position"));
-      return { ok: true, message: ticker + " expected move RH close skipped" };
+    var closed = await trayd.closeLiveOrLog(ticker, qty90, timeframe + " expected move 90% exit");
+    if (!closed) {
+      return { ok: true, retryable: true, message: ticker + " expected move RH close skipped" };
     }
     if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, qty90);
     stateModule.reduceContracts(ticker, qty90);

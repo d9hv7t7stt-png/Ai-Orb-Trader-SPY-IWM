@@ -120,10 +120,18 @@ function openHalfPosition(ticker, side, contracts, entryPrice, meta) {
 function addSecondHalf(ticker, contracts, fillPrice) {
   var pos = state.positions[ticker];
   if (!pos || pos.fullIn) return;
-  pos.contracts += contracts;
+  var add = Math.max(0, parseFloat(contracts) || 0);
+  var newPx = parseFloat(fillPrice) || 0;
+  if (pos.entryPrice > 0 && newPx > 0 && pos.contracts > 0 && add > 0) {
+    pos.entryPrice = (pos.entryPrice * pos.contracts + newPx * add) / (pos.contracts + add);
+  } else if (newPx > 0) {
+    pos.entryPrice = newPx;
+  }
+  pos.contracts += add;
   pos.fullIn = true;
   pos.halfIn = false;
-  logEvent("POSITION_ADD", ticker + " +half +" + contracts + "c @ $" + fillPrice + " total=" + pos.contracts);
+  logEvent("POSITION_ADD", ticker + " +half +" + add + "c @ $" + fillPrice + " total=" + pos.contracts +
+    (pos.entryPrice ? " avg=$" + pos.entryPrice.toFixed(2) : ""));
   savePersistedState();
 }
 
@@ -204,11 +212,15 @@ function getTradeSizing(ticker) {
   return getTradeSizingFromTotal(state.contracts[ticker] || 1);
 }
 
-function inferPositionPhase(ticker, qty) {
-  var half = getTradeSizing(ticker).halfEntry;
+function phaseFromQty(qty, halfEntry) {
   var q = Math.max(1, Math.floor(parseFloat(qty) || 1));
+  var half = Math.max(1, parseInt(halfEntry, 10) || 1);
   var isFull = q > half;
   return { halfIn: !isFull, fullIn: isFull, contracts: q, totalContracts: half };
+}
+
+function inferPositionPhase(ticker, qty) {
+  return phaseFromQty(qty, getTradeSizing(ticker).halfEntry);
 }
 
 function importRhPosition(ticker, side, qty, entryPrice, meta) {
@@ -240,11 +252,20 @@ function importRhPosition(ticker, side, qty, entryPrice, meta) {
 function syncPositionQty(ticker, qty) {
   var pos = state.positions[ticker];
   if (!pos || pos.stopped) return;
-  var phase = inferPositionPhase(ticker, qty);
-  pos.contracts = phase.contracts;
-  pos.halfIn = phase.halfIn;
-  pos.fullIn = phase.fullIn;
-  pos.totalContracts = phase.totalContracts;
+  var q = Math.max(0, Math.floor(parseFloat(qty) || 0));
+  pos.contracts = q;
+  var half = getTradeSizing(ticker).halfEntry;
+  if (q > half) {
+    pos.fullIn = true;
+    pos.halfIn = false;
+  }
+  savePersistedState();
+}
+
+function markEodSold(ticker, dateKey) {
+  var pos = state.positions[ticker];
+  if (!pos) return;
+  pos.eodSold = dateKey;
   savePersistedState();
 }
 
@@ -271,9 +292,11 @@ module.exports = {
   setContractSize: setContractSize,
   getTradeSizing: getTradeSizing,
   getTradeSizingFromTotal: getTradeSizingFromTotal,
+  phaseFromQty: phaseFromQty,
   inferPositionPhase: inferPositionPhase,
   importRhPosition: importRhPosition,
   syncPositionQty: syncPositionQty,
+  markEodSold: markEodSold,
   logEvent: logEvent,
   etDateKey: etDateKey
 };
