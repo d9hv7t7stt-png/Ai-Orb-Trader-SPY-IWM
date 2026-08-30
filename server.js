@@ -239,19 +239,28 @@ app.get("/test/discord/summary/:channel", async (req, res) => {
   }
 });
 
-app.post("/webhook", async (req, res) => {
+app.post("/webhook", (req, res) => {
   console.log("[WEBHOOK]", JSON.stringify(req.body));
-  if (!rh.getToken()) {
-    var ok = await ensureLoggedIn();
-    if (!ok) return res.status(403).json({ error: "Not connected to Robinhood" });
-  }
-  try {
-    const result = await handleAlert(req.body);
-    res.json(result);
-  } catch (err) {
-    console.error("[ERROR]", err.message);
-    res.status(500).json({ error: err.message });
-  }
+  // TradingView times out in ~3s. Breakouts await Robinhood orders + Discord
+  // entry pricing and can take 10s+ when auth retries — respond immediately so
+  // TV marks delivery successful, then process in the background.
+  res.status(200).json({ ok: true, accepted: true });
+
+  setImmediate(async function() {
+    try {
+      if (!rh.getToken()) {
+        var ok = await ensureLoggedIn();
+        if (!ok) {
+          console.error("[WEBHOOK_ASYNC] Not connected to Robinhood — signal dropped");
+          return;
+        }
+      }
+      var result = await handleAlert(req.body);
+      console.log("[WEBHOOK_DONE]", JSON.stringify(result));
+    } catch (err) {
+      console.error("[WEBHOOK_ASYNC_ERROR]", err.message);
+    }
+  });
 });
 
 app.get("*", (req, res) => {
