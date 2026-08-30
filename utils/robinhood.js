@@ -391,11 +391,30 @@ async function getOptionMarkByUrl(instrumentUrl) {
   return p && !isNaN(p) ? p : null;
 }
 
+var _authCache = { at: 0, result: null };
+
+async function checkAuthStatus() {
+  if (!_token) return { ok: false, reason: "no_token" };
+  var now = Date.now();
+  if (_authCache.result && (now - _authCache.at) < 60000) return _authCache.result;
+  var acct = process.env.RH_ACCOUNT_NUMBER;
+  var path = acct ? "/accounts/" + acct + "/" : "/accounts/";
+  var r = await rawRequest("GET", path, null, _token);
+  var result = isAuthError(r) ? { ok: false, reason: "token_rejected" } : { ok: true };
+  _authCache = { at: now, result: result };
+  return result;
+}
+
+async function getOpenOptionPositions() {
+  var res = await authedRequest("GET", "/options/positions/?nonzero=true", null, "json");
+  return (res && res.results) ? res.results : [];
+}
+
 module.exports = {
   login, setToken, getToken, setDeviceToken, refreshToken,
-  getStoredRefreshToken, reauthorize,
+  getStoredRefreshToken, reauthorize, checkAuthStatus,
   handleVerificationWorkflow, completeWorkflow,
   respondToSmsChallenge, waitForPushApproval,
   getQuote, placeOptionOrder, closeOptionPosition,
-  getOptionMark, getOptionMarkByUrl
+  getOptionMark, getOptionMarkByUrl, getOpenOptionPositions
 };

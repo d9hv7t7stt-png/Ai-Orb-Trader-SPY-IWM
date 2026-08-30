@@ -10,9 +10,42 @@
 
 const https = require("https");
 const rh = require("./robinhood");
+const yahoo = require("./yahoo");
 const expiryUtil = require("./expiry");
 const exitlogic = require("./exitlogic");
 const persist = require("./persist");
+
+function etTimeLabel() {
+  return new Date().toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET";
+}
+
+function paperMarketHours() {
+  return exitlogic.isRegularMarketHours();
+}
+
+// Resolve underlying price for ATM strike: webhook close → Robinhood → Yahoo.
+async function resolveUnderlying(ticker, underlying) {
+  var v = underlying ? parseFloat(underlying) : NaN;
+  if (!isNaN(v) && v > 0) return v;
+  try {
+    var u = await rh.getQuote(ticker);
+    if (u && u > 0) return u;
+  } catch (e) {}
+  try {
+    var y = await yahoo.getUnderlyingPrice(ticker);
+    if (y && y > 0) return y;
+  } catch (e) {}
+  return null;
+}
+
+async function fetchOptionMark(ticker, side, strike, expiry) {
+  try {
+    return await rh.getOptionMark(ticker, side, strike, expiry);
+  } catch (e) {
+    console.log("[PAPER] option mark failed " + ticker + " " + strike + ": " + e.message);
+    return null;
+  }
+}
 
 // ── low-level + format helpers ──────────────────────────────────────────────
 async function httpPost(url, data) {
@@ -37,11 +70,6 @@ function formatMoney(n) {
 }
 function formatPct(n) { return (n >= 0 ? "+" : "") + n.toFixed(1) + "%"; }
 function etISODate() { return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }); }
-function paperMarketHours() {
-  var now = new Date();
-  var utcTotal = now.getUTCHours() * 60 + now.getUTCMinutes();
-  return utcTotal >= 13 * 60 + 30 && utcTotal <= 20 * 60; // 9:30–16:00 ET
-}
 
 // ── morning themes ──────────────────────────────────────────────────────────
 function morningMessages(theme, name) {
@@ -57,7 +85,7 @@ function morningMessages(theme, name) {
         description: "Half an hour to go. The best traders wait for *their* setup — they don't chase.\n\nIWM 0DTE moves fast. We stay calm and let the plan come to us. 🧘",
         footer: "Free alerts • Trade at your own risk." },
       5:  { color: 0xff8c00, content: "@everyone", title: "⚡ 5 Minutes — Lock In",
-        description: "Almost showtime. Deep breath. Today is a fresh opportunity to get a little better. 🔥",
+        description: "Almost showtime. Alerts fire on **5m bar close** — not wicks. Deep breath. 🔥",
         footer: "Free alerts • Trade at your own risk." },
       1:  { color: 0x00e5a0, content: "@everyone", title: "🚀 60 SECONDS — Let's Work",
         description: "Here we go. Stay focused, stay disciplined, and let the setups come. Good luck today, everyone. 💚",
@@ -137,15 +165,20 @@ function createChannel(cfg) {
   function chanExpiry(ticker) { return (cfg.dte === null || cfg.dte === undefined) ? expiryUtil.getExpiry(ticker) : expiryUtil.getExpiryForDTE(cfg.dte); }
   function chanDTELabel(ticker) { return (cfg.dte === null || cfg.dte === undefined) ? expiryUtil.getDTELabel(ticker) : (cfg.dte + "DTE"); }
 
-  async function send(embed) {
+  async function send(embed, pingEveryone) {
     if (!cfg.webhook) return;
-    try { await httpPost(cfg.webhook, { content: "@everyone", allowed_mentions: { parse: ["everyone"] }, embeds: [embed] }); }
-    catch (err) { console.log("[DISCORD_ERROR][" + cfg.id + "] " + err.message); }
+    var content = pingEveryone ? "@everyone" : null;
+    var mentions = pingEveryone ? { parse: ["everyone"] } : { parse: [] };
+    try {
+      await httpPost(cfg.webhook, { content: content, allowed_mentions: mentions, embeds: [embed] });
+    } catch (err) { console.log("[DISCORD_ERROR][" + cfg.id + "] " + err.message); }
   }
-  async function sendRaw(content, embed) {
+  async function sendRaw(content, embed, pingEveryone) {
     if (!cfg.webhook) return;
-    try { await httpPost(cfg.webhook, { content: content, allowed_mentions: { parse: ["everyone"] }, embeds: [embed] }); }
-    catch (err) { console.log("[DISCORD_ERROR][" + cfg.id + "] " + err.message); }
+    var mentions = pingEveryone ? { parse: ["everyone"] } : { parse: [] };
+    try {
+      await httpPost(cfg.webhook, { content: content, allowed_mentions: mentions, embeds: [embed] });
+    } catch (err) { console.log("[DISCORD_ERROR][" + cfg.id + "] " + err.message); }
   }
 
   function recordClose(ticker, pos, finalSalePnl) {
@@ -160,22 +193,29 @@ function createChannel(cfg) {
   async function entry(ticker, side, optionPrice, orbHigh, orbLow, underlying) {
     var contracts = cfg.contracts;
     var expiry = chanExpiry(ticker);
-    var strike = underlying ? Math.round(parseFloat(underlying)) : null;
-    if (!strike) { try { var u = await rh.getQuote(ticker); if (u) strike = Math.round(u); } catch (e) {} }
+    var und = await resolveUnderlying(ticker, underlying);
+    var strike = und ? Math.round(und) : null;
     var instrumentUrl = null;
     var price = optionPrice && optionPrice > 0 ? parseFloat(optionPrice) : null;
     if (strike) {
-      try {
-        var m = await rh.getOptionMark(ticker, side, strike, expiry);
-        if (m) { instrumentUrl = m.instrument; if (!price && m.price) price = m.price; if (m.strike) strike = m.strike; if (m.expiry) expiry = m.expiry; }
-      } catch (e) { console.log("[PAPER][" + cfg.id + "] entry price fetch failed: " + e.message); }
+      var m = await fetchOptionMark(ticker, side, strike, expiry);
+      if (m) {
+        instrumentUrl = m.instrument;
+        if (!price && m.price) price = m.price;
+        if (m.strike) strike = m.strike;
+        if (m.expiry) expiry = m.expiry;
+      } else {
+        console.log("[PAPER][" + cfg.id + "] entry: strike=" + strike + " but no option mark — will retry on poll");
+      }
+    } else {
+      console.log("[PAPER][" + cfg.id + "] entry: could not resolve underlying for " + ticker);
     }
     if (!price) price = 0;
 
     var posValue = price * contracts * 100;
     var stop = (((parseFloat(orbHigh) || 0) + (parseFloat(orbLow) || 0)) / 2).toFixed(2);
     var label = expiryUtil.contractLabel(ticker, side, strike, expiry);
-    var emoji = side === "call" ? "🟢" : "🔴";
+    var dirLabel = side === "call" ? "LONG" : "SHORT";
     var color = side === "call" ? 0x00e5a0 : 0xff4d6a;
 
     account.positions[ticker] = {
@@ -187,18 +227,19 @@ function createChannel(cfg) {
     };
 
     await send({
-      color: color, title: emoji + " ENTRY — " + label,
+      color: color, title: (side === "call" ? "🟢" : "🔴") + " " + dirLabel + " ENTRY — " + label,
+      description: "Signal at " + etTimeLabel() + " · 5m bar close confirmed",
       fields: [
-        { name: "Contract", value: label + "  (" + chanDTELabel(ticker) + ")", inline: false },
+        { name: "Contract", value: label + " (" + chanDTELabel(ticker) + ")", inline: false },
         { name: "Contracts", value: String(contracts), inline: true },
-        { name: "Entry Price", value: price > 0 ? "$" + price.toFixed(2) : "pending…", inline: true },
+        { name: "Entry Price", value: price > 0 ? "$" + price.toFixed(2) : "Resolving…", inline: true },
         { name: "Position Value", value: price > 0 ? formatMoney(posValue) : "—", inline: true },
         { name: "ORB High", value: "$" + (parseFloat(orbHigh) || 0).toFixed(2), inline: true },
         { name: "ORB Low",  value: "$" + (parseFloat(orbLow) || 0).toFixed(2),  inline: true },
         { name: "Stop (Mid)", value: "$" + stop, inline: true }
       ],
       footer: { text: footer() }, timestamp: new Date().toISOString()
-    });
+    }, true);
   }
 
   async function add(ticker, optionPrice) {
@@ -215,7 +256,7 @@ function createChannel(cfg) {
         { name: "Avg Entry", value: "$" + avgEntry, inline: true }
       ],
       footer: { text: footer() }, timestamp: new Date().toISOString()
-    });
+    }, false);
   }
 
   async function breakeven(ticker) {
@@ -228,7 +269,7 @@ function createChannel(cfg) {
         { name: "Status", value: "Gains protected ✅", inline: true }
       ],
       footer: { text: footer() }, timestamp: new Date().toISOString()
-    });
+    }, true);
   }
 
   async function eodSell(ticker, sellContracts, currentPrice, gainPct) {
@@ -246,7 +287,7 @@ function createChannel(cfg) {
         { name: "Reason", value: "15 min before close", inline: true }
       ],
       footer: { text: footer() }, timestamp: new Date().toISOString()
-    });
+    }, true);
     if (pos.contracts <= 0) { recordClose(ticker, pos, 0); account.positions[ticker] = null; }
   }
 
@@ -254,9 +295,9 @@ function createChannel(cfg) {
     var pos = account.positions[ticker]; if (!pos) return;
     var tierPnl = sellContracts * (currentPrice - pos.entryPrice) * 100;
     pos.realizedPnl += tierPnl; pos.contracts -= sellContracts; realize(tierPnl);
-    var emoji = tierNum === 1 ? "💰" : tierNum === 2 ? "💰💰" : "🎯";
-    var title = tierNum === 3 ? emoji + " EXPECTED MOVE HIT — " + posLabel(ticker, pos)
-                              : emoji + " PROFIT TIER — " + posLabel(ticker, pos);
+    var title = tierNum === 3 ? "🎯 EXPECTED MOVE — " + posLabel(ticker, pos)
+      : tierNum === 2 ? "💰💰 +100% RUNNER TRIM — " + posLabel(ticker, pos)
+      : "💰 +" + Math.floor(gainPct) + "% TIER — Sold 10% — " + posLabel(ticker, pos);
     await send({
       color: 0xf5a623, title: title,
       fields: [
@@ -267,7 +308,7 @@ function createChannel(cfg) {
         { name: "Realized P&L", value: formatMoney(pos.realizedPnl), inline: true }
       ],
       footer: { text: footer() }, timestamp: new Date().toISOString()
-    });
+    }, true);
   }
 
   async function stop(ticker, currentPrice, reason) {
@@ -279,15 +320,18 @@ function createChannel(cfg) {
     recordClose(ticker, pos, salelPnl);
     var totalPnl = salelPnl + (pos.realizedPnl || 0);
     account.positions[ticker] = null;
+    var stopTitle = reason.indexOf("Trailing") !== -1 ? "📉 TRAILING STOP"
+      : reason.indexOf("Mid") !== -1 || reason.indexOf("mid") !== -1 ? "🛑 ORB STOP"
+      : "🔴 STOP OUT";
     await send({
-      color: 0xff4d6a, title: "🔴 " + reason.toUpperCase() + " — " + posLabel(ticker, pos),
+      color: 0xff4d6a, title: stopTitle + " — " + posLabel(ticker, pos),
       fields: [
         { name: "Closed", value: pos.contracts + "c @ $" + currentPrice.toFixed(2), inline: true },
         { name: "Total P&L", value: formatMoney(totalPnl) + " (" + formatPct(pct) + ")", inline: true },
         { name: "Reason", value: reason, inline: true }
       ],
       footer: { text: footer() }, timestamp: new Date().toISOString()
-    });
+    }, true);
   }
 
   async function fullClose(ticker, currentPrice) {
@@ -307,7 +351,7 @@ function createChannel(cfg) {
         { name: "Account", value: formatMoney(account.balance), inline: true }
       ],
       footer: { text: footer() }, timestamp: new Date().toISOString()
-    });
+    }, true);
   }
 
   function unrealized() {
@@ -351,9 +395,10 @@ function createChannel(cfg) {
     });
     if (!tradeLines) tradeLines = "No closed trades today";
 
+    var dayLabel = w.daily >= 0 ? "GREEN DAY" : "RED DAY";
     await send({
       color: color,
-      title: emoji + " DAILY P&L SUMMARY — " + new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+      title: emoji + " " + dayLabel + " " + formatMoney(w.daily) + " — Daily Summary",
       fields: [
         { name: "Trades", value: tradeLines, inline: false },
         { name: "Net Profit (Today)", value: formatMoney(w.daily) + " (" + formatPct(dailyPct) + ")", inline: false },
@@ -366,9 +411,9 @@ function createChannel(cfg) {
       ],
       footer: { text: cfg.name + " | Starting Balance: " + formatMoney(account.startingBalance) },
       timestamp: new Date().toISOString()
-    });
+    }, true);
 
-    account.closedToday = [];   // reset day's trade list (P&L history persists)
+    account.closedToday = [];
   }
 
   async function openPositions(label) {
@@ -377,30 +422,64 @@ function createChannel(cfg) {
     var fields = entries.map(function(e) {
       var ticker = e[0], pos = e[1];
       var cur = pos.lastKnownPrice || pos.entryPrice;
+      var pending = cur <= 0;
+      if (pending) cur = 0;
       var pnl = (cur - pos.entryPrice) * pos.contracts * 100;
       var pct = pos.entryPrice > 0 ? ((cur - pos.entryPrice) / pos.entryPrice * 100).toFixed(1) : "0.0";
-      var pnlStr = (pnl >= 0 ? "+" : "") + "$" + Math.abs(pnl).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      var pnlStr = pending ? "⚠️ Price feed delayed" : (pnl >= 0 ? "+" : "") + "$" + Math.abs(pnl).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
       return { name: posLabel(ticker, pos),
-        value: "Entry: $" + pos.entryPrice.toFixed(2) + "\nCurrent: $" + cur.toFixed(2) + "\nMax: $" + (pos.maxPrice || pos.entryPrice).toFixed(2) + "\nP&L: " + pnlStr + " (" + (pnl >= 0 ? "+" : "") + pct + "%)\nContracts: " + pos.contracts, inline: true };
+        value: "Entry: $" + pos.entryPrice.toFixed(2) + "\nCurrent: $" + (pending ? "—" : cur.toFixed(2)) + "\nMax: $" + (pos.maxPrice || pos.entryPrice).toFixed(2) + "\nP&L: " + pnlStr + (pending ? "" : " (" + (pnl >= 0 ? "+" : "") + pct + "%)") + "\nContracts: " + pos.contracts, inline: true };
     });
-    await send({ color: 0x4da6ff, title: "📋 " + label + " — " + cfg.name + " Open Positions", fields: fields, footer: { text: footer() }, timestamp: new Date().toISOString() });
+    await send({
+      color: 0x4da6ff,
+      title: "📊 " + cfg.name + " · " + label + " Update",
+      fields: fields,
+      footer: { text: footer() },
+      timestamp: new Date().toISOString()
+    }, false);
   }
 
   async function morning(minutesBefore) {
     var msg = morningMessages(cfg.theme, cfg.name)[minutesBefore];
     if (!msg || !cfg.webhook) return;
-    await sendRaw(msg.content || null, { color: msg.color, title: msg.title, description: msg.description, footer: { text: msg.footer }, timestamp: new Date().toISOString() });
+    var ping = !!msg.content;
+    await sendRaw(msg.content || null, { color: msg.color, title: msg.title, description: msg.description, footer: { text: msg.footer }, timestamp: new Date().toISOString() }, ping);
     if (minutesBefore === 45) await openPositions("Pre-Market 45 Min");
   }
 
   function updateLastKnownPrice(ticker, price) { if (account.positions[ticker] && price) account.positions[ticker].lastKnownPrice = price; }
 
-  async function pollPosition(ticker) {
+  async function pollPosition(ticker, rhAvailable) {
     var pos = account.positions[ticker]; if (!pos) return;
+
+    // Backfill strike/instrument for positions opened without webhook `close`.
+    if (!pos.strike) {
+      var und = await resolveUnderlying(ticker, null);
+      if (und) pos.strike = Math.round(und);
+    }
+    if (pos.strike && !pos.instrumentUrl && rhAvailable) {
+      var resolved = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
+      if (resolved) {
+        pos.instrumentUrl = resolved.instrument;
+        if (resolved.expiry) pos.expiry = resolved.expiry;
+        if (resolved.strike) pos.strike = resolved.strike;
+      }
+    }
+
+    if (!rhAvailable) return;
+
     var price = null;
     try {
       if (pos.instrumentUrl) price = await rh.getOptionMarkByUrl(pos.instrumentUrl);
-      if ((!price || price <= 0) && pos.strike) { var m = await rh.getOptionMark(ticker, pos.side, pos.strike, pos.expiry); if (m) { price = m.price; if (!pos.instrumentUrl) pos.instrumentUrl = m.instrument; } }
+      if ((!price || price <= 0) && pos.strike) {
+        var m = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
+        if (m) {
+          price = m.price;
+          if (!pos.instrumentUrl) pos.instrumentUrl = m.instrument;
+          if (m.expiry) pos.expiry = m.expiry;
+          if (m.strike) pos.strike = m.strike;
+        }
+      }
     } catch (e) { console.log("[PAPER_ENGINE][" + cfg.id + "] price " + ticker + ": " + e.message); }
     if (!price || price <= 0) return;
 
@@ -499,10 +578,14 @@ function initChannels(getToken) {
   setInterval(async function() {
     try {
       if (!paperMarketHours()) return;
-      if (getToken && !getToken()) return;
+      var rhAvailable = !!(getToken && getToken());
+      if (!rhAvailable) {
+        // Still backfill strikes from Yahoo so position labels aren't "?".
+        try { await rh.reauthorize(); rhAvailable = !!(getToken && getToken()); } catch (e) {}
+      }
       for (var i = 0; i < channels.length; i++) {
         var c = channels[i];
-        for (var j = 0; j < c.cfg.tickers.length; j++) { await c.pollPosition(c.cfg.tickers[j]); }
+        for (var j = 0; j < c.cfg.tickers.length; j++) { await c.pollPosition(c.cfg.tickers[j], rhAvailable); }
       }
     } catch (e) { console.log("[PAPER_ENGINE_ERROR] " + e.message); }
   }, 30 * 1000);
