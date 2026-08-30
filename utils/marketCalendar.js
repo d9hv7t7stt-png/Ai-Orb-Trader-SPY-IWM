@@ -130,13 +130,7 @@ function getYearHolidays(year) {
 function isMarketClosedET(date) {
   var ymd = ymdInET(date);
   var year = parseInt(ymd.slice(0, 4), 10);
-  var holidays = getYearHolidays(year);
-  if (holidays.closed[ymd]) return true;
-  // Dec 31 closure may be keyed under the following calendar year build.
-  if (holidays.closed[ymd] === undefined && ymd.slice(5) === "12-31") {
-    return !!getYearHolidays(year + 1).closed[ymd];
-  }
-  return false;
+  return !!getYearHolidays(year).closed[ymd];
 }
 
 function isWeekendET(date) {
