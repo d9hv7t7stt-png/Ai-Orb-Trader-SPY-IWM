@@ -34,18 +34,14 @@ async function placeAndFill(ticker, side, contracts) {
   return order;
 }
 
-async function notifyEntryAfterFill(ticker, side, order, optPrice, orbHigh, orbLow, close, opts) {
+async function notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close, opts) {
   var und = await underlyingForNotify(ticker, close);
   var useWebhookPrice = !(opts && opts.ignoreWebhookPrice);
-  var fillPrice = (order && order.entryPrice > 0) ? order.entryPrice : (useWebhookPrice ? (optPrice || 0) : 0);
-  var args = [ticker, side, fillPrice, orbHigh, orbLow, und];
+  var paperPrice = useWebhookPrice ? (optPrice || 0) : 0;
+  var args = [ticker, side, paperPrice, orbHigh, orbLow, und];
   if (opts) args.push(opts);
-  return await notify("onEntry", args);
-}
-
-async function notifyPaperEntry(ticker, side, order, optPrice, orbHigh, orbLow, close, opts) {
-  var opened = await notifyEntryAfterFill(ticker, side, order, optPrice, orbHigh, orbLow, close, opts);
-  if (!opened) await notify("onAdd", [ticker, optPrice || 0]);
+  var opened = await notify("onEntry", args);
+  if (!opened) await notify("onAdd", [ticker, paperPrice]);
   return opened;
 }
 
@@ -147,19 +143,18 @@ async function tryIwmCrossEntry(side, spyOrbHigh, spyOrbLow, s, lockedTickers) {
 }
 
 async function notifyPaperAndMaybeLiveEntry(ticker, side, half, total, optPrice, orbHigh, orbLow, close, s, lockedTickers) {
+  await notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close);
   var livePos = stateModule.getPosition(ticker);
   var liveFlat = !livePos || livePos.stopped;
   var order = null;
   if (liveFlat) {
     order = await tryLiveHalfEntry(ticker, side, half, total, optPrice);
   }
-  await notifyPaperEntry(ticker, side, order, optPrice, orbHigh, orbLow, close);
   var cross = null;
   if (ticker === "IWM") {
-    cross = await tryIwmCrossEntry(side, s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, s, lockedTickers);
-    await notifyEntryAfterFill("SPY", side, cross, null,
-      s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, null,
+    await notifyPaperEntry("SPY", side, null, s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, null,
       { channelIds: ["spy0dte"], ignoreWebhookPrice: true });
+    cross = await tryIwmCrossEntry(side, s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, s, lockedTickers);
   }
   return { order: order, cross: cross, paper: true, live: !!order };
 }
@@ -204,19 +199,20 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
   if (event === "stop_long" || event === "stop_short") {
     var wantSide = event === "stop_long" ? "call" : "put";
-    var sl = pos ? stopLabel(pos) : "ORB Midpoint";
-    stateModule.logEvent("STOP_LOSS", ticker + " " + sl + " stop hit");
-    await notify("onStop", [ticker, optPrice || 0, sl]);
+    var slPaper = "ORB Midpoint";
+    var slLive = pos ? stopLabel(pos) : slPaper;
+    stateModule.logEvent("STOP_LOSS", ticker + " " + slLive + " stop hit");
+    await notify("onStop", [ticker, optPrice || 0, slPaper]);
     if (!pos || pos.stopped || pos.side !== wantSide) {
       return { ok: true, message: ticker + " paper stop sent (no matching live position)" };
     }
     var stopQty = pos.contracts;
     var stopEntry = pos.entryPrice;
     var stopSide = pos.side;
-    var liveClosed = await closeLiveOrLog(ticker, stopQty, sl);
+    var liveClosed = await closeLiveOrLog(ticker, stopQty, slLive);
     if (liveClosed) {
       if (optPrice) pnlUtil.logTradePnL(ticker, stopSide, stopEntry, optPrice, stopQty);
-      stateModule.closePosition(ticker, sl);
+      stateModule.closePosition(ticker, slLive);
     }
     return {
       ok: true,
