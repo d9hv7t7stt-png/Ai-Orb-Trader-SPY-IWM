@@ -36,10 +36,25 @@ async function placeAndFill(ticker, side, contracts) {
 
 async function notifyEntryAfterFill(ticker, side, order, optPrice, orbHigh, orbLow, close, opts) {
   var und = await underlyingForNotify(ticker, close);
-  var fillPrice = (order && order.entryPrice > 0) ? order.entryPrice : (optPrice || 0);
+  var useWebhookPrice = !(opts && opts.ignoreWebhookPrice);
+  var fillPrice = (order && order.entryPrice > 0) ? order.entryPrice : (useWebhookPrice ? (optPrice || 0) : 0);
   var args = [ticker, side, fillPrice, orbHigh, orbLow, und];
   if (opts) args.push(opts);
   await notify("onEntry", args);
+}
+
+async function closeLiveOrLog(ticker, contracts, reason) {
+  try {
+    var result = await trayd.closePartialPosition({ ticker: ticker, contracts: contracts, reason: reason });
+    if (result && result.ok === false) {
+      stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + (result.error || "no matching position"));
+      return false;
+    }
+    return true;
+  } catch (e) {
+    stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + e.message);
+    return false;
+  }
 }
 
 var DEDUP_WINDOW_MS = parseInt(process.env.ORB_DEDUP_MS, 10) || 30000;
@@ -132,13 +147,14 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     if (pos.side !== "call") return { ok: true, message: ticker + " position is not a call" };
     var sl1 = stopLabel(pos);
     stateModule.logEvent("STOP_LOSS", ticker + " " + sl1 + " stop hit — closing long");
-    await notify("onStop", [ticker, optPrice || 0, sl1]);
-    try {
-      await trayd.closePartialPosition({ ticker: ticker, contracts: pos.contracts, reason: sl1 });
-    } catch (e) {
-      stateModule.logEvent("ORDER_ERROR", ticker + " stop_long close failed: " + e.message);
+    var stopQty1 = pos.contracts;
+    var stopEntry1 = pos.entryPrice;
+    var stopSide1 = pos.side;
+    if (!await closeLiveOrLog(ticker, stopQty1, sl1)) {
+      return { ok: true, message: ticker + " stop skipped — RH close failed" };
     }
-    if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, pos.contracts);
+    await notify("onStop", [ticker, optPrice || 0, sl1]);
+    if (optPrice) pnlUtil.logTradePnL(ticker, stopSide1, stopEntry1, optPrice, stopQty1);
     stateModule.closePosition(ticker, sl1);
     return { ok: true, message: ticker + " long stopped" };
   }
@@ -148,13 +164,14 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     if (pos.side !== "put") return { ok: true, message: ticker + " position is not a put" };
     var sl2 = stopLabel(pos);
     stateModule.logEvent("STOP_LOSS", ticker + " " + sl2 + " stop hit — closing short");
-    await notify("onStop", [ticker, optPrice || 0, sl2]);
-    try {
-      await trayd.closePartialPosition({ ticker: ticker, contracts: pos.contracts, reason: sl2 });
-    } catch (e) {
-      stateModule.logEvent("ORDER_ERROR", ticker + " stop_short close failed: " + e.message);
+    var stopQty2 = pos.contracts;
+    var stopEntry2 = pos.entryPrice;
+    var stopSide2 = pos.side;
+    if (!await closeLiveOrLog(ticker, stopQty2, sl2)) {
+      return { ok: true, message: ticker + " stop skipped — RH close failed" };
     }
-    if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, pos.contracts);
+    await notify("onStop", [ticker, optPrice || 0, sl2]);
+    if (optPrice) pnlUtil.logTradePnL(ticker, stopSide2, stopEntry2, optPrice, stopQty2);
     stateModule.closePosition(ticker, sl2);
     return { ok: true, message: ticker + " short stopped" };
   }
@@ -165,9 +182,14 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
     if (pos && !pos.stopped && pos.side === "put") {
       stateModule.logEvent("FLIP", ticker + " breakout long — closing put first");
+      var flipQty1 = pos.contracts;
+      var flipEntry1 = pos.entryPrice;
+      var flipSide1 = pos.side;
+      if (!await closeLiveOrLog(ticker, flipQty1, "ORB breakout flip to long")) {
+        return { ok: true, message: ticker + " flip aborted — RH close failed" };
+      }
       await notify("onFullClose", [ticker, optPrice || 0]);
-      await trayd.closePartialPosition({ ticker: ticker, contracts: pos.contracts, reason: "ORB breakout flip to long" });
-      if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, pos.contracts);
+      if (optPrice) pnlUtil.logTradePnL(ticker, flipSide1, flipEntry1, optPrice, flipQty1);
       stateModule.closePosition(ticker, "flip to long");
       pos = null;
     }
@@ -198,9 +220,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
           stateModule.closePosition("SPY", "cross entry failed");
           stateModule.logEvent("CROSS_ERROR", "SPY cross entry failed: " + e.message);
         }
-        await notifyEntryAfterFill("SPY", "call", cross, optPrice,
+        await notifyEntryAfterFill("SPY", "call", cross, null,
           s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, null,
-          { channelIds: ["spy0dte"] });
+          { channelIds: ["spy0dte"], ignoreWebhookPrice: true });
       }
       return { ok: true, entry: order || null, cross: cross, paper: !order };
     }
@@ -227,9 +249,14 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
     if (pos && !pos.stopped && pos.side === "call") {
       stateModule.logEvent("FLIP", ticker + " breakout short — closing call first");
+      var flipQty2 = pos.contracts;
+      var flipEntry2 = pos.entryPrice;
+      var flipSide2 = pos.side;
+      if (!await closeLiveOrLog(ticker, flipQty2, "ORB breakout flip to short")) {
+        return { ok: true, message: ticker + " flip aborted — RH close failed" };
+      }
       await notify("onFullClose", [ticker, optPrice || 0]);
-      await trayd.closePartialPosition({ ticker: ticker, contracts: pos.contracts, reason: "ORB breakout flip to short" });
-      if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, pos.contracts);
+      if (optPrice) pnlUtil.logTradePnL(ticker, flipSide2, flipEntry2, optPrice, flipQty2);
       stateModule.closePosition(ticker, "flip to short");
       pos = null;
     }
@@ -260,9 +287,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
           stateModule.closePosition("SPY", "cross entry failed");
           stateModule.logEvent("CROSS_ERROR", "SPY cross entry failed: " + e.message);
         }
-        await notifyEntryAfterFill("SPY", "put", cross2, optPrice,
+        await notifyEntryAfterFill("SPY", "put", cross2, null,
           s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, null,
-          { channelIds: ["spy0dte"] });
+          { channelIds: ["spy0dte"], ignoreWebhookPrice: true });
       }
       return { ok: true, entry: order2 || null, cross: cross2, paper: !order2 };
     }
