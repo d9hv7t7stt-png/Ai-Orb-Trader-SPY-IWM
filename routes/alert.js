@@ -28,6 +28,12 @@ async function orbLevelsFor(ticker, payloadHigh, payloadLow) {
   return { high: payloadHigh || 0, low: payloadLow || 0 };
 }
 
+async function placeAndFill(ticker, side, contracts) {
+  var order = await trayd.placeOrder({ ticker: ticker, side: side, contracts: contracts });
+  stateModule.applyOrderFill(ticker, order);
+  return order;
+}
+
 var DEDUP_WINDOW_MS = parseInt(process.env.ORB_DEDUP_MS, 10) || 30000;
 var lastSignal = {};
 var processing = {};
@@ -160,12 +166,12 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
     if (!pos || pos.stopped) {
       stateModule.logEvent("ENTRY", ticker + " call @ breakout_long half=" + half + "/" + total);
-      stateModule.openHalfPosition(ticker, "call", half, optPrice || close || 0);
+      stateModule.openHalfPosition(ticker, "call", half, optPrice || 0);
       var und = await underlyingForNotify(ticker, close);
       await notify("onEntry", [ticker, "call", optPrice || 0, orbHigh, orbLow, und]);
       var order;
       try {
-        order = await trayd.placeOrder({ ticker: ticker, side: "call", contracts: half });
+        order = await placeAndFill(ticker, "call", half);
       } catch (e) {
         stateModule.closePosition(ticker, "entry order failed");
         stateModule.logEvent("ORDER_ERROR", ticker + " breakout_long failed: " + e.message);
@@ -179,11 +185,11 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         recentlySeen("SPY", "breakout_long");
         var spyHalf = Math.ceil(s.contracts.SPY / 2);
         stateModule.logEvent("CROSS_ENTRY", "IWM long → SPY call half=" + spyHalf + " stop=SPY ORB low");
-        stateModule.openHalfPosition("SPY", "call", spyHalf, optPrice || close || 0, { crossEntry: true, stopMode: "orb_low" });
+        stateModule.openHalfPosition("SPY", "call", spyHalf, optPrice || 0, { crossEntry: true, stopMode: "orb_low" });
         var spyUnd = await underlyingForNotify("SPY", null);
         await notify("onEntry", ["SPY", "call", 0, s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, spyUnd]);
         try {
-          cross = await trayd.placeOrder({ ticker: "SPY", side: "call", contracts: spyHalf });
+          cross = await placeAndFill("SPY", "call", spyHalf);
         } catch (e) {
           stateModule.closePosition("SPY", "cross entry failed");
           stateModule.logEvent("CROSS_ERROR", "SPY cross entry failed: " + e.message);
@@ -195,9 +201,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     if (pos.halfIn && !pos.stopped) {
       var addQty = pos.totalContracts;
       stateModule.logEvent("RETEST", ticker + " retest add " + addQty + "c");
-      stateModule.addSecondHalf(ticker, addQty, optPrice || close || pos.entryPrice);
+      stateModule.addSecondHalf(ticker, addQty, optPrice || pos.entryPrice);
       try {
-        await trayd.placeOrder({ ticker: ticker, side: "call", contracts: addQty });
+        await placeAndFill(ticker, "call", addQty);
       } catch (e) {
         stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
       }
@@ -223,12 +229,12 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
     if (!pos || pos.stopped) {
       stateModule.logEvent("ENTRY", ticker + " put @ breakout_short half=" + half2 + "/" + total2);
-      stateModule.openHalfPosition(ticker, "put", half2, optPrice || close || 0);
+      stateModule.openHalfPosition(ticker, "put", half2, optPrice || 0);
       var und2 = await underlyingForNotify(ticker, close);
       await notify("onEntry", [ticker, "put", optPrice || 0, orbHigh, orbLow, und2]);
       var order2;
       try {
-        order2 = await trayd.placeOrder({ ticker: ticker, side: "put", contracts: half2 });
+        order2 = await placeAndFill(ticker, "put", half2);
       } catch (e) {
         stateModule.closePosition(ticker, "entry order failed");
         stateModule.logEvent("ORDER_ERROR", ticker + " breakout_short failed: " + e.message);
@@ -242,11 +248,11 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         recentlySeen("SPY", "breakout_short");
         var spyHalf2 = Math.ceil(s.contracts.SPY / 2);
         stateModule.logEvent("CROSS_ENTRY", "IWM short → SPY put half=" + spyHalf2 + " stop=SPY ORB high");
-        stateModule.openHalfPosition("SPY", "put", spyHalf2, optPrice || close || 0, { crossEntry: true, stopMode: "orb_high" });
+        stateModule.openHalfPosition("SPY", "put", spyHalf2, optPrice || 0, { crossEntry: true, stopMode: "orb_high" });
         var spyUnd2 = await underlyingForNotify("SPY", null);
         await notify("onEntry", ["SPY", "put", 0, s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, spyUnd2]);
         try {
-          cross2 = await trayd.placeOrder({ ticker: "SPY", side: "put", contracts: spyHalf2 });
+          cross2 = await placeAndFill("SPY", "put", spyHalf2);
         } catch (e) {
           stateModule.closePosition("SPY", "cross entry failed");
           stateModule.logEvent("CROSS_ERROR", "SPY cross entry failed: " + e.message);
@@ -258,9 +264,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     if (pos.halfIn && !pos.stopped) {
       var addQty2 = pos.totalContracts;
       stateModule.logEvent("RETEST", ticker + " retest add " + addQty2 + "c");
-      stateModule.addSecondHalf(ticker, addQty2, optPrice || close || pos.entryPrice);
+      stateModule.addSecondHalf(ticker, addQty2, optPrice || pos.entryPrice);
       try {
-        await trayd.placeOrder({ ticker: ticker, side: "put", contracts: addQty2 });
+        await placeAndFill(ticker, "put", addQty2);
       } catch (e) {
         stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
       }

@@ -7,6 +7,7 @@ var trayd = require("./trayd");
 var rh = require("./robinhood");
 var yahoo = require("./yahoo");
 var pnlUtil = require("./pnl");
+var reconcile = require("./reconcile");
 
 async function checkCrossEntryStop(ticker, pos, s) {
   if (!pos.crossEntry || !pos.stopMode || pos.stopMode === "mid") return false;
@@ -52,14 +53,25 @@ async function checkProfitTiers() {
 
     if (await checkCrossEntryStop(ticker, pos, s)) continue;
 
-    if (pos.entryPrice <= 0) continue;
-
-    var rhPos = rhPositions.find(function(p) {
-      return p.chain_symbol === ticker && parseFloat(p.quantity) > 0;
-    });
-    if (!rhPos) {
-      console.log("[PROFIT_MGR] No RH position found for " + ticker);
+    pos = await reconcile.backfillEntryFromRh(ticker, pos, rhPositions);
+    if (!pos || pos.entryPrice <= 0) {
+      console.log("[PROFIT_MGR] " + ticker + " waiting for entry price backfill");
       continue;
+    }
+
+    var rhPos = reconcile.findRhPosition(rhPositions, ticker, pos);
+    if (!rhPos) {
+      console.log("[PROFIT_MGR] No RH position found for " + ticker + " " + pos.side);
+      continue;
+    }
+
+    if (Math.floor(parseFloat(rhPos.quantity)) !== pos.contracts) {
+      pos.contracts = Math.max(1, Math.floor(parseFloat(rhPos.quantity)));
+      stateModule.applyOrderFill(ticker, {
+        instrumentUrl: rhPos.option,
+        strike: rhPos.strike_price,
+        expiry: rhPos.expiration_date
+      });
     }
 
     var optionPrice = await rh.getOptionMarkByUrl(rhPos.option);
@@ -84,7 +96,7 @@ async function checkProfitTiers() {
       stateModule.logEvent("EOD_SELL", ticker + " 3:45 ET — selling 50% (" + eodQty + "c)");
       await trayd.closePartialPosition({ ticker: ticker, contracts: eodQty, reason: "EOD 50% (15m before close)" });
       pnlUtil.logTradePnL(ticker, pos.side, entryPrice, optionPrice, eodQty);
-      pos.contracts -= eodQty;
+      stateModule.reduceContracts(ticker, eodQty);
       pos.eodSold = exitlogic.etDateKey();
       if (pos.contracts <= 0) { stateModule.closePosition(ticker, "EOD flat"); continue; }
       contracts = pos.contracts;
@@ -113,6 +125,9 @@ async function checkProfitTiers() {
       await trayd.closePartialPosition({ ticker: ticker, contracts: sellQty, reason: "+" + Math.floor(gainPct) + "% scale-out" });
       pnlUtil.logTradePnL(ticker, pos.side, entryPrice, optionPrice, sellQty);
       stateModule.markProfitTier(ticker, decision.newTier);
+      stateModule.reduceContracts(ticker, sellQty);
+      pos = stateModule.getPosition(ticker);
+      if (!pos || pos.contracts <= 0) stateModule.closePosition(ticker, "scaled out");
     }
   }
 }
@@ -128,4 +143,4 @@ function startProfitManager() {
   }, 30 * 1000);
 }
 
-module.exports = { startProfitManager: startProfitManager };
+module.exports = { startProfitManager: startProfitManager, checkProfitTiers: checkProfitTiers };

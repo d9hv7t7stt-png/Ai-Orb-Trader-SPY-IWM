@@ -37,7 +37,8 @@ function filePath(name) {
 }
 
 function isDurable() {
-  return !!process.env.RAILWAY_VOLUME_MOUNT_PATH && dataDir() === process.env.RAILWAY_VOLUME_MOUNT_PATH;
+  var dir = dataDir();
+  return dir === process.env.RAILWAY_VOLUME_MOUNT_PATH || dir === "/data";
 }
 
 module.exports = { dataDir, filePath, isDurable };

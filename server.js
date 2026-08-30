@@ -16,6 +16,8 @@ const settings = require("./utils/settings");
 const yahoo = require("./utils/yahoo");
 const pnlUtil = require("./utils/pnl");
 const authguard = require("./utils/authguard");
+const persist = require("./utils/persist");
+const reconcile = require("./utils/reconcile");
 
 process.on("unhandledRejection", (err) => {
   console.error("[UNHANDLED_REJECTION]", err && err.message ? err.message : err);
@@ -39,7 +41,8 @@ app.get("/health", async (req, res) => {
     time: new Date().toISOString(),
     auth: auth.status,
     verified: auth.verified,
-    pending_verification: auth.pending
+    pending_verification: auth.pending,
+    durable: persist.isDurable()
   });
 });
 
@@ -83,6 +86,7 @@ app.get("/api/state", authguard.requireSecret, async (req, res) => {
   s.auth = await getAuthInfo();
   s.dte = settings.getAll().dte;
   s.webhook_secret_required = !!authguard.getSecret();
+  s.durable = persist.isDurable();
   res.json(s);
 });
 
@@ -233,6 +237,13 @@ app.listen(PORT, async () => {
   console.log("ORB server listening on port " + PORT);
   if (authguard.getSecret()) console.log("[AUTH] Webhook/API secret enabled");
   await ensureLoggedIn();
+  try {
+    var recon = await reconcile.reconcileRhPositions();
+    if (recon.ok) console.log("[RECONCILE] synced tickers: " + (recon.synced.join(", ") || "none"));
+    else console.log("[RECONCILE] skipped: " + (recon.reason || "unknown"));
+  } catch (e) {
+    console.log("[RECONCILE_ERROR]", e.message);
+  }
   scheduleDailyReauth();
   discord.initChannels(rh.getToken.bind(rh));
   profitManager.startProfitManager();
