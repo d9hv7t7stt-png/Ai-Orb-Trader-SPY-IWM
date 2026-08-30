@@ -253,6 +253,7 @@ if (authguard.allowTestRoutes()) {
       if (type === "summary") await discord.postDailySummary();
       if (type === "expected") await discord.postExpectedMoves();
       if (type === "digest" || type === "close") await discord.postCloseDigest();
+      if (type === "sunday") await discord.postSundayPremarket();
       if (type === "positions") await discord.postOpenPositions("Test");
       if (type === "entry") await discord.postEntry("SPY", "call", 2.40, 757.50, 754.25);
       if (type === "stop") await discord.postStopLoss("SPY", 1.80, "Stop Loss — ORB Midpoint");

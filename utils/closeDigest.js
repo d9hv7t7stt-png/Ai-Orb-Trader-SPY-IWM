@@ -147,9 +147,65 @@ function buildDigest(channelCfg) {
   });
 }
 
+function formatSundayMoves(moves) {
+  if (!moves) return "";
+  var lines = [];
+  var monday = moves.sessions && moves.sessions[0];
+  if (monday) {
+    lines.push("**Monday** ±$" + monday.moveDollars.toFixed(2) + " (" + monday.movePct.toFixed(2) + "%)");
+    if (monday.oneSdDollars) {
+      lines.push("1σ Mon ±$" + monday.oneSdDollars.toFixed(2) + " (" + monday.oneSdPct.toFixed(2) + "%)");
+    }
+  }
+  if (moves.weekly) {
+    lines.push("**This week** ±$" + moves.weekly.moveDollars.toFixed(2) + " (" + moves.weekly.movePct.toFixed(2) + "%)");
+  }
+  return lines.join("\n");
+}
+
+function formatSundayBlock(block) {
+  var lines = [];
+  if (block.snap) lines.push(technicals.formatCompact(block.snap));
+  var mv = formatSundayMoves(block.moves);
+  if (mv) lines.push(mv);
+  return lines.join("\n\n") || "—";
+}
+
+function buildSundayPremarket() {
+  var tickers = MAIN_WATCHLIST.slice();
+  var movePlan = { nextSession: true, session2: false, weekly: true, monthly: false, quarterly: false };
+
+  return technicals.getSnapshots(tickers).then(function(snaps) {
+    var snapMap = {};
+    snaps.forEach(function(s) { snapMap[s.ticker] = s; snapMap[s.display] = s; });
+
+    return expectedMove.computePlannedMoves(tickers, movePlan).then(function(moveData) {
+      var movesMap = {};
+      (moveData.tickers || []).forEach(function(m) { movesMap[m.ticker] = m; });
+
+      var blocks = tickers.map(function(t) {
+        return {
+          ticker: t,
+          snap: snapMap[t] || snapMap[yahoo.displaySymbol(t)] || null,
+          moves: movesMap[t] || null
+        };
+      });
+
+      return {
+        sessionLabel: moveData.sessionLabel,
+        blocks: blocks,
+        computedAt: new Date().toISOString()
+      };
+    });
+  });
+}
+
 module.exports = {
   MAIN_WATCHLIST: MAIN_WATCHLIST,
   buildPlan: buildPlan,
   buildDigest: buildDigest,
-  formatMovesBlock: formatMovesBlock
+  buildSundayPremarket: buildSundayPremarket,
+  formatMovesBlock: formatMovesBlock,
+  formatSundayBlock: formatSundayBlock,
+  formatSundayMoves: formatSundayMoves
 };
