@@ -230,19 +230,25 @@ function formatSundayBlock(block) {
   return lines.join("\n\n") || "—";
 }
 
-function buildSundayPremarket() {
-  var tickers = MAIN_WATCHLIST.slice();
+function sundayTickersForChannel(channelCfg) {
+  if (channelCfg && channelCfg.id === "main") return MAIN_WATCHLIST.slice();
+  var tickers = (channelCfg && channelCfg.tickers) || [];
+  return tickers.length ? tickers.slice() : MAIN_WATCHLIST.slice();
+}
+
+function buildSundayPremarket(tickers) {
+  var list = tickers && tickers.length ? tickers.slice() : MAIN_WATCHLIST.slice();
   var movePlan = { nextSession: true, session2: false, weekly: true, monthly: false, quarterly: false };
 
-  return technicals.getSnapshots(tickers).then(function(snaps) {
+  return technicals.getSnapshots(list).then(function(snaps) {
     var snapMap = {};
     snaps.forEach(function(s) { snapMap[s.ticker] = s; snapMap[s.display] = s; });
 
-    return expectedMove.computePlannedMoves(tickers, movePlan).then(function(moveData) {
+    return expectedMove.computePlannedMoves(list, movePlan).then(function(moveData) {
       var movesMap = {};
       (moveData.tickers || []).forEach(function(m) { movesMap[m.ticker] = m; });
 
-      var blocks = tickers.map(function(t) {
+      var blocks = list.map(function(t) {
         return {
           ticker: t,
           snap: snapMap[t] || snapMap[yahoo.displaySymbol(t)] || null,
@@ -263,6 +269,7 @@ module.exports = {
   MAIN_WATCHLIST: MAIN_WATCHLIST,
   buildPlan: buildPlan,
   buildDigest: buildDigest,
+  sundayTickersForChannel: sundayTickersForChannel,
   buildSundayPremarket: buildSundayPremarket,
   formatMovesBlock: formatMovesBlock,
   formatSundayBlock: formatSundayBlock,
