@@ -8,6 +8,7 @@ var expiryCal = require("../utils/expiryCalendar");
 var expiryUtil = require("../utils/expiry");
 var authguard = require("../utils/authguard");
 var yahoo = require("../utils/yahoo");
+var closeDigest = require("../utils/closeDigest");
 
 var passed = 0;
 function test(name, fn) {
@@ -219,6 +220,41 @@ test("fill price ignores limit and uses processed_premium / executions", functio
 test("ET interval aligns to Eastern clock boundaries", function() {
   var ms = exitlogic.msUntilNextETInterval(15);
   assert.ok(ms > 0 && ms <= 15 * 60 * 1000);
+});
+
+test("Sunday digest header and implied-move levels", function() {
+  var block = {
+    ticker: "SPY",
+    snap: {
+      display: "SPY",
+      close: 769.35,
+      changePct: -0.23,
+      ema21: 764.90,
+      sma55: 753.15,
+      distEma21Pct: 0.58,
+      distSma55Pct: 2.15,
+      trend: "above both"
+    },
+    moves: {
+      price: 769.35,
+      sessions: [{ expiry: "2026-08-31", moveDollars: 4.87, movePct: 0.63, price: 769.35 }],
+      weekly: { expiry: "2026-09-04", moveDollars: 8.27, movePct: 1.07, price: 769.35 }
+    }
+  };
+  assert.strictEqual(closeDigest.formatSundayHeader(block), "$SPY: $769.35 (-0.23%)");
+  var body = closeDigest.formatSundayBlock(block);
+  assert.ok(body.indexOf("21 EMA $764.90 (+0.58%)") !== -1);
+  assert.ok(body.indexOf("55 SMA $753.15 (+2.15%)") !== -1);
+  assert.ok(body.indexOf("Trend: above both") !== -1);
+  assert.ok(body.indexOf("Daily Expected Move: 8/31 +$4.87 (0.63%)") !== -1);
+  assert.ok(body.indexOf("Upper EM: $774.22") !== -1);
+  assert.ok(body.indexOf("Lower EM: $764.48") !== -1);
+  assert.ok(body.indexOf("Weekly Expected Move: 8/31- 9/4 +$8.27 (1.07%)") !== -1);
+  assert.ok(body.indexOf("Upper EM: $777.62") !== -1);
+  assert.ok(body.indexOf("Lower EM: $761.08") !== -1);
+  assert.ok(body.indexOf("⚡") === -1);
+  var spyIdx = body.indexOf("$SPY:");
+  assert.ok(spyIdx === -1, "ticker header lives in the field name, not the body");
 });
 
 if (process.exitCode) {

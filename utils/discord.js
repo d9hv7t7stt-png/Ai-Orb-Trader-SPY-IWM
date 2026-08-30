@@ -676,11 +676,11 @@ function createChannel(cfg) {
     var data = await closeDigestUtil.buildSundayPremarket();
     var fields = data.blocks.map(function(b) {
       return {
-        name: yahoo.displaySymbol(b.ticker),
-        value: closeDigestUtil.formatSundayBlock(b),
+        name: closeDigestUtil.formatSundayHeader(b),
+        value: closeDigestUtil.formatSundayBlock(b) + "\n\u200b",
         inline: false
       };
-    }).filter(function(f) { return f.value !== "—"; });
+    }).filter(function(f) { return f.value.replace("\n\u200b", "") !== "—"; });
 
     if (!fields.length) {
       console.log("[DISCORD][" + cfg.id + "] Sunday premarket skipped — no data");

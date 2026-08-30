@@ -147,27 +147,82 @@ function buildDigest(channelCfg) {
   });
 }
 
-function formatSundayMoves(moves) {
-  if (!moves) return "";
-  var lines = [];
-  var next = moves.sessions && moves.sessions[0];
-  if (next) {
-    var sessionLabel = next.shortLabel || next.horizon || "Next session";
-    lines.push("**" + sessionLabel + "** ±$" + next.moveDollars.toFixed(2) + " (" + next.movePct.toFixed(2) + "%)");
-    if (next.oneSdDollars) {
-      lines.push("1σ " + sessionLabel + " ±$" + next.oneSdDollars.toFixed(2) + " (" + next.oneSdPct.toFixed(2) + "%)");
-    }
-  }
-  if (moves.weekly) {
-    lines.push("**This week** ±$" + moves.weekly.moveDollars.toFixed(2) + " (" + moves.weekly.movePct.toFixed(2) + "%)");
+function formatMd(ymd) {
+  if (!ymd || String(ymd).indexOf("-") === -1) return ymd || "";
+  var parts = String(ymd).split("-");
+  return parseInt(parts[1], 10) + "/" + parseInt(parts[2], 10);
+}
+
+function signedPct(n) {
+  return (n >= 0 ? "+" : "") + n.toFixed(2) + "%";
+}
+
+function sundayPrice(block) {
+  if (block && block.snap && block.snap.close) return block.snap.close;
+  if (block && block.moves && block.moves.price) return block.moves.price;
+  var next = block && block.moves && block.moves.sessions && block.moves.sessions[0];
+  if (next && next.price) return next.price;
+  return null;
+}
+
+function formatSundayHeader(block) {
+  var display = yahoo.displaySymbol(block.ticker);
+  var price = sundayPrice(block);
+  if (price == null) return "$" + display;
+  var chg = block.snap ? signedPct(block.snap.changePct) : "";
+  return "$" + display + ": $" + price.toFixed(2) + (chg ? " (" + chg + ")" : "");
+}
+
+function formatSundayMoveSection(label, dateText, moveDollars, movePct, price) {
+  var lines = [
+    label + ": " + dateText + " +$" + moveDollars.toFixed(2) + " (" + movePct.toFixed(2) + "%)"
+  ];
+  if (price != null && moveDollars) {
+    lines.push("Upper EM: $" + (price + moveDollars).toFixed(2));
+    lines.push("Lower EM: $" + (price - moveDollars).toFixed(2));
   }
   return lines.join("\n");
 }
 
+function formatSundayMoves(moves, price) {
+  if (!moves) return "";
+  var lines = [];
+  var next = moves.sessions && moves.sessions[0];
+  if (next && next.moveDollars) {
+    lines.push(formatSundayMoveSection(
+      "Daily Expected Move",
+      formatMd(next.expiry),
+      next.moveDollars,
+      next.movePct,
+      price != null ? price : next.price
+    ));
+  }
+  if (moves.weekly && moves.weekly.moveDollars) {
+    var start = next && next.expiry ? formatMd(next.expiry) : "";
+    var end = formatMd(moves.weekly.expiry);
+    var range = start && end && start !== end ? start + "- " + end : (end || start);
+    lines.push(formatSundayMoveSection(
+      "Weekly Expected Move",
+      range,
+      moves.weekly.moveDollars,
+      moves.weekly.movePct,
+      price != null ? price : moves.weekly.price
+    ));
+  }
+  return lines.join("\n\n");
+}
+
+function formatSundaySnap(snap) {
+  if (!snap) return "";
+  return "21 EMA $" + snap.ema21.toFixed(2) + " (" + signedPct(snap.distEma21Pct) + ")\n"
+    + "55 SMA $" + snap.sma55.toFixed(2) + " (" + signedPct(snap.distSma55Pct) + ")\n\n"
+    + "Trend: " + snap.trend;
+}
+
 function formatSundayBlock(block) {
   var lines = [];
-  if (block.snap) lines.push(technicals.formatCompact(block.snap));
-  var mv = formatSundayMoves(block.moves);
+  if (block.snap) lines.push(formatSundaySnap(block.snap));
+  var mv = formatSundayMoves(block.moves, sundayPrice(block));
   if (mv) lines.push(mv);
   return lines.join("\n\n") || "—";
 }
@@ -208,5 +263,6 @@ module.exports = {
   buildSundayPremarket: buildSundayPremarket,
   formatMovesBlock: formatMovesBlock,
   formatSundayBlock: formatSundayBlock,
+  formatSundayHeader: formatSundayHeader,
   formatSundayMoves: formatSundayMoves
 };
