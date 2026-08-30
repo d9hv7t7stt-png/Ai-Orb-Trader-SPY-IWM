@@ -60,6 +60,10 @@ function fetchOptionsChain(ticker, dateUnix, retry) {
 }
 
 function getUnderlyingPrice(ticker) {
+  return getQuoteSnapshot(ticker).then(function(s) { return s ? s.price : null; });
+}
+
+function getQuoteSnapshot(ticker) {
   var symbol = SYMBOLS[ticker] || ticker;
   return new Promise(function(resolve) {
     var options = {
@@ -74,8 +78,11 @@ function getUnderlyingPrice(ticker) {
         try {
           var parsed = JSON.parse(raw);
           var meta = parsed.chart && parsed.chart.result && parsed.chart.result[0] && parsed.chart.result[0].meta;
-          var price = meta ? (meta.regularMarketPrice || meta.previousClose || null) : null;
-          resolve(price ? parseFloat(price) : null);
+          if (!meta) return resolve(null);
+          var price = parseFloat(meta.regularMarketPrice || meta.previousClose || 0) || null;
+          var prev = parseFloat(meta.chartPreviousClose || meta.previousClose || price) || price;
+          if (!price) return resolve(null);
+          resolve({ price: price, prev_close: prev });
         } catch (e) { resolve(null); }
       });
     });
@@ -174,6 +181,7 @@ function parseOptionMark(result, optionType, wantStrike, expiryYmd) {
 
 module.exports = {
   getUnderlyingPrice: getUnderlyingPrice,
+  getQuoteSnapshot: getQuoteSnapshot,
   getChart: getChart,
   getOptionMark: getOptionMark,
   SYMBOLS: SYMBOLS

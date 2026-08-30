@@ -36,13 +36,17 @@ app.get("/icon.svg", (req, res) => {
 
 app.get("/health", async (req, res) => {
   var auth = await getAuthInfo();
+  var s = getState();
+  var lastAuthErr = (s.log || []).find(function(e) { return e.type === "AUTH_ERROR"; });
   res.json({
     status: "running",
     time: new Date().toISOString(),
     auth: auth.status,
     verified: auth.verified,
     pending_verification: auth.pending,
-    durable: persist.isDurable()
+    durable: persist.isDurable(),
+    webhook_url: ((req.get("x-forwarded-proto") || req.protocol) + "://" + req.get("host") + "/webhook"),
+    auth_hint: lastAuthErr ? lastAuthErr.message : null
   });
 });
 
@@ -115,8 +119,9 @@ app.get("/api/prices", authguard.requireSecret, async (req, res) => {
     var tickers = { SPY: "SPY", IWM: "IWM", QQQ: "QQQ", SPX: "^GSPC" };
     var results = await Promise.all(Object.entries(tickers).map(async function(entry) {
       var display = entry[0];
-      var price = await yahoo.getUnderlyingPrice(display);
-      return [display, { price: price, prev_close: price }];
+      var snap = await yahoo.getQuoteSnapshot(display);
+      if (!snap) return [display, { price: null, prev_close: null }];
+      return [display, { price: snap.price, prev_close: snap.prev_close }];
     }));
     res.json({ prices: Object.fromEntries(results) });
   } catch (e) {
