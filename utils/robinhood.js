@@ -372,6 +372,21 @@ async function getOptionOrder(orderId) {
   return await authedRequest("GET", "/options/orders/" + orderId + "/", null, "json");
 }
 
+function fillPriceFromOrder(order) {
+  if (!order) return 0;
+  var premium = parseFloat(order.processed_premium || order.average_price || 0);
+  if (premium > 0) return premium;
+  var legs = order.legs || [];
+  for (var i = 0; i < legs.length; i++) {
+    var ex = legs[i].executions || [];
+    for (var j = 0; j < ex.length; j++) {
+      var p = parseFloat(ex[j].price || 0);
+      if (p > 0) return p;
+    }
+  }
+  return 0;
+}
+
 async function waitForFillPrice(orderId, instrumentUrl, opts) {
   opts = opts || {};
   var maxWait = opts.maxWaitMs || 15000;
@@ -382,7 +397,7 @@ async function waitForFillPrice(orderId, instrumentUrl, opts) {
       var order = await getOptionOrder(orderId);
       if (order) {
         var state = (order.state || "").toLowerCase();
-        var avg = parseFloat(order.average_price || order.price || 0);
+        var avg = fillPriceFromOrder(order);
         if (state === "filled" && avg > 0) return avg;
         if (state === "cancelled" || state === "rejected" || state === "failed") break;
       }
@@ -477,6 +492,6 @@ module.exports = {
   handleVerificationWorkflow, completeWorkflow,
   respondToSmsChallenge, waitForPushApproval,
   getQuote, placeOptionOrder, closeOptionPosition,
-  getOptionOrder, waitForFillPrice,
+  getOptionOrder, waitForFillPrice, fillPriceFromOrder,
   getOptionMark, getOptionMarkByUrl, getOpenOptionPositions
 };

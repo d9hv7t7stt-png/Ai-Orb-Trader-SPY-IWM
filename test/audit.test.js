@@ -159,27 +159,61 @@ test("authguard is off without WEBHOOK_SECRET", function() {
 
 test("trade sizing preview matches live half+half", function() {
   var state = require("../utils/state");
-  var sz = state.getTradeSizing("SPY");
-  assert.ok(sz.halfEntry >= 1);
-  assert.strictEqual(sz.retestAdd, sz.halfEntry);
-  assert.strictEqual(sz.fullPosition, sz.halfEntry * 2);
-  var fromTotal = state.getTradeSizingFromTotal(7);
-  assert.strictEqual(fromTotal.halfEntry, 4);
-  assert.strictEqual(fromTotal.retestAdd, 4);
-  assert.strictEqual(fromTotal.fullPosition, 8);
+  var sz = state.getTradeSizingFromTotal(7);
+  assert.strictEqual(sz.halfEntry, 4);
+  assert.strictEqual(sz.retestAdd, 4);
+  assert.strictEqual(sz.fullPosition, 8);
+  var from1 = state.getTradeSizingFromTotal(1);
+  assert.strictEqual(from1.halfEntry, 1);
+  assert.strictEqual(from1.retestAdd, 1);
 });
 
-test("reconcile infers half vs full from RH qty", function() {
+test("import infers half vs full from qty without mutating persist", function() {
   var state = require("../utils/state");
-  state.setContractSize(6, 6);
-  var half = state.inferPositionPhase("SPY", 3);
+  var half = state.phaseFromQty(3, 3);
   assert.strictEqual(half.halfIn, true);
   assert.strictEqual(half.fullIn, false);
   assert.strictEqual(half.contracts, 3);
-  var full = state.inferPositionPhase("SPY", 6);
+  var full = state.phaseFromQty(6, 3);
   assert.strictEqual(full.halfIn, false);
   assert.strictEqual(full.fullIn, true);
   assert.strictEqual(full.contracts, 6);
+});
+
+test("syncPositionQty does not re-arm halfIn after a trim", function() {
+  var state = require("../utils/state");
+  var s = state.getState();
+  var snapPos = { SPY: s.positions.SPY, IWM: s.positions.IWM };
+  var snapC = { SPY: s.contracts.SPY, IWM: s.contracts.IWM };
+  try {
+    s.contracts.SPY = 4;
+    s.contracts.IWM = 4;
+    state.openHalfPosition("SPY", "call", 2, 1.50);
+    state.addSecondHalf("SPY", 2, 1.60);
+    assert.strictEqual(state.getPosition("SPY").halfIn, false);
+    assert.ok(Math.abs(state.getPosition("SPY").entryPrice - 1.55) < 1e-9);
+    state.syncPositionQty("SPY", 2);
+    var trimmed = state.getPosition("SPY");
+    assert.strictEqual(trimmed.contracts, 2);
+    assert.strictEqual(trimmed.halfIn, false);
+    assert.strictEqual(trimmed.fullIn, true);
+  } finally {
+    s.positions.SPY = snapPos.SPY;
+    s.positions.IWM = snapPos.IWM;
+    s.contracts.SPY = snapC.SPY;
+    s.contracts.IWM = snapC.IWM;
+    state.setContractSize(snapC.SPY, snapC.IWM);
+  }
+});
+
+test("fill price ignores limit and uses processed_premium / executions", function() {
+  var rh = require("../utils/robinhood");
+  assert.strictEqual(rh.fillPriceFromOrder({ price: "2.10", state: "filled" }), 0);
+  assert.strictEqual(rh.fillPriceFromOrder({ price: "2.10", processed_premium: "1.85" }), 1.85);
+  assert.strictEqual(rh.fillPriceFromOrder({
+    price: "2.10",
+    legs: [{ executions: [{ price: "1.92" }] }]
+  }), 1.92);
 });
 
 test("ET interval aligns to Eastern clock boundaries", function() {
