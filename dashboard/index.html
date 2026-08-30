@@ -504,7 +504,7 @@
       <div class="orb-grid">
         <div class="orb-card" data-ticker="SPY">
           <div class="orb-ticker">SPY</div>
-          <div class="orb-exp" id="spy-orb-exp">— · S&P 500 ETF · ORB 9:30–9:44 ET</div>
+          <div class="orb-exp" id="spy-orb-exp">— · S&P 500 ETF · ORB 9:30–9:35 ET</div>
           <div class="orb-levels">
             <div class="orb-level high">
               <div class="orb-level-label">ORB High</div>
@@ -521,7 +521,7 @@
         </div>
         <div class="orb-card" data-ticker="IWM">
           <div class="orb-ticker">IWM</div>
-          <div class="orb-exp" id="iwm-orb-exp">— · Russell 2000 ETF · ORB 9:30–9:44 ET</div>
+          <div class="orb-exp" id="iwm-orb-exp">— · Russell 2000 ETF · ORB 9:30–9:35 ET</div>
           <div class="orb-levels">
             <div class="orb-level high">
               <div class="orb-level-label">ORB High</div>
@@ -961,8 +961,8 @@ function applyTradeConfigUI(cfg, syncInputs) {
   }
   var spyOrb = document.getElementById('spy-orb-exp');
   var iwmOrb = document.getElementById('iwm-orb-exp');
-  if (spyOrb) spyOrb.textContent = cfg.SPY.expiry.label + ' · ' + cfg.SPY.expiry.formatted + ' · ORB 9:30–9:44 ET';
-  if (iwmOrb) iwmOrb.textContent = cfg.IWM.expiry.label + ' · ' + cfg.IWM.expiry.formatted + ' · ORB 9:30–9:44 ET';
+  if (spyOrb) spyOrb.textContent = cfg.SPY.expiry.label + ' · ' + cfg.SPY.expiry.formatted + ' · ORB 9:30–9:35 ET';
+  if (iwmOrb) iwmOrb.textContent = cfg.IWM.expiry.label + ' · ' + cfg.IWM.expiry.formatted + ' · ORB 9:30–9:35 ET';
 }
 
 async function loadTradeConfig() {

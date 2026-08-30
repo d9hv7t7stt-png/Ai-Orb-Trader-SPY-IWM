@@ -1,11 +1,11 @@
 // utils/orb.js
-// Server-side Opening Range capture (15-min bar, 9:30–9:44 ET per strategy spec).
+// Server-side Opening Range capture (5-min bar, 9:30–9:35 ET per strategy spec).
 // Yahoo fallback when orb_set webhook omits orb_high/orb_low.
 
 var yahoo = require("./yahoo");
 var stateModule = require("./state");
 
-var ORB_INTERVAL = process.env.ORB_INTERVAL || "15m";
+var ORB_INTERVAL = process.env.ORB_INTERVAL || "5m";
 
 function etDate() {
   return new Date().toLocaleDateString("en-US", { timeZone: "America/New_York" });
