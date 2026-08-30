@@ -10,9 +10,34 @@
 
 const https = require("https");
 const rh = require("./robinhood");
+const yahoo = require("./yahoo");
 const expiryUtil = require("./expiry");
 const exitlogic = require("./exitlogic");
 const persist = require("./persist");
+
+// Resolve underlying price for ATM strike: webhook close → Robinhood → Yahoo.
+async function resolveUnderlying(ticker, underlying) {
+  var v = underlying ? parseFloat(underlying) : NaN;
+  if (!isNaN(v) && v > 0) return v;
+  try {
+    var u = await rh.getQuote(ticker);
+    if (u && u > 0) return u;
+  } catch (e) {}
+  try {
+    var y = await yahoo.getUnderlyingPrice(ticker);
+    if (y && y > 0) return y;
+  } catch (e) {}
+  return null;
+}
+
+async function fetchOptionMark(ticker, side, strike, expiry) {
+  try {
+    return await rh.getOptionMark(ticker, side, strike, expiry);
+  } catch (e) {
+    console.log("[PAPER] option mark failed " + ticker + " " + strike + ": " + e.message);
+    return null;
+  }
+}
 
 // ── low-level + format helpers ──────────────────────────────────────────────
 async function httpPost(url, data) {
@@ -160,15 +185,22 @@ function createChannel(cfg) {
   async function entry(ticker, side, optionPrice, orbHigh, orbLow, underlying) {
     var contracts = cfg.contracts;
     var expiry = chanExpiry(ticker);
-    var strike = underlying ? Math.round(parseFloat(underlying)) : null;
-    if (!strike) { try { var u = await rh.getQuote(ticker); if (u) strike = Math.round(u); } catch (e) {} }
+    var und = await resolveUnderlying(ticker, underlying);
+    var strike = und ? Math.round(und) : null;
     var instrumentUrl = null;
     var price = optionPrice && optionPrice > 0 ? parseFloat(optionPrice) : null;
     if (strike) {
-      try {
-        var m = await rh.getOptionMark(ticker, side, strike, expiry);
-        if (m) { instrumentUrl = m.instrument; if (!price && m.price) price = m.price; if (m.strike) strike = m.strike; if (m.expiry) expiry = m.expiry; }
-      } catch (e) { console.log("[PAPER][" + cfg.id + "] entry price fetch failed: " + e.message); }
+      var m = await fetchOptionMark(ticker, side, strike, expiry);
+      if (m) {
+        instrumentUrl = m.instrument;
+        if (!price && m.price) price = m.price;
+        if (m.strike) strike = m.strike;
+        if (m.expiry) expiry = m.expiry;
+      } else {
+        console.log("[PAPER][" + cfg.id + "] entry: strike=" + strike + " but no option mark — will retry on poll");
+      }
+    } else {
+      console.log("[PAPER][" + cfg.id + "] entry: could not resolve underlying for " + ticker);
     }
     if (!price) price = 0;
 
@@ -395,12 +427,37 @@ function createChannel(cfg) {
 
   function updateLastKnownPrice(ticker, price) { if (account.positions[ticker] && price) account.positions[ticker].lastKnownPrice = price; }
 
-  async function pollPosition(ticker) {
+  async function pollPosition(ticker, rhAvailable) {
     var pos = account.positions[ticker]; if (!pos) return;
+
+    // Backfill strike/instrument for positions opened without webhook `close`.
+    if (!pos.strike) {
+      var und = await resolveUnderlying(ticker, null);
+      if (und) pos.strike = Math.round(und);
+    }
+    if (pos.strike && !pos.instrumentUrl && rhAvailable) {
+      var resolved = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
+      if (resolved) {
+        pos.instrumentUrl = resolved.instrument;
+        if (resolved.expiry) pos.expiry = resolved.expiry;
+        if (resolved.strike) pos.strike = resolved.strike;
+      }
+    }
+
+    if (!rhAvailable) return;
+
     var price = null;
     try {
       if (pos.instrumentUrl) price = await rh.getOptionMarkByUrl(pos.instrumentUrl);
-      if ((!price || price <= 0) && pos.strike) { var m = await rh.getOptionMark(ticker, pos.side, pos.strike, pos.expiry); if (m) { price = m.price; if (!pos.instrumentUrl) pos.instrumentUrl = m.instrument; } }
+      if ((!price || price <= 0) && pos.strike) {
+        var m = await fetchOptionMark(ticker, pos.side, pos.strike, pos.expiry);
+        if (m) {
+          price = m.price;
+          if (!pos.instrumentUrl) pos.instrumentUrl = m.instrument;
+          if (m.expiry) pos.expiry = m.expiry;
+          if (m.strike) pos.strike = m.strike;
+        }
+      }
     } catch (e) { console.log("[PAPER_ENGINE][" + cfg.id + "] price " + ticker + ": " + e.message); }
     if (!price || price <= 0) return;
 
@@ -499,10 +556,14 @@ function initChannels(getToken) {
   setInterval(async function() {
     try {
       if (!paperMarketHours()) return;
-      if (getToken && !getToken()) return;
+      var rhAvailable = !!(getToken && getToken());
+      if (!rhAvailable) {
+        // Still backfill strikes from Yahoo so position labels aren't "?".
+        try { await rh.reauthorize(); rhAvailable = !!(getToken && getToken()); } catch (e) {}
+      }
       for (var i = 0; i < channels.length; i++) {
         var c = channels[i];
-        for (var j = 0; j < c.cfg.tickers.length; j++) { await c.pollPosition(c.cfg.tickers[j]); }
+        for (var j = 0; j < c.cfg.tickers.length; j++) { await c.pollPosition(c.cfg.tickers[j], rhAvailable); }
       }
     } catch (e) { console.log("[PAPER_ENGINE_ERROR] " + e.message); }
   }, 30 * 1000);

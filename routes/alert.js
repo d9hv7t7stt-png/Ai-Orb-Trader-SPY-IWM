@@ -1,6 +1,7 @@
 var stateModule = require("../utils/state");
 var trayd = require("../utils/trayd");
 var orbUtil = require("../utils/orb");
+var yahoo = require("../utils/yahoo");
 var fs = require("fs");
 
 // Discord is personal-only. require() is optional so the customer build
@@ -12,6 +13,11 @@ async function notify(fn, args) {
   try {
     if (discord && typeof discord[fn] === "function") await discord[fn].apply(null, args);
   } catch (e) { console.log("[DISCORD_NOTIFY_ERROR] " + fn + ": " + e.message); }
+}
+
+async function underlyingForNotify(ticker, close) {
+  if (close && parseFloat(close) > 0) return parseFloat(close);
+  return await yahoo.getUnderlyingPrice(ticker);
 }
 function fillPriceOf(order, fallback) {
   var p = order && order.result && order.result.price ? parseFloat(order.result.price) : NaN;
@@ -176,7 +182,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       stateModule.logEvent("ENTRY", ticker + " call @ breakout_long half=" + half + "/" + total);
       stateModule.openHalfPosition(ticker, "call", half, optPrice || close || 0);
       // Paper feed trades on the signal regardless of the real order outcome.
-      await notify("onEntry", [ticker, "call", optPrice || 0, s.orb[ticker].high || orbHigh || 0, s.orb[ticker].low || orbLow || 0, close]);
+      var und = await underlyingForNotify(ticker, close);
+      await notify("onEntry", [ticker, "call", optPrice || 0, s.orb[ticker].high || orbHigh || 0, s.orb[ticker].low || orbLow || 0, und]);
       var order;
       try {
         order = await trayd.placeOrder({ ticker: ticker, side: "call", contracts: half });
@@ -194,7 +201,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         var spyHalf = Math.ceil(s.contracts.SPY / 2);
         stateModule.logEvent("CROSS_ENTRY", "IWM breakout long → entering SPY call half=" + spyHalf);
         stateModule.openHalfPosition("SPY", "call", spyHalf, null);
-        await notify("onEntry", ["SPY", "call", 0, s.orb.SPY.high || 0, s.orb.SPY.low || 0, null]);
+        var spyUnd = await underlyingForNotify("SPY", null);
+        await notify("onEntry", ["SPY", "call", 0, s.orb.SPY.high || 0, s.orb.SPY.low || 0, spyUnd]);
         try {
           cross = await trayd.placeOrder({ ticker: "SPY", side: "call", contracts: spyHalf });
         } catch (e) {
@@ -241,7 +249,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     if (!pos || pos.stopped) {
       stateModule.logEvent("ENTRY", ticker + " put @ breakout_short half=" + half2 + "/" + total2);
       stateModule.openHalfPosition(ticker, "put", half2, optPrice || close || 0);
-      await notify("onEntry", [ticker, "put", optPrice || 0, s.orb[ticker].high || orbHigh || 0, s.orb[ticker].low || orbLow || 0, close]);
+      var und2 = await underlyingForNotify(ticker, close);
+      await notify("onEntry", [ticker, "put", optPrice || 0, s.orb[ticker].high || orbHigh || 0, s.orb[ticker].low || orbLow || 0, und2]);
       var order2;
       try {
         order2 = await trayd.placeOrder({ ticker: ticker, side: "put", contracts: half2 });
@@ -259,7 +268,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         var spyHalf2 = Math.ceil(s.contracts.SPY / 2);
         stateModule.logEvent("CROSS_ENTRY", "IWM breakout short → entering SPY put half=" + spyHalf2);
         stateModule.openHalfPosition("SPY", "put", spyHalf2, null);
-        await notify("onEntry", ["SPY", "put", 0, s.orb.SPY.high || 0, s.orb.SPY.low || 0, null]);
+        var spyUnd2 = await underlyingForNotify("SPY", null);
+        await notify("onEntry", ["SPY", "put", 0, s.orb.SPY.high || 0, s.orb.SPY.low || 0, spyUnd2]);
         try {
           cross2 = await trayd.placeOrder({ ticker: "SPY", side: "put", contracts: spyHalf2 });
         } catch (e) {
