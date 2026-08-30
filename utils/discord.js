@@ -526,13 +526,12 @@ function createChannel(cfg) {
 
     await send({
       color: 0x00e5a0,
-      content: "@everyone",
       title: "🌙 Sunday Premarket — Full Watchlist",
       description: "Friday close · **21 EMA** · **55 SMA** · **Monday** expected move · **this week** expected move.\n\nNext session: **" + data.sessionLabel + "**",
       fields: fields,
       footer: { text: cfg.name + " · " + etTimeLabel() + " · Not financial advice" },
       timestamp: new Date().toISOString()
-    }, false);
+    }, true);
 
     console.log("[DISCORD][" + cfg.id + "] Sunday premarket posted (" + fields.length + " symbols)");
   }

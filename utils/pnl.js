@@ -3,6 +3,10 @@ var persist = require("./persist");
 
 var PNL_FILE = persist.filePath("orb-pnl.json");
 
+function etYmd(date) {
+  return (date || new Date()).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+}
+
 function logTradePnL(ticker, side, entryPrice, exitPrice, contracts) {
   try {
     var data = { trades: [] };
@@ -31,12 +35,13 @@ function aggregatePnL() {
     if (!fs.existsSync(PNL_FILE)) return { daily: null, weekly: null, monthly: null, yearly: null };
     var data = JSON.parse(fs.readFileSync(PNL_FILE, "utf8"));
     var now = new Date();
+    var todayEt = etYmd(now);
     var daily = 0, weekly = 0, monthly = 0, yearly = 0;
     var hasData = false;
     (data.trades || []).forEach(function(t) {
       var d = new Date(t.time);
       var pnl = parseFloat(t.pnl) || 0;
-      if (d.toDateString() === now.toDateString()) { daily += pnl; hasData = true; }
+      if (etYmd(d) === todayEt) { daily += pnl; hasData = true; }
       var weekAgo = new Date(now); weekAgo.setDate(weekAgo.getDate() - 7);
       if (d >= weekAgo) { weekly += pnl; hasData = true; }
       var monthAgo = new Date(now); monthAgo.setMonth(monthAgo.getMonth() - 1);
