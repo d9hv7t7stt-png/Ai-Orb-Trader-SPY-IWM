@@ -252,6 +252,7 @@ if (authguard.allowTestRoutes()) {
       if (type === "1")  await discord.postGoodMorning(1);
       if (type === "summary") await discord.postDailySummary();
       if (type === "expected") await discord.postExpectedMoves();
+      if (type === "digest" || type === "close") await discord.postCloseDigest();
       if (type === "positions") await discord.postOpenPositions("Test");
       if (type === "entry") await discord.postEntry("SPY", "call", 2.40, 757.50, 754.25);
       if (type === "stop") await discord.postStopLoss("SPY", 1.80, "Stop Loss — ORB Midpoint");
@@ -271,6 +272,21 @@ if (authguard.allowTestRoutes()) {
       else if (ch === "bc") targets = chans.filter(function(c){ return c.cfg.id === "free" || c.cfg.id === "spy0dte"; });
       else targets = chans.filter(function(c){ return c.cfg.id === ch; });
       for (var i = 0; i < targets.length; i++) await targets[i].dailySummary();
+      res.json({ ok: true, tested: targets.map(function(c){ return c.cfg.id; }), active: chans.map(function(c){ return c.cfg.id; }) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get("/test/discord/digest/:channel", authguard.requireSecret, async (req, res) => {
+    try {
+      var ch = req.params.channel;
+      var chans = (typeof discord.getChannels === "function") ? discord.getChannels() : [];
+      var targets;
+      if (ch === "all") targets = chans;
+      else if (ch === "bc") targets = chans.filter(function(c){ return c.cfg.id === "free" || c.cfg.id === "spy0dte"; });
+      else targets = chans.filter(function(c){ return c.cfg.id === ch; });
+      for (var i = 0; i < targets.length; i++) await targets[i].closeDigest();
       res.json({ ok: true, tested: targets.map(function(c){ return c.cfg.id; }), active: chans.map(function(c){ return c.cfg.id; }) });
     } catch (e) {
       res.status(500).json({ error: e.message });

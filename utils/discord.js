@@ -15,6 +15,9 @@ const expiryUtil = require("./expiry");
 const exitlogic = require("./exitlogic");
 const persist = require("./persist");
 const expectedMoveUtil = require("./expectedMove");
+const closeDigestUtil = require("./closeDigest");
+const technicalsUtil = require("./technicals");
+const yahooUtil = require("./yahoo");
 
 function etTimeLabel() {
   return new Date().toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET";
@@ -427,37 +430,86 @@ function createChannel(cfg) {
     account.closedToday = [];
   }
 
-  async function expectedMoves() {
-    var data = await expectedMoveUtil.computeFullMoves(cfg.tickers);
-    if (!data.tickers.length) {
-      console.log("[DISCORD][" + cfg.id + "] expected move: no data for " + cfg.tickers.join("+"));
-      return;
-    }
+  async function closeDigest() {
+    var digest = await closeDigestUtil.buildDigest(cfg);
+    var plan = digest.plan;
 
-    var fields = data.tickers.map(function(t) {
+    var primaryFields = digest.primary.map(function(b) {
       var lines = [];
-      t.sessions.forEach(function(s) { lines.push(expectedMoveUtil.formatHorizonLine(s)); });
-      if (t.weekly) lines.push(expectedMoveUtil.formatHorizonLine(t.weekly));
-      if (t.monthly) lines.push(expectedMoveUtil.formatHorizonLine(t.monthly));
-      var priceStr = t.price ? "$" + t.price.toFixed(2) : "—";
+      if (b.snap) lines.push(technicalsUtil.formatCompact(b.snap));
+      if (b.moves) {
+        var mv = closeDigestUtil.formatMovesBlock(b.moves, false);
+        if (mv) lines.push(mv);
+      }
       return {
-        name: t.ticker + " @ " + priceStr,
+        name: b.ticker + (cfg.tickers.indexOf(b.ticker) >= 0 ? " · ORB" : ""),
         value: lines.join("\n\n") || "—",
         inline: false
       };
-    });
+    }).filter(function(f) { return f.value !== "—"; });
 
-    await send({
-      color: 0x4da6ff,
-      title: "📐 Expected Moves — Multi-Timeframe",
-      description: "Implied ranges from ATM straddles · **Next 2 sessions**, **weekly** (~7 days), "
-        + "and **monthly** (~30 days). Posted after the close.",
-      fields: fields,
-      footer: { text: cfg.name + " · Computed at " + etTimeLabel() + " · Not financial advice" },
-      timestamp: new Date().toISOString()
-    }, false);
-    console.log("[DISCORD][" + cfg.id + "] multi-timeframe expected moves posted for "
-      + data.tickers.map(function(t){ return t.ticker; }).join("+"));
+    if (primaryFields.length) {
+      await send({
+        color: 0x4da6ff,
+        title: "📊 Close Digest — " + plan.label,
+        description: plan.note + "\n\nClose · **21 EMA** · **55 SMA** · implied moves (when scheduled).",
+        fields: primaryFields,
+        footer: { text: cfg.name + " · " + etTimeLabel() + " · Not financial advice" },
+        timestamp: new Date().toISOString()
+      }, false);
+    }
+
+    if (digest.watchlist.length) {
+      var lines = digest.watchlist.map(technicalsUtil.formatOneLine);
+      var chunks = [];
+      var chunk = "";
+      lines.forEach(function(line) {
+        if ((chunk + line + "\n").length > 950) { chunks.push(chunk); chunk = ""; }
+        chunk += line + "\n";
+      });
+      if (chunk) chunks.push(chunk);
+      var wlFields = chunks.map(function(c, i) {
+        return {
+          name: i === 0 ? "Market scan" + (plan.fullWatchlist ? " (full)" : " (notable)") : "…",
+          value: c.trim(),
+          inline: false
+        };
+      });
+      await send({
+        color: 0x5865f2,
+        title: "🔍 Watchlist — " + plan.label,
+        description: plan.notableWatchlistOnly
+          ? "Only names with a big move, EMA cross, or price near 21 EMA / 55 SMA today."
+          : "Full daily scan of the 50K paper watchlist.",
+        fields: wlFields,
+        footer: { text: cfg.name + " · Not financial advice" },
+        timestamp: new Date().toISOString()
+      }, false);
+    }
+
+    if (digest.watchlistMoves.length) {
+      var mvFields = digest.watchlistMoves.map(function(w) {
+        return {
+          name: yahooUtil.displaySymbol(w.ticker) + " expected moves",
+          value: closeDigestUtil.formatMovesBlock(w.moves, true) || "—",
+          inline: true
+        };
+      });
+      await send({
+        color: 0xf5a623,
+        title: "📐 Watchlist Expected Moves",
+        description: "Friday / month-end: next session + weekly + monthly implied ranges.",
+        fields: mvFields.slice(0, 24),
+        footer: { text: cfg.name + " · Not financial advice" },
+        timestamp: new Date().toISOString()
+      }, false);
+    }
+
+    console.log("[DISCORD][" + cfg.id + "] close digest posted (" + plan.label + ")");
+  }
+
+  async function expectedMoves() {
+    return closeDigest();
   }
 
   async function openPositions(label) {
@@ -568,7 +620,7 @@ function createChannel(cfg) {
     entry: entry, add: add, stop: stop, fullClose: fullClose,
     breakeven: breakeven, profitTier: profitTier, eodSell: eodSell,
     openPositions: openPositions, dailySummary: dailySummary, morning: morning,
-    expectedMoves: expectedMoves,
+    closeDigest: closeDigest, expectedMoves: expectedMoves,
     pollPosition: pollPosition, updateLastKnownPrice: updateLastKnownPrice,
     getAccount: function() { return account; }
   };
@@ -578,13 +630,14 @@ function createChannel(cfg) {
 var channels = [];
 
 function buildChannelConfigs() {
+  var watchlist = closeDigestUtil.MAIN_WATCHLIST;
   var list = [];
   if (process.env.DISCORD_WEBHOOK_URL)
-    list.push({ id: "main", name: "Argus ORB Trader 50K", webhook: process.env.DISCORD_WEBHOOK_URL, startBalance: 50000, contracts: 50, tickers: ["SPY", "IWM"], dte: null, updateMins: 15, theme: "default" });
+    list.push({ id: "main", name: "Argus ORB Trader 50K", webhook: process.env.DISCORD_WEBHOOK_URL, startBalance: 50000, contracts: 50, tickers: ["SPY", "IWM"], watchlist: watchlist, dte: null, updateMins: 15, theme: "default" });
   if (process.env.DISCORD_WEBHOOK_FREE)
-    list.push({ id: "free", name: "Free Alerts", webhook: process.env.DISCORD_WEBHOOK_FREE, startBalance: 10000, contracts: 10, tickers: ["IWM"], dte: 0, updateMins: 30, theme: "free" });
+    list.push({ id: "free", name: "Free Alerts", webhook: process.env.DISCORD_WEBHOOK_FREE, startBalance: 10000, contracts: 10, tickers: ["IWM"], watchlist: ["IWM"], dte: 0, updateMins: 30, theme: "free" });
   if (process.env.DISCORD_WEBHOOK_SPY0DTE)
-    list.push({ id: "spy0dte", name: "SPY 0DTE", webhook: process.env.DISCORD_WEBHOOK_SPY0DTE, startBalance: 10000, contracts: 5, tickers: ["SPY"], dte: 0, updateMins: 30, theme: "spy" });
+    list.push({ id: "spy0dte", name: "SPY 0DTE", webhook: process.env.DISCORD_WEBHOOK_SPY0DTE, startBalance: 10000, contracts: 5, tickers: ["SPY"], watchlist: ["SPY"], dte: 0, updateMins: 30, theme: "spy" });
   return list;
 }
 
@@ -636,24 +689,24 @@ function scheduleDaily(channel) {
   })();
 }
 
-function scheduleExpectedMoves(channel) {
+function scheduleCloseDigest(channel) {
   (function next() {
     setTimeout(async function() {
       if (exitlogic.isTradingDayET()) {
-        try { await channel.expectedMoves(); }
-        catch (e) { console.log("[DISCORD][" + channel.cfg.id + "] expected move error: " + e.message); }
+        try { await channel.closeDigest(); }
+        catch (e) { console.log("[DISCORD][" + channel.cfg.id + "] close digest error: " + e.message); }
       }
       next();
     }, exitlogic.msUntilNextTradingTimeET(16, 5));
   })();
-  console.log("[DISCORD] " + channel.cfg.id + " expected moves at 4:05 PM ET on trading days");
+  console.log("[DISCORD] " + channel.cfg.id + " close digest at 4:05 PM ET on trading days");
 }
 
 function initChannels(getToken) {
   channels = buildChannelConfigs().map(createChannel);
   if (channels.length === 0) { console.log("[DISCORD] no channels active (set DISCORD_WEBHOOK_URL / _FREE / _SPY0DTE)"); return; }
   console.log("[DISCORD] active channels: " + channels.map(function(c){ return c.cfg.id + "(" + c.cfg.tickers.join("+") + "," + c.cfg.contracts + "c)"; }).join(", "));
-  channels.forEach(function(c) { scheduleMorning(c); scheduleUpdates(c); scheduleDaily(c); scheduleExpectedMoves(c); });
+  channels.forEach(function(c) { scheduleMorning(c); scheduleUpdates(c); scheduleDaily(c); scheduleCloseDigest(c); });
   // shared paper engine: one 30s loop pricing every channel's positions
   setInterval(async function() {
     try {
@@ -682,7 +735,8 @@ module.exports = {
   // test-route compatibility
   postGoodMorning: function(m) { return first().morning(m); },
   postDailySummary: function() { return first().dailySummary(); },
-  postExpectedMoves: function() { return first().expectedMoves(); },
+  postExpectedMoves: function() { return first().closeDigest(); },
+  postCloseDigest: function() { return first().closeDigest(); },
   postOpenPositions: function(l) { return first().openPositions(l); },
   postEntry: function(ticker, side, optPrice, orbHigh, orbLow, underlying) { return first().entry(ticker, side, optPrice, orbHigh, orbLow, underlying); },
   postStopLoss: function(ticker, price, reason) { return first().stop(ticker, price, reason); },

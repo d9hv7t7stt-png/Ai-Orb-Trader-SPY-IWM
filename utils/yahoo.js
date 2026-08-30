@@ -3,8 +3,22 @@
 
 var https = require("https");
 
-var SYMBOLS = { SPY: "SPY", IWM: "IWM", QQQ: "QQQ", SPX: "^GSPC" };
+var SYMBOLS = {
+  SPY: "SPY", IWM: "IWM", QQQ: "QQQ", SPX: "^GSPC", SPXW: "^GSPC",
+  AAPL: "AAPL", AMZN: "AMZN", META: "META", NVDA: "NVDA", MSFT: "MSFT",
+  TSLA: "TSLA", SPCX: "SPCX", XLE: "XLE", GOOG: "GOOG", SMH: "SMH",
+  GLD: "GLD", SLV: "SLV"
+};
 var _session = null; // { cookie, crumb, ts }
+
+function resolveSymbol(ticker) {
+  return SYMBOLS[ticker] || ticker;
+}
+
+function displaySymbol(ticker) {
+  if (ticker === "SPXW" || ticker === "^GSPC") return "SPX";
+  return ticker;
+}
 
 function httpGet(hostname, path, headers) {
   return new Promise(function(resolve) {
@@ -40,7 +54,7 @@ function getYahooSession(force) {
 }
 
 function fetchOptionsChain(ticker, dateUnix, retry) {
-  var symbol = SYMBOLS[ticker] || ticker;
+  var symbol = resolveSymbol(ticker);
   return getYahooSession(false).then(function(session) {
     if (!session) return null;
     var path = "/v7/finance/options/" + encodeURIComponent(symbol) + "?crumb=" + encodeURIComponent(session.crumb);
@@ -64,7 +78,7 @@ function getUnderlyingPrice(ticker) {
 }
 
 function getQuoteSnapshot(ticker) {
-  var symbol = SYMBOLS[ticker] || ticker;
+  var symbol = resolveSymbol(ticker);
   return new Promise(function(resolve) {
     var options = {
       hostname: "query1.finance.yahoo.com",
@@ -93,7 +107,7 @@ function getQuoteSnapshot(ticker) {
 }
 
 function getChart(ticker, interval, range) {
-  var symbol = SYMBOLS[ticker] || ticker;
+  var symbol = resolveSymbol(ticker);
   return new Promise(function(resolve) {
     var options = {
       hostname: "query1.finance.yahoo.com",
@@ -264,6 +278,27 @@ function getATMStraddle(ticker, expiryYmd) {
   });
 }
 
+function getDailyCloses(ticker) {
+  return getChart(ticker, "1d", "1y").then(parseDailyCloses);
+}
+
+function parseDailyCloses(chartJson) {
+  try {
+    var result = chartJson && chartJson.chart && chartJson.chart.result && chartJson.chart.result[0];
+    if (!result) return null;
+    var quotes = result.indicators && result.indicators.quote && result.indicators.quote[0];
+    if (!quotes || !quotes.close) return null;
+    var closes = [];
+    for (var i = 0; i < quotes.close.length; i++) {
+      var c = quotes.close[i];
+      if (c !== null && c !== undefined && c > 0) closes.push(parseFloat(c));
+    }
+    return closes.length >= 56 ? closes : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function getExpirationDates(ticker) {
   return fetchOptionsChain(ticker, null).then(function(data) {
     try {
@@ -278,9 +313,12 @@ module.exports = {
   getUnderlyingPrice: getUnderlyingPrice,
   getQuoteSnapshot: getQuoteSnapshot,
   getChart: getChart,
+  getDailyCloses: getDailyCloses,
   getOptionMark: getOptionMark,
   getChainForExpiry: getChainForExpiry,
   getATMStraddle: getATMStraddle,
   getExpirationDates: getExpirationDates,
+  resolveSymbol: resolveSymbol,
+  displaySymbol: displaySymbol,
   SYMBOLS: SYMBOLS
 };

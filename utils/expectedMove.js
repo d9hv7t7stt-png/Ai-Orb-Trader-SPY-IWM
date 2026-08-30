@@ -21,7 +21,7 @@ function shortLabel(ymd) {
   return weekday + " " + expiryUtil.formatExpiryLabel(ymd);
 }
 
-function shortLabel(ymd) {
+function daysBetweenYmd(fromYmd, toYmd) {
   return Math.round((new Date(toYmd + "T12:00:00").getTime() - new Date(fromYmd + "T12:00:00").getTime()) / 86400000);
 }
 
@@ -151,6 +151,30 @@ function computeFullMoves(tickers) {
   });
 }
 
+function computePlannedMoves(tickers, plan) {
+  return computeFullMoves(tickers).then(function(data) {
+    data.tickers = data.tickers.map(function(t) { return filterMoves(t, plan); }).filter(function(t) {
+      return t && (t.sessions.length || t.weekly || t.monthly);
+    });
+    return data;
+  });
+}
+
+function filterMoves(tickerMoves, plan) {
+  if (!tickerMoves || !plan) return tickerMoves;
+  var sessions = tickerMoves.sessions || [];
+  return {
+    ticker: tickerMoves.ticker,
+    price: tickerMoves.price,
+    sessions: [].concat(
+      plan.nextSession !== false && sessions[0] ? [sessions[0]] : [],
+      plan.session2 && sessions[1] ? [sessions[1]] : []
+    ),
+    weekly: plan.weekly ? tickerMoves.weekly : null,
+    monthly: plan.monthly ? tickerMoves.monthly : null
+  };
+}
+
 // Backward-compatible single-session helper
 function computeNextSessionMoves(tickers) {
   return computeFullMoves(tickers);
@@ -160,6 +184,8 @@ module.exports = {
   computeExpectedMove: computeExpectedMove,
   computeTickerMoves: computeTickerMoves,
   computeFullMoves: computeFullMoves,
+  computePlannedMoves: computePlannedMoves,
+  filterMoves: filterMoves,
   computeNextSessionMoves: computeNextSessionMoves,
   sessionLabel: sessionLabel,
   formatHorizonLine: formatHorizonLine
