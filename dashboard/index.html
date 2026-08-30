@@ -346,6 +346,29 @@
   .tab.active { background: var(--surface); color: var(--green); }
   .template-content { display: none; }
   .template-content.active { display: block; }
+
+  .trade-config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .trade-config-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    padding: 12px;
+  }
+  .trade-config-card h3 { font-size: 16px; font-weight: 600; margin-bottom: 2px; }
+  .trade-config-card .sub { font-size: 9px; color: var(--text-dim); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 10px; }
+  .trade-preview {
+    font-size: 10px; color: var(--text-mid); line-height: 1.55;
+    padding: 8px; background: var(--surface2); border: 1px solid var(--border);
+    margin: 8px 0;
+  }
+  .trade-preview strong { color: var(--green); font-weight: 500; }
+  .preset-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .preset-btn {
+    font-family: var(--mono); font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 6px 8px; border: 1px solid var(--border2); background: var(--surface2);
+    color: var(--text-mid); cursor: pointer;
+  }
+  .preset-btn:active { border-color: var(--green); color: var(--green); }
+  @media (max-width: 520px) { .trade-config-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -385,65 +408,76 @@
   <!-- DASHBOARD -->
   <div class="page active" id="page-dashboard">
 
-    <!-- Row 1: Buying Power + Set Contract Size -->
+    <!-- Row 1: Buying Power -->
     <div class="row1">
-      <div class="stat-block">
+      <div class="stat-block" style="grid-column: 1 / -1">
         <div class="stat-label">Buying Power</div>
         <div class="stat-value" id="val-buying-power">—</div>
-        <div class="stat-sub">Robinhood · Claude account</div>
-      </div>
-      <div class="stat-block">
-        <div class="stat-label">Set Contract Size</div>
-        <div class="contract-row">
-          <span class="contract-label">SPY</span>
-          <input type="number" class="contract-input" id="input-spy-c" min="1" max="100" value="1">
-        </div>
-        <div class="contract-row">
-          <span class="contract-label">IWM</span>
-          <input type="number" class="contract-input" id="input-iwm-c" min="1" max="100" value="1">
-        </div>
-        <button class="set-btn" onclick="saveContractSize()">Set</button>
+        <div class="stat-sub">Robinhood live account · limit orders at ask/bid</div>
       </div>
     </div>
 
-    <!-- Row 1b: Expiry (DTE) selector -->
-    <div class="row1" style="margin-top:12px">
-      <div class="stat-block">
-        <div class="stat-label">Set Expiry (DTE)</div>
-        <div class="contract-row">
-          <span class="contract-label">SPY</span>
-          <select class="contract-input" id="input-spy-dte">
-            <option value="0">0DTE</option>
-            <option value="1">1DTE</option>
-          </select>
+    <!-- Live trade settings: contracts + DTE unified -->
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Live Trade Settings</span>
+        <span style="font-size:9px;color:var(--text-dim)" id="trade-config-note">—</span>
+      </div>
+      <div class="panel-body">
+        <div style="font-size:10px;color:var(--text-dim);line-height:1.55;margin-bottom:10px">
+          Controls real Robinhood orders. <strong style="color:var(--text)">Half</strong> enters on breakout ·
+          <strong style="color:var(--text)">retest</strong> adds the rest · Discord paper uses its own fixed sizes.
         </div>
-        <div class="contract-row">
-          <span class="contract-label">IWM</span>
-          <select class="contract-input" id="input-iwm-dte">
-            <option value="0">0DTE</option>
-            <option value="1">1DTE</option>
-          </select>
+        <div class="trade-config-grid">
+          <div class="trade-config-card">
+            <h3>SPY</h3>
+            <div class="sub" id="spy-expiry-sub">—</div>
+            <div class="contract-row">
+              <span class="contract-label">Contracts</span>
+              <input type="number" class="contract-input" id="input-spy-c" min="1" max="100" value="1" oninput="previewTradeConfig()">
+            </div>
+            <div class="contract-row">
+              <span class="contract-label">Expiry</span>
+              <select class="contract-input" id="input-spy-dte" onchange="previewTradeConfig()">
+                <option value="0">0DTE (today)</option>
+                <option value="1">1DTE</option>
+                <option value="2">2DTE</option>
+                <option value="3">3DTE</option>
+                <option value="4">4DTE</option>
+                <option value="5">5DTE</option>
+              </select>
+            </div>
+            <div class="trade-preview" id="spy-trade-preview">—</div>
+            <button class="set-btn" onclick="saveTradeConfig('SPY')">Save SPY</button>
+          </div>
+          <div class="trade-config-card">
+            <h3>IWM</h3>
+            <div class="sub" id="iwm-expiry-sub">—</div>
+            <div class="contract-row">
+              <span class="contract-label">Contracts</span>
+              <input type="number" class="contract-input" id="input-iwm-c" min="1" max="100" value="1" oninput="previewTradeConfig()">
+            </div>
+            <div class="contract-row">
+              <span class="contract-label">Expiry</span>
+              <select class="contract-input" id="input-iwm-dte" onchange="previewTradeConfig()">
+                <option value="0">0DTE (today)</option>
+                <option value="1">1DTE</option>
+                <option value="2">2DTE</option>
+                <option value="3">3DTE</option>
+                <option value="4">4DTE</option>
+                <option value="5">5DTE</option>
+              </select>
+            </div>
+            <div class="trade-preview" id="iwm-trade-preview">—</div>
+            <button class="set-btn" onclick="saveTradeConfig('IWM')">Save IWM</button>
+          </div>
         </div>
-        <button class="set-btn" onclick="saveDTE()">Set</button>
-      </div>
-      <div class="stat-block">
-        <div class="stat-label">Current Expiry</div>
-        <div class="stat-value" id="val-spy-dte">—</div>
-        <div class="stat-sub" id="val-iwm-dte">—</div>
-      </div>
-    </div>
-
-    <!-- Row 2: SPY + IWM Contract counts -->
-    <div class="row2">
-      <div class="stat-block">
-        <div class="stat-label">SPY Contracts</div>
-        <div class="stat-value" id="val-spy-c">—</div>
-        <div class="stat-sub">1DTE · market order</div>
-      </div>
-      <div class="stat-block">
-        <div class="stat-label">IWM Contracts</div>
-        <div class="stat-value" id="val-iwm-c">—</div>
-        <div class="stat-sub">0DTE · market order</div>
+        <div class="preset-row">
+          <button type="button" class="preset-btn" onclick="applyPreset('default')">Default (SPY 1DTE · IWM 0DTE)</button>
+          <button type="button" class="preset-btn" onclick="applyPreset('0dte')">Both 0DTE</button>
+          <button type="button" class="preset-btn" onclick="applyPreset('1c')">1 contract each</button>
+        </div>
+        <button class="set-btn" style="margin-top:10px;background:var(--surface2);color:var(--green);border:1px solid var(--green)" onclick="saveAllTradeConfig()">Save All Settings</button>
       </div>
     </div>
 
@@ -470,7 +504,7 @@
       <div class="orb-grid">
         <div class="orb-card" data-ticker="SPY">
           <div class="orb-ticker">SPY</div>
-          <div class="orb-exp">1DTE · S&P 500 ETF · ORB 9:30–9:44 ET</div>
+          <div class="orb-exp" id="spy-orb-exp">— · S&P 500 ETF · ORB 9:30–9:44 ET</div>
           <div class="orb-levels">
             <div class="orb-level high">
               <div class="orb-level-label">ORB High</div>
@@ -487,7 +521,7 @@
         </div>
         <div class="orb-card" data-ticker="IWM">
           <div class="orb-ticker">IWM</div>
-          <div class="orb-exp">0DTE · Russell 2000 ETF · ORB 9:30–9:44 ET</div>
+          <div class="orb-exp" id="iwm-orb-exp">— · Russell 2000 ETF · ORB 9:30–9:44 ET</div>
           <div class="orb-levels">
             <div class="orb-level high">
               <div class="orb-level-label">ORB High</div>
@@ -669,6 +703,8 @@ if (API_SECRET) localStorage.setItem('orb_api_secret', API_SECRET);
 
 let state = null;
 let healthInfo = null;
+let tradeConfig = null;
+let previewTimer = null;
 
 function apiFetch(path, opts) {
   opts = opts || {};
@@ -885,24 +921,138 @@ async function loadState() {
   }
 }
 
-function renderState(s) {
-  document.getElementById('val-spy-c').textContent = s.contracts?.SPY || '1';
-  document.getElementById('val-iwm-c').textContent = s.contracts?.IWM || '1';
-  const si = document.getElementById('input-spy-c');
-  const ii = document.getElementById('input-iwm-c');
-  if (si && s.contracts?.SPY) si.value = s.contracts.SPY;
-  if (ii && s.contracts?.IWM) ii.value = s.contracts.IWM;
+function formatTradePreview(ticker, cfg) {
+  if (!cfg) return '—';
+  var sz = cfg.sizing;
+  var exp = cfg.expiry;
+  return '<strong>Breakout:</strong> ' + sz.halfEntry + 'c · ' +
+    '<strong>Retest add:</strong> ' + sz.retestAdd + 'c · ' +
+    '<strong>Max live:</strong> ' + sz.fullPosition + 'c<br>' +
+    '<span style="color:var(--text-dim)">Expires ' + exp.weekday + ', ' + exp.formatted + ' (' + exp.label + ')</span>';
+}
 
-  // Expiry (DTE)
-  if (s.dte) {
-    const sd = document.getElementById('input-spy-dte');
-    const idd = document.getElementById('input-iwm-dte');
-    if (sd) sd.value = String(s.dte.SPY);
-    if (idd) idd.value = String(s.dte.IWM);
-    const vsd = document.getElementById('val-spy-dte');
-    const vid = document.getElementById('val-iwm-dte');
-    if (vsd) vsd.textContent = 'SPY ' + s.dte.SPY + 'DTE';
-    if (vid) vid.textContent = 'IWM ' + s.dte.IWM + 'DTE';
+function applyTradeConfigUI(cfg, syncInputs) {
+  if (!cfg) return;
+  tradeConfig = cfg;
+  if (syncInputs) {
+    var si = document.getElementById('input-spy-c');
+    var ii = document.getElementById('input-iwm-c');
+    var sd = document.getElementById('input-spy-dte');
+    var idd = document.getElementById('input-iwm-dte');
+    if (si) si.value = cfg.SPY.contracts;
+    if (ii) ii.value = cfg.IWM.contracts;
+    if (sd) sd.value = String(cfg.SPY.expiry.dte);
+    if (idd) idd.value = String(cfg.IWM.expiry.dte);
+  }
+  var spySub = document.getElementById('spy-expiry-sub');
+  var iwmSub = document.getElementById('iwm-expiry-sub');
+  if (spySub) spySub.textContent = cfg.SPY.expiry.weekday + ' · ' + cfg.SPY.expiry.formatted + ' · ' + cfg.SPY.expiry.label;
+  if (iwmSub) iwmSub.textContent = cfg.IWM.expiry.weekday + ' · ' + cfg.IWM.expiry.formatted + ' · ' + cfg.IWM.expiry.label;
+  var spyPrev = document.getElementById('spy-trade-preview');
+  var iwmPrev = document.getElementById('iwm-trade-preview');
+  if (spyPrev) spyPrev.innerHTML = formatTradePreview('SPY', cfg.SPY);
+  if (iwmPrev) iwmPrev.innerHTML = formatTradePreview('IWM', cfg.IWM);
+  var note = document.getElementById('trade-config-note');
+  if (note) {
+    var parts = [];
+    if (cfg.dailyIncrement) parts.push('Auto +1 contract each new trading day');
+    if (!cfg.durable) parts.push('Attach /data volume to persist settings');
+    note.textContent = parts.length ? parts.join(' · ') : 'Saved';
+  }
+  var spyOrb = document.getElementById('spy-orb-exp');
+  var iwmOrb = document.getElementById('iwm-orb-exp');
+  if (spyOrb) spyOrb.textContent = cfg.SPY.expiry.label + ' · ' + cfg.SPY.expiry.formatted + ' · ORB 9:30–9:44 ET';
+  if (iwmOrb) iwmOrb.textContent = cfg.IWM.expiry.label + ' · ' + cfg.IWM.expiry.formatted + ' · ORB 9:30–9:44 ET';
+}
+
+async function loadTradeConfig() {
+  try {
+    var res = await apiFetch('/api/trade-config');
+    var cfg = await res.json();
+    applyTradeConfigUI(cfg, true);
+  } catch (e) {}
+}
+
+function previewTradeConfig() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(async function() {
+    var spyC = parseInt(document.getElementById('input-spy-c').value, 10) || 1;
+    var iwmC = parseInt(document.getElementById('input-iwm-c').value, 10) || 1;
+    var spyD = parseInt(document.getElementById('input-spy-dte').value, 10);
+    var iwmD = parseInt(document.getElementById('input-iwm-dte').value, 10);
+    try {
+      var q = 'spy_contracts=' + spyC + '&iwm_contracts=' + iwmC + '&spy_dte=' + spyD + '&iwm_dte=' + iwmD;
+      var res = await apiFetch('/api/trade-config/preview?' + q);
+      var cfg = await res.json();
+      applyTradeConfigUI(cfg, false);
+    } catch (e) {}
+  }, 180);
+}
+
+async function saveTradeConfig(ticker) {
+  var body = {};
+  if (ticker === 'SPY' || !ticker) {
+    body.SPY = {
+      contracts: parseInt(document.getElementById('input-spy-c').value, 10) || 1,
+      dte: parseInt(document.getElementById('input-spy-dte').value, 10)
+    };
+  }
+  if (ticker === 'IWM' || !ticker) {
+    body.IWM = {
+      contracts: parseInt(document.getElementById('input-iwm-c').value, 10) || 1,
+      dte: parseInt(document.getElementById('input-iwm-dte').value, 10)
+    };
+  }
+  try {
+    var res = await apiFetch('/api/trade-config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    var data = await res.json();
+    if (data.ok) {
+      var dur = data.config && !data.config.durable ? ' (ephemeral until volume attached)' : '';
+      toast((ticker || 'Settings') + ' saved' + dur);
+      applyTradeConfigUI(data.config, true);
+      loadState();
+    } else toast(data.error || 'Save failed', 'red');
+  } catch (e) { toast(e.message || 'Error saving', 'red'); }
+}
+
+async function saveAllTradeConfig() {
+  await saveTradeConfig(null);
+}
+
+function applyPreset(name) {
+  if (name === 'default') {
+    document.getElementById('input-spy-c').value = 1;
+    document.getElementById('input-iwm-c').value = 1;
+    document.getElementById('input-spy-dte').value = '1';
+    document.getElementById('input-iwm-dte').value = '0';
+  } else if (name === '0dte') {
+    document.getElementById('input-spy-dte').value = '0';
+    document.getElementById('input-iwm-dte').value = '0';
+  } else if (name === '1c') {
+    document.getElementById('input-spy-c').value = 1;
+    document.getElementById('input-iwm-c').value = 1;
+  }
+  previewTradeConfig();
+}
+
+function renderState(s) {
+  if (s.tradeConfig) applyTradeConfigUI(s.tradeConfig, true);
+  else if (s.contracts || s.dte) {
+    var si = document.getElementById('input-spy-c');
+    var ii = document.getElementById('input-iwm-c');
+    if (si && s.contracts?.SPY) si.value = s.contracts.SPY;
+    if (ii && s.contracts?.IWM) ii.value = s.contracts.IWM;
+    if (s.dte) {
+      var sd = document.getElementById('input-spy-dte');
+      var idd = document.getElementById('input-iwm-dte');
+      if (sd) sd.value = String(s.dte.SPY);
+      if (idd) idd.value = String(s.dte.IWM);
+    }
+    previewTradeConfig();
   }
 
   // ORB levels
@@ -946,10 +1096,11 @@ function renderState(s) {
       const isCall = e.message.toLowerCase().includes('call') || e.message.toLowerCase().includes('long');
       const ticker = e.message.includes('SPY') ? 'SPY' : 'IWM';
       const contracts = e.message.match(/x(\d+)/)?.[1] || e.message.match(/half=(\d+)/)?.[1] || '—';
+      var dteLabel = tradeConfig && tradeConfig[ticker] ? tradeConfig[ticker].expiry.label : (s.dte ? s.dte[ticker] + 'DTE' : '—');
       return `<div class="trade-card">
         <div class="trade-left">
           <div class="trade-ticker ${isCall ? 'call' : 'put'}">${ticker} ${isCall ? 'CALL' : 'PUT'}</div>
-          <div class="trade-detail">${t} · ${contracts}c · ${ticker === 'SPY' ? '1DTE' : '0DTE'}</div>
+          <div class="trade-detail">${t} · ${contracts}c · ${dteLabel}</div>
           <div class="trade-detail">Stop: ORB Mid</div>
         </div>
         <div class="trade-right">
@@ -986,38 +1137,6 @@ function renderPosStatus(ticker, pos) {
   const entry = pos.entryPrice ? '$' + parseFloat(pos.entryPrice).toFixed(2) : '—';
   const be = pos.breakEvenActivated ? ' · BE stop active' : '';
   el.innerHTML = `${pos.contracts}c · entry ${entry}${be}`;
-}
-
-async function saveContractSize() {
-  const spy = parseInt(document.getElementById('input-spy-c').value) || 1;
-  const iwm = parseInt(document.getElementById('input-iwm-c').value) || 1;
-  try {
-    const res = await apiFetch('/api/contracts', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({spy, iwm})
-    });
-    const data = await res.json();
-    if (data.ok) { toast('Saved: SPY=' + data.contracts.SPY + ' IWM=' + data.contracts.IWM); loadState(); }
-    else toast(data.error || 'Failed', 'red');
-  } catch(e) { toast(e.message || 'Error saving', 'red'); }
-}
-
-async function saveDTE() {
-  const spy = parseInt(document.getElementById('input-spy-dte').value);
-  const iwm = parseInt(document.getElementById('input-iwm-dte').value);
-  try {
-    const res = await apiFetch('/api/settings/dte', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({spy, iwm})
-    });
-    const data = await res.json();
-    if (data.ok) {
-      toast('Expiry saved: SPY=' + data.dte.SPY + 'DTE IWM=' + data.dte.IWM + 'DTE' + (data.durable ? '' : ' (ephemeral until volume attached)'));
-      loadState();
-    } else toast(data.error || 'Failed', 'red');
-  } catch(e) { toast(e.message || 'Error saving', 'red'); }
 }
 
 function showSmsPanel(show) {
@@ -1125,6 +1244,7 @@ async function checkAuth() {
 }
 
 initSetupURL();
+loadTradeConfig();
 loadState();
 loadLivePrices();
 loadPnL();

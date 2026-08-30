@@ -6,7 +6,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "dashboard")));
 
 const { handleAlert } = require("./routes/alert");
-const { getState, setContractSize } = require("./utils/state");
+const { getState, setContractSize, getTradeSizing } = require("./utils/state");
 const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth, getAuthInfo } = require("./utils/reauth");
 const rh = require("./utils/robinhood");
 const discord = require("./utils/discord");
@@ -18,6 +18,7 @@ const pnlUtil = require("./utils/pnl");
 const authguard = require("./utils/authguard");
 const persist = require("./utils/persist");
 const reconcile = require("./utils/reconcile");
+const expiryUtil = require("./utils/expiry");
 
 process.on("unhandledRejection", (err) => {
   console.error("[UNHANDLED_REJECTION]", err && err.message ? err.message : err);
@@ -89,6 +90,9 @@ app.get("/api/state", authguard.requireSecret, async (req, res) => {
   var s = getState();
   s.auth = await getAuthInfo();
   s.dte = settings.getAll().dte;
+  s.tradeConfig = buildTradeConfigPreview(
+    s.contracts.SPY, s.contracts.IWM, settings.getDTE("SPY"), settings.getDTE("IWM")
+  );
   s.webhook_secret_required = !!authguard.getSecret();
   s.durable = persist.isDurable();
   res.json(s);
@@ -103,6 +107,70 @@ app.post("/api/settings/dte", authguard.requireSecret, (req, res) => {
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
+});
+
+function buildTradeConfigPreview(spyContracts, iwmContracts, spyDte, iwmDte) {
+  function pack(ticker, contracts, dte) {
+    var total = Math.min(100, Math.max(1, parseInt(contracts, 10) || 1));
+    var half = Math.ceil(total / 2);
+    var info = expiryUtil.getExpiryInfo(ticker);
+    if (typeof dte === "number") {
+      info = {
+        ticker: ticker,
+        dte: dte,
+        expiry: expiryUtil.getExpiryForDTE(dte),
+        label: dte + "DTE",
+        formatted: expiryUtil.formatExpiryLabel(expiryUtil.getExpiryForDTE(dte)),
+        weekday: new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "long" })
+          .format(expiryUtil.getExpiryDateForDTE(dte))
+      };
+    }
+    return {
+      contracts: total,
+      sizing: { total: total, halfEntry: half, retestAdd: total, fullPosition: half + total },
+      expiry: info
+    };
+  }
+  return {
+    SPY: pack("SPY", spyContracts, typeof spyDte === "number" ? spyDte : undefined),
+    IWM: pack("IWM", iwmContracts, typeof iwmDte === "number" ? iwmDte : undefined),
+    dailyIncrement: process.env.ORB_DAILY_INCREMENT !== "0",
+    durable: persist.isDurable()
+  };
+}
+
+app.get("/api/trade-config", authguard.requireSecret, (req, res) => {
+  var s = getState();
+  res.json(buildTradeConfigPreview(s.contracts.SPY, s.contracts.IWM, settings.getDTE("SPY"), settings.getDTE("IWM")));
+});
+
+app.post("/api/trade-config", authguard.requireSecret, (req, res) => {
+  try {
+    var body = req.body || {};
+    var spy = body.SPY || body.spy || {};
+    var iwm = body.IWM || body.iwm || {};
+    if (spy.contracts !== undefined || iwm.contracts !== undefined) {
+      setContractSize(
+        spy.contracts !== undefined ? spy.contracts : getState().contracts.SPY,
+        iwm.contracts !== undefined ? iwm.contracts : getState().contracts.IWM
+      );
+    }
+    if (spy.dte !== undefined) settings.setDTE("SPY", spy.dte);
+    if (iwm.dte !== undefined) settings.setDTE("IWM", iwm.dte);
+    var s = getState();
+    var cfg = buildTradeConfigPreview(s.contracts.SPY, s.contracts.IWM, settings.getDTE("SPY"), settings.getDTE("IWM"));
+    res.json({ ok: true, config: cfg, contracts: s.contracts, dte: settings.getAll().dte });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+app.get("/api/trade-config/preview", authguard.requireSecret, (req, res) => {
+  var spyC = req.query.spy_contracts || getState().contracts.SPY;
+  var iwmC = req.query.iwm_contracts || getState().contracts.IWM;
+  var spyD = req.query.spy_dte !== undefined ? parseInt(req.query.spy_dte, 10) : settings.getDTE("SPY");
+  var iwmD = req.query.iwm_dte !== undefined ? parseInt(req.query.iwm_dte, 10) : settings.getDTE("IWM");
+  res.json(buildTradeConfigPreview(spyC, iwmC, spyD, iwmD));
 });
 
 app.get("/api/orb/refresh", authguard.requireSecret, async (req, res) => {

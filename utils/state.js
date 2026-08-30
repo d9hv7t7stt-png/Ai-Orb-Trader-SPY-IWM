@@ -183,10 +183,21 @@ function applyOrderFill(ticker, order) {
 }
 
 function setContractSize(spy, iwm) {
-  state.contracts.SPY = parseInt(spy) || 1;
-  state.contracts.IWM = parseInt(iwm) || 1;
+  state.contracts.SPY = Math.min(100, Math.max(1, parseInt(spy, 10) || 1));
+  state.contracts.IWM = Math.min(100, Math.max(1, parseInt(iwm, 10) || 1));
   savePersistedState();
   logEvent("CONTRACTS", "Size updated SPY=" + state.contracts.SPY + " IWM=" + state.contracts.IWM);
+}
+
+function getTradeSizing(ticker) {
+  var total = state.contracts[ticker] || 1;
+  var half = Math.ceil(total / 2);
+  return {
+    total: total,
+    halfEntry: half,
+    retestAdd: total,
+    fullPosition: half + total
+  };
 }
 
 function logEvent(type, message) {
@@ -210,6 +221,7 @@ module.exports = {
   setEntryPrice: setEntryPrice,
   applyOrderFill: applyOrderFill,
   setContractSize: setContractSize,
+  getTradeSizing: getTradeSizing,
   logEvent: logEvent,
   etDateKey: etDateKey
 };
