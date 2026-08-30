@@ -9,6 +9,9 @@ var yahoo = require("./yahoo");
 var pnlUtil = require("./pnl");
 var reconcile = require("./reconcile");
 
+var lastReconcileMs = 0;
+var RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
+
 async function checkCrossEntryStop(ticker, pos, s) {
   if (!pos.crossEntry || !pos.stopMode || pos.stopMode === "mid") return false;
   var orb = s.orb[ticker];
@@ -30,10 +33,32 @@ async function checkCrossEntryStop(ticker, pos, s) {
 
   var contracts = pos.contracts;
   stateModule.logEvent("STOP_OUT", ticker + " " + reason + " (underlying $" + und.toFixed(2) + ")");
-  await trayd.closePartialPosition({ ticker: ticker, contracts: contracts, reason: reason });
-  pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, 0, contracts);
+  var rhPositions = await rh.getOpenOptionPositions();
+  var rhPos = reconcile.findRhPosition(rhPositions, ticker, pos);
+  var exitPrice = 0;
+  if (rhPos) exitPrice = await rh.getOptionMarkByUrl(rhPos.option) || 0;
+  var closed = await trayd.closePartialPosition({ ticker: ticker, contracts: contracts, reason: reason });
+  if (closed && closed.ok === false) {
+    stateModule.logEvent("ORDER_ERROR", ticker + " cross-entry stop RH close failed: " + (closed.error || "no position"));
+    return false;
+  }
+  if (exitPrice > 0) {
+    pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, exitPrice, contracts);
+  } else if (rhPos) {
+    stateModule.logEvent("PNL_WARN", ticker + " cross-entry stop — no exit mark, P&L skipped");
+  }
+  await notifyCrossEntryStop(ticker, exitPrice, reason);
   stateModule.closePosition(ticker, reason);
   return true;
+}
+
+async function notifyCrossEntryStop(ticker, optionPrice, reason) {
+  try {
+    var discord = require("./discord");
+    if (discord && typeof discord.onStop === "function") {
+      await discord.onStop(ticker, optionPrice || 0, reason);
+    }
+  } catch (e) { console.log("[DISCORD_NOTIFY_ERROR] onStop: " + e.message); }
 }
 
 async function checkProfitTiers() {
@@ -41,6 +66,19 @@ async function checkProfitTiers() {
   if (!rh.getToken()) return;
   var auth = await rh.checkAuthStatus();
   if (!auth.ok) return;
+
+  var now = Date.now();
+  if (now - lastReconcileMs >= RECONCILE_INTERVAL_MS) {
+    lastReconcileMs = now;
+    try {
+      var recon = await reconcile.reconcileRhPositions();
+      if (recon.ok && recon.synced && recon.synced.length) {
+        stateModule.logEvent("RECONCILE", "mid-session sync: " + recon.synced.join(", "));
+      }
+    } catch (e) {
+      console.log("[RECONCILE_ERROR]", e.message);
+    }
+  }
 
   var s = stateModule.getState();
   var tickers = ["SPY", "IWM"];
@@ -66,7 +104,7 @@ async function checkProfitTiers() {
     }
 
     if (Math.floor(parseFloat(rhPos.quantity)) !== pos.contracts) {
-      pos.contracts = Math.max(1, Math.floor(parseFloat(rhPos.quantity)));
+      stateModule.syncPositionQty(ticker, Math.floor(parseFloat(rhPos.quantity)));
       stateModule.applyOrderFill(ticker, {
         instrumentUrl: rhPos.option,
         strike: rhPos.strike_price,

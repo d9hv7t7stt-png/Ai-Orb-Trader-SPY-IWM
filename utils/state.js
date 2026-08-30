@@ -189,8 +189,8 @@ function setContractSize(spy, iwm) {
   logEvent("CONTRACTS", "Size updated SPY=" + state.contracts.SPY + " IWM=" + state.contracts.IWM);
 }
 
-function getTradeSizing(ticker) {
-  var total = state.contracts[ticker] || 1;
+function getTradeSizingFromTotal(total) {
+  total = Math.min(100, Math.max(1, parseInt(total, 10) || 1));
   var half = Math.ceil(total / 2);
   return {
     total: total,
@@ -198,6 +198,54 @@ function getTradeSizing(ticker) {
     retestAdd: half,
     fullPosition: half * 2
   };
+}
+
+function getTradeSizing(ticker) {
+  return getTradeSizingFromTotal(state.contracts[ticker] || 1);
+}
+
+function inferPositionPhase(ticker, qty) {
+  var half = getTradeSizing(ticker).halfEntry;
+  var q = Math.max(1, Math.floor(parseFloat(qty) || 1));
+  var isFull = q > half;
+  return { halfIn: !isFull, fullIn: isFull, contracts: q, totalContracts: half };
+}
+
+function importRhPosition(ticker, side, qty, entryPrice, meta) {
+  meta = meta || {};
+  var phase = inferPositionPhase(ticker, qty);
+  state.positions[ticker] = {
+    side: side,
+    halfIn: phase.halfIn,
+    fullIn: phase.fullIn,
+    contracts: phase.contracts,
+    totalContracts: phase.totalContracts,
+    entryPrice: parseFloat(entryPrice) || 0,
+    breakEvenActivated: false,
+    lastProfitTier: 0,
+    stopPct: null,
+    stopped: false,
+    crossEntry: !!meta.crossEntry,
+    stopMode: meta.stopMode || "mid",
+    strike: meta.strike || null,
+    expiry: meta.expiry || null,
+    instrumentUrl: meta.instrumentUrl || null
+  };
+  logEvent("POSITION_OPEN", ticker + " " + side + " " + phase.contracts + "c @ $" + entryPrice +
+    (phase.halfIn ? " (half)" : " (full)") +
+    (meta.crossEntry ? " cross-entry stop=" + meta.stopMode : "") + " [reconcile]");
+  savePersistedState();
+}
+
+function syncPositionQty(ticker, qty) {
+  var pos = state.positions[ticker];
+  if (!pos || pos.stopped) return;
+  var phase = inferPositionPhase(ticker, qty);
+  pos.contracts = phase.contracts;
+  pos.halfIn = phase.halfIn;
+  pos.fullIn = phase.fullIn;
+  pos.totalContracts = phase.totalContracts;
+  savePersistedState();
 }
 
 function logEvent(type, message) {
@@ -222,6 +270,10 @@ module.exports = {
   applyOrderFill: applyOrderFill,
   setContractSize: setContractSize,
   getTradeSizing: getTradeSizing,
+  getTradeSizingFromTotal: getTradeSizingFromTotal,
+  inferPositionPhase: inferPositionPhase,
+  importRhPosition: importRhPosition,
+  syncPositionQty: syncPositionQty,
   logEvent: logEvent,
   etDateKey: etDateKey
 };

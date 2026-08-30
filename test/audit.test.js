@@ -163,6 +163,28 @@ test("trade sizing preview matches live half+half", function() {
   assert.ok(sz.halfEntry >= 1);
   assert.strictEqual(sz.retestAdd, sz.halfEntry);
   assert.strictEqual(sz.fullPosition, sz.halfEntry * 2);
+  var fromTotal = state.getTradeSizingFromTotal(7);
+  assert.strictEqual(fromTotal.halfEntry, 4);
+  assert.strictEqual(fromTotal.retestAdd, 4);
+  assert.strictEqual(fromTotal.fullPosition, 8);
+});
+
+test("reconcile infers half vs full from RH qty", function() {
+  var state = require("../utils/state");
+  state.setContractSize(6, 6);
+  var half = state.inferPositionPhase("SPY", 3);
+  assert.strictEqual(half.halfIn, true);
+  assert.strictEqual(half.fullIn, false);
+  assert.strictEqual(half.contracts, 3);
+  var full = state.inferPositionPhase("SPY", 6);
+  assert.strictEqual(full.halfIn, false);
+  assert.strictEqual(full.fullIn, true);
+  assert.strictEqual(full.contracts, 6);
+});
+
+test("ET interval aligns to Eastern clock boundaries", function() {
+  var ms = exitlogic.msUntilNextETInterval(15);
+  assert.ok(ms > 0 && ms <= 15 * 60 * 1000);
 });
 
 if (process.exitCode) {

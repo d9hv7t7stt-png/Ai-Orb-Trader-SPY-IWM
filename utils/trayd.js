@@ -36,7 +36,11 @@ async function placeOrder(opts) {
   if (strike <= 0) throw new Error("Could not resolve underlying price for " + opts.ticker + " — check RH_TOKEN");
   console.log("[ORDER] " + opts.ticker + " " + opts.side + " x" + opts.contracts + " strike=" + strike + " expiry=" + expiry);
   var result = await rh.placeOptionOrder(opts.ticker, opts.side, opts.contracts, expiry, strike, opts.side);
-  var entryPrice = await resolveEntryPrice(result.instrumentUrl, result.price);
+  var entryPrice = 0;
+  if (result.order_id) {
+    entryPrice = await rh.waitForFillPrice(result.order_id, result.instrumentUrl);
+  }
+  if (!entryPrice) entryPrice = await resolveEntryPrice(result.instrumentUrl, result.price);
   return {
     ticker: opts.ticker,
     side: opts.side,

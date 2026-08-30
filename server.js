@@ -6,7 +6,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "dashboard")));
 
 const { handleAlert } = require("./routes/alert");
-const { getState, setContractSize, getTradeSizing } = require("./utils/state");
+const { getState, setContractSize, getTradeSizingFromTotal } = require("./utils/state");
 const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth, getAuthInfo } = require("./utils/reauth");
 const rh = require("./utils/robinhood");
 const discord = require("./utils/discord");
@@ -111,8 +111,7 @@ app.post("/api/settings/dte", authguard.requireSecret, (req, res) => {
 
 function buildTradeConfigPreview(spyContracts, iwmContracts, spyDte, iwmDte) {
   function pack(ticker, contracts, dte) {
-    var total = Math.min(100, Math.max(1, parseInt(contracts, 10) || 1));
-    var half = Math.ceil(total / 2);
+    var sizing = getTradeSizingFromTotal(contracts);
     var info = expiryUtil.getExpiryInfo(ticker);
     if (typeof dte === "number") {
       info = {
@@ -126,8 +125,8 @@ function buildTradeConfigPreview(spyContracts, iwmContracts, spyDte, iwmDte) {
       };
     }
     return {
-      contracts: total,
-      sizing: { total: total, halfEntry: half, retestAdd: total, fullPosition: half + total },
+      contracts: sizing.total,
+      sizing: sizing,
       expiry: info
     };
   }

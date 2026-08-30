@@ -91,7 +91,7 @@ async function reconcileRhPositions() {
     var fill = fillFromRhPosition(rhPos, mark);
 
     if (!statePos || statePos.stopped) {
-      stateModule.openHalfPosition(ticker, side, qty, fill.entryPrice, fill);
+      stateModule.importRhPosition(ticker, side, qty, fill.entryPrice, fill);
       stateModule.logEvent("RECONCILE", ticker + " imported RH " + side + " " + qty + "c" +
         (fill.entryPrice ? " @ $" + fill.entryPrice.toFixed(2) : ""));
       synced.push(ticker);
@@ -100,12 +100,12 @@ async function reconcileRhPositions() {
 
     if (statePos.side !== side) {
       stateModule.logEvent("RECONCILE_WARN", ticker + " state=" + statePos.side + " RH=" + side + " — syncing to RH");
-      stateModule.openHalfPosition(ticker, side, qty, fill.entryPrice || statePos.entryPrice, fill);
+      stateModule.importRhPosition(ticker, side, qty, fill.entryPrice || statePos.entryPrice, fill);
       synced.push(ticker);
       continue;
     }
 
-    statePos.contracts = qty;
+    stateModule.syncPositionQty(ticker, qty);
     var meta = { instrumentUrl: fill.instrumentUrl, strike: fill.strike, expiry: fill.expiry };
     if (!(statePos.entryPrice > 0)) meta.entryPrice = fill.entryPrice;
     stateModule.applyOrderFill(ticker, meta);

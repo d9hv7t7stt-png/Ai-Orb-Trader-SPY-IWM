@@ -424,6 +424,20 @@ function createChannel(cfg) {
     }, true);
   }
 
+  async function expectedMoveExit(signalTicker, optionPrice, timeframe) {
+    var tradeTicker = tradeTickerForSignal(signalTicker);
+    var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
+    for (var i = 0; i < keys.length; i++) {
+      var pos = account.positions[keys[i]];
+      if (!pos) continue;
+      var qty = Math.floor(pos.contracts * 0.9);
+      if (qty < 1) continue;
+      var price = await resolveLegExitPrice(pos, signalTicker, tradeTicker, optionPrice);
+      await partialExitLeg(keys[i], qty, price,
+        (timeframe || "daily") + " expected move — 90% exit", 3);
+    }
+  }
+
   async function stop(signalTicker, currentPrice, reason) {
     var tradeTicker = tradeTickerForSignal(signalTicker);
     var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
@@ -810,6 +824,7 @@ function createChannel(cfg) {
     trades: acceptsSignal,
     entry: entry, add: add, stop: stop, fullClose: fullClose,
     breakeven: breakeven, profitTier: profitTier, eodSell: eodSell,
+    expectedMoveExit: expectedMoveExit,
     openPositions: openPositions, dailySummary: dailySummary, morning: morning,
     closeDigest: closeDigest, sundayPremarket: sundayPremarket, expectedMoves: expectedMoves,
     pollMoveTargets: pollMoveTargets, pollOptionMarks: pollOptionMarks,
@@ -864,6 +879,11 @@ async function onAdd(ticker, optionPrice) {
     return c.add(c.tradeTickerForSignal(ticker), optionPrice, ticker);
   });
 }
+async function onExpectedMoveExit(ticker, optionPrice, timeframe) {
+  await forSignal(ticker, function(c) {
+    return c.expectedMoveExit(ticker, optionPrice, timeframe);
+  });
+}
 async function onStop(ticker, optionPrice, reason) {
   await forSignal(ticker, function(c) { return c.stop(ticker, optionPrice, reason); });
 }
@@ -895,12 +915,12 @@ function scheduleMorning(channel) {
 }
 
 function scheduleUpdates(channel) {
-  var stepMs = channel.cfg.updateMins * 60 * 1000;
-  function msUntilNext() { var now=new Date(); var ms = now.getUTCMinutes()*60000 + now.getUTCSeconds()*1000 + now.getUTCMilliseconds(); var into = ms % stepMs; return stepMs - into; }
+  var stepMins = channel.cfg.updateMins;
+  function msUntilNext() { return exitlogic.msUntilNextETInterval(stepMins); }
   (function next() {
     setTimeout(async function() { if (paperMarketHours()) await channel.openPositions(channel.cfg.updateMins + "-Min Update"); next(); }, msUntilNext());
   })();
-  console.log("[DISCORD] " + channel.cfg.id + " position updates every " + channel.cfg.updateMins + " min");
+  console.log("[DISCORD] " + channel.cfg.id + " position updates every " + channel.cfg.updateMins + " min (ET)");
 }
 
 function scheduleDaily(channel) {
@@ -981,6 +1001,7 @@ function first() {
 module.exports = {
   initChannels: initChannels,
   onEntry: onEntry, onAdd: onAdd, onStop: onStop, onFullClose: onFullClose,
+  onExpectedMoveExit: onExpectedMoveExit,
   getChannels: function() { return channels; },
   // test-route compatibility
   postGoodMorning: function(m) { return first().morning(m); },

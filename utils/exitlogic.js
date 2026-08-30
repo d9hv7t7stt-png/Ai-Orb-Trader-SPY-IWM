@@ -161,6 +161,19 @@ function msUntilNextTradingTimeET(hour, minute) {
   return 14 * 86400000;
 }
 
+function msUntilNextETInterval(intervalMins) {
+  var now = new Date();
+  var m = etMinutesOfDay();
+  var secStr = new Date().toLocaleTimeString("en-US", {
+    timeZone: "America/New_York", hour12: false, second: "2-digit"
+  });
+  var sec = parseInt(secStr, 10) || 0;
+  var intervalMs = intervalMins * 60000;
+  var totalMs = m * 60000 + sec * 1000 + now.getMilliseconds();
+  var into = totalMs % intervalMs;
+  return into === 0 ? intervalMs : intervalMs - into;
+}
+
 function etDateKey() {
   return new Date().toLocaleDateString("en-US", { timeZone: "America/New_York" });
 }
@@ -175,6 +188,7 @@ module.exports = {
   msUntilNextTimeET: msUntilNextTimeET,
   msUntilNextWeekdayTimeET: msUntilNextWeekdayTimeET,
   msUntilNextTradingTimeET: msUntilNextTradingTimeET,
+  msUntilNextETInterval: msUntilNextETInterval,
   etDateKey: etDateKey,
   etMinutesOfDay: etMinutesOfDay,
   INITIAL_STOP_PCT: INITIAL_STOP_PCT,

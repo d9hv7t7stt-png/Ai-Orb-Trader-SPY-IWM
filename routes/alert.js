@@ -210,12 +210,12 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       var spyPos = stateModule.getPosition("SPY");
       if (ticker === "IWM" && (!spyPos || spyPos.stopped) && s.orb.SPY.set && !processing["SPY"]) {
         processing["SPY"] = true; lockedTickers.push("SPY");
-        recentlySeen("SPY", "cross_long");
         var spyHalf = Math.ceil(s.contracts.SPY / 2);
         stateModule.logEvent("CROSS_ENTRY", "IWM long → SPY call half=" + spyHalf + " stop=SPY ORB low");
         stateModule.openHalfPosition("SPY", "call", spyHalf, optPrice || 0, { crossEntry: true, stopMode: "orb_low" });
         try {
           cross = await placeAndFill("SPY", "call", spyHalf);
+          recentlySeen("SPY", "cross_long");
         } catch (e) {
           stateModule.closePosition("SPY", "cross entry failed");
           stateModule.logEvent("CROSS_ERROR", "SPY cross entry failed: " + e.message);
@@ -277,12 +277,12 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       var spyPos2 = stateModule.getPosition("SPY");
       if (ticker === "IWM" && (!spyPos2 || spyPos2.stopped) && s.orb.SPY.set && !processing["SPY"]) {
         processing["SPY"] = true; lockedTickers.push("SPY");
-        recentlySeen("SPY", "cross_short");
         var spyHalf2 = Math.ceil(s.contracts.SPY / 2);
         stateModule.logEvent("CROSS_ENTRY", "IWM short → SPY put half=" + spyHalf2 + " stop=SPY ORB high");
         stateModule.openHalfPosition("SPY", "put", spyHalf2, optPrice || 0, { crossEntry: true, stopMode: "orb_high" });
         try {
           cross2 = await placeAndFill("SPY", "put", spyHalf2);
+          recentlySeen("SPY", "cross_short");
         } catch (e) {
           stateModule.closePosition("SPY", "cross entry failed");
           stateModule.logEvent("CROSS_ERROR", "SPY cross entry failed: " + e.message);
@@ -331,6 +331,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, qty90);
     stateModule.reduceContracts(ticker, qty90);
     stateModule.markProfitTier(ticker, 300);
+    await notify("onExpectedMoveExit", [ticker, optPrice || 0, timeframe]);
     pos = stateModule.getPosition(ticker);
     if (!pos || pos.contracts <= 0) stateModule.closePosition(ticker, timeframe + " expected move 90% exit");
     return { ok: true, message: ticker + " 90% exit on expected move" };
