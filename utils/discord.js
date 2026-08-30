@@ -562,14 +562,24 @@ async function onFullClose(ticker, optionPrice) { await forTicker(ticker, functi
 
 // ── schedulers ──────────────────────────────────────────────────────────────
 function scheduleMorning(channel) {
+  var marketOpenMin = 9 * 60 + 30;
   var alerts = [
-    { utcHour: 12, utcMin: 45, m: 45 }, { utcHour: 12, utcMin: 30, m: 60 },
-    { utcHour: 13, utcMin: 0,  m: 30 }, { utcHour: 13, utcMin: 25, m: 5 },
-    { utcHour: 13, utcMin: 29, m: 1 }
+    { minutesBefore: 60, m: 60 },
+    { minutesBefore: 45, m: 45 },
+    { minutesBefore: 30, m: 30 },
+    { minutesBefore: 5, m: 5 },
+    { minutesBefore: 1, m: 1 }
   ];
-  function msUntil(h, mi) { var now=new Date(); var t=new Date(); t.setUTCHours(h,mi,0,0); if(t<=now)t.setUTCDate(t.getUTCDate()+1); return t-now; }
   alerts.forEach(function(a) {
-    (function next() { setTimeout(async function(){ await channel.morning(a.m); next(); }, msUntil(a.utcHour, a.utcMin)); })();
+    var fireMin = marketOpenMin - a.minutesBefore;
+    var hour = Math.floor(fireMin / 60);
+    var min = fireMin % 60;
+    (function next() {
+      setTimeout(async function() {
+        await channel.morning(a.m);
+        next();
+      }, exitlogic.msUntilNextTimeET(hour, min));
+    })();
   });
 }
 
@@ -583,8 +593,12 @@ function scheduleUpdates(channel) {
 }
 
 function scheduleDaily(channel) {
-  function msUntil4pmET() { var now=new Date(); var t=new Date(); t.setUTCHours(20,0,0,0); if(t<=now)t.setUTCDate(t.getUTCDate()+1); return t-now; }
-  (function next() { setTimeout(async function(){ await channel.dailySummary(); next(); }, msUntil4pmET()); })();
+  (function next() {
+    setTimeout(async function() {
+      await channel.dailySummary();
+      next();
+    }, exitlogic.msUntilNextTimeET(16, 0));
+  })();
 }
 
 function initChannels(getToken) {

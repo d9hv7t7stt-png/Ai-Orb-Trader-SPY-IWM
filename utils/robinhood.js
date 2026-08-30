@@ -290,18 +290,47 @@ async function placeOptionOrder(ticker, side, contracts, expiry, strike, optionT
   const res = await authedRequest("POST", "/options/orders/", order, "json");
   if (res.id) {
     console.log(`[ORDER_OK] ${res.id}`);
-    return { ok: true, order_id: res.id, price: limitPrice };
+    return {
+      ok: true,
+      order_id: res.id,
+      price: limitPrice,
+      instrumentUrl: instrumentUrl,
+      strike: instrument.strike_price ? Math.round(parseFloat(instrument.strike_price)) : strike,
+      expiry: instrument.expiration_date || expiry,
+      optionType: optionType
+    };
   }
   console.log("[ORDER_ERROR]", JSON.stringify(res));
   throw new Error(JSON.stringify(res));
 }
 
-async function closeOptionPosition(ticker, contracts, reason) {
+function pickRhPosition(open, matchOpts) {
+  matchOpts = matchOpts || {};
+  if (matchOpts.instrumentUrl) {
+    var byUrl = open.find(function(p) { return p.option === matchOpts.instrumentUrl; });
+    if (byUrl) return byUrl;
+  }
+  if (matchOpts.side) {
+    var want = matchOpts.side;
+    var bySide = open.find(function(p) {
+      var t = ((p.option_type || p.type || "") + "").toLowerCase();
+      var sideOk = t === want;
+      var strikeOk = !matchOpts.strike || Math.round(parseFloat(p.strike_price)) === Math.round(parseFloat(matchOpts.strike));
+      var expOk = !matchOpts.expiry || p.expiration_date === matchOpts.expiry;
+      return sideOk && strikeOk && expOk;
+    });
+    if (bySide) return bySide;
+  }
+  return open[0] || null;
+}
+
+async function closeOptionPosition(ticker, contracts, reason, matchOpts) {
   const positions = await authedRequest("GET", "/options/positions/?nonzero=true", null, "json");
   const matching = (positions.results || []).filter(p => p.chain_symbol === ticker && parseFloat(p.quantity) > 0);
   if (!matching.length) return { ok: false, error: "No open position found" };
 
-  const pos = matching[0];
+  const pos = pickRhPosition(matching, matchOpts);
+  if (!pos) return { ok: false, error: "No matching open position found" };
   const quoteRes = await authedRequest("GET", `/marketdata/options/?instruments=${encodeURIComponent(pos.option)}`, null, "json");
   const bidPrice = quoteRes.results?.[0]?.bid_price || "0.10";
   const limitPrice = (parseFloat(bidPrice) * 0.95).toFixed(2);

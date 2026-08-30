@@ -107,7 +107,10 @@ function openHalfPosition(ticker, side, contracts, entryPrice, meta) {
     stopPct: null,
     stopped: false,
     crossEntry: !!meta.crossEntry,
-    stopMode: meta.stopMode || "mid"
+    stopMode: meta.stopMode || "mid",
+    strike: meta.strike || null,
+    expiry: meta.expiry || null,
+    instrumentUrl: meta.instrumentUrl || null
   };
   logEvent("POSITION_OPEN", ticker + " " + side + " half " + contracts + "c @ $" + entryPrice +
     (meta.crossEntry ? " (cross-entry stop=" + meta.stopMode + ")" : ""));
@@ -141,12 +144,41 @@ function markProfitTier(ticker, tier) {
   }
 }
 
+function reduceContracts(ticker, sold) {
+  var pos = state.positions[ticker];
+  if (!pos) return;
+  pos.contracts = Math.max(0, pos.contracts - sold);
+  savePersistedState();
+}
+
 function closePosition(ticker, reason) {
   var pos = state.positions[ticker];
   if (pos) {
     pos.stopped = true;
     logEvent("POSITION_CLOSE", ticker + " closed: " + reason);
     savePersistedState();
+  }
+}
+
+function setEntryPrice(ticker, price) {
+  var pos = state.positions[ticker];
+  if (pos && price > 0) {
+    pos.entryPrice = parseFloat(price);
+    savePersistedState();
+  }
+}
+
+function applyOrderFill(ticker, order) {
+  if (!order) return;
+  var pos = state.positions[ticker];
+  if (!pos || pos.stopped) return;
+  if (order.entryPrice && order.entryPrice > 0) pos.entryPrice = parseFloat(order.entryPrice);
+  if (order.instrumentUrl) pos.instrumentUrl = order.instrumentUrl;
+  if (order.strike) pos.strike = Math.round(parseFloat(order.strike));
+  if (order.expiry) pos.expiry = order.expiry;
+  savePersistedState();
+  if (order.entryPrice && order.entryPrice > 0) {
+    logEvent("ENTRY_FILL", ticker + " live entry @ $" + parseFloat(order.entryPrice).toFixed(2));
   }
 }
 
@@ -173,7 +205,10 @@ module.exports = {
   addSecondHalf: addSecondHalf,
   setBreakEven: setBreakEven,
   markProfitTier: markProfitTier,
+  reduceContracts: reduceContracts,
   closePosition: closePosition,
+  setEntryPrice: setEntryPrice,
+  applyOrderFill: applyOrderFill,
   setContractSize: setContractSize,
   logEvent: logEvent,
   etDateKey: etDateKey
