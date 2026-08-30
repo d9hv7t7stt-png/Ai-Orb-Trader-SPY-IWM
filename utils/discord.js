@@ -1055,6 +1055,14 @@ function first() {
   });
 }
 
+function resolveChannelTargets(channelSpec) {
+  var chans = channels.length ? channels : [first()];
+  if (!channelSpec || channelSpec === "all") return chans;
+  if (channelSpec === "bc") return chans.filter(function(c) { return c.cfg.id === "free" || c.cfg.id === "spy0dte"; });
+  var ids = String(channelSpec).split(",").map(function(s) { return s.trim(); }).filter(Boolean);
+  return chans.filter(function(c) { return ids.indexOf(c.cfg.id) >= 0; });
+}
+
 module.exports = {
   initChannels: initChannels,
   onEntry: onEntry, onAdd: onAdd, onStop: onStop, onFullClose: onFullClose,
@@ -1065,8 +1073,8 @@ module.exports = {
   postDailySummary: function() { return first().dailySummary(); },
   postExpectedMoves: function() { return first().closeDigest(); },
   postCloseDigest: function() { return first().closeDigest(); },
-  postSundayPremarket: function() {
-    var list = channels.length ? channels : [first()];
+  postSundayPremarket: function(channelSpec) {
+    var list = resolveChannelTargets(channelSpec);
     return Promise.all(list.map(function(c) { return c.sundayPremarket(); })).then(function() {
       return list.map(function(c) { return c.cfg.id; });
     });

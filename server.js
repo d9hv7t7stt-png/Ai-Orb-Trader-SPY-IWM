@@ -242,7 +242,8 @@ app.post("/api/contracts", authguard.requireSecret, (req, res) => {
 
 app.get("/api/discord/sunday", authguard.requireSecret, async (req, res) => {
   try {
-    var posted = await discord.postSundayPremarket();
+    var ch = req.query.channels || req.query.channel || null;
+    var posted = await discord.postSundayPremarket(ch);
     res.json({ ok: true, posted: posted || [] });
   } catch (e) {
     res.status(500).json({ error: e.message });
