@@ -206,21 +206,15 @@ app.post("/webhook", authguard.requireSecret, (req, res) => {
 
   setImmediate(async function() {
     try {
-      if (!rh.getToken()) {
-        var ok = await ensureLoggedIn();
-        if (!ok) {
-          console.error("[WEBHOOK_ASYNC] Not connected to Robinhood — signal dropped");
-          return;
+      // Best-effort RH auth — never drop the signal; Discord paper + Yahoo work without RH.
+      try {
+        if (!rh.getToken()) await ensureLoggedIn();
+        else {
+          var auth = await rh.checkAuthStatus();
+          if (!auth.ok) await ensureLoggedIn();
         }
-      } else {
-        var auth = await rh.checkAuthStatus();
-        if (!auth.ok) {
-          var recovered = await ensureLoggedIn();
-          if (!recovered) {
-            console.error("[WEBHOOK_ASYNC] Token expired — signal dropped");
-            return;
-          }
-        }
+      } catch (authErr) {
+        console.warn("[WEBHOOK_ASYNC] Robinhood offline — paper alerts still processing:", authErr.message);
       }
       var result = await handleAlert(req.body);
       console.log("[WEBHOOK_DONE]", JSON.stringify(result));

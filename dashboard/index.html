@@ -556,6 +556,9 @@
     <div class="panel">
       <div class="panel-header"><span class="panel-title">TradingView Alert Templates</span></div>
       <div class="panel-body">
+        <div style="padding:8px;background:var(--green-dim);border:1px solid var(--green);font-size:10px;color:var(--green);line-height:1.6;margin-bottom:10px">
+          ✅ Your existing minimal alerts work as-is. The server auto-fetches ORB levels, underlying prices, and option marks from Yahoo when TradingView JSON omits them.
+        </div>
         <div class="template-tabs">
           <button class="tab active" onclick="switchTab('spy-orb')">ORB Set</button>
           <button class="tab" onclick="switchTab('spy-long')">SPY Long</button>
@@ -564,19 +567,20 @@
           <button class="tab" onclick="switchTab('iwm-long')">IWM Long</button>
           <button class="tab" onclick="switchTab('iwm-short')">IWM Short</button>
           <button class="tab" onclick="switchTab('iwm-stop')">IWM Stop</button>
+          <button class="tab" onclick="switchTab('optional')">Optional+</button>
         </div>
         <div class="template-content active" id="tpl-spy-orb">
-          <div class="code-label">ORB Set · Once when 15-min ORB candle closes (9:44 ET) · create for SPY and IWM</div>
-          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"orb_set","orb_high":{{high}},"orb_low":{{low}}}</div>
-          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"orb_set","orb_high":{{high}},"orb_low":{{low}}}</div>
+          <div class="code-label">ORB Set · optional — server also captures ORB from Yahoo every 2 min</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"orb_set"}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"orb_set"}</div>
         </div>
         <div class="template-content" id="tpl-spy-long">
           <div class="code-label">SPY Breakout Long · Once Per Bar Close · 5-min chart</div>
-          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"breakout_long","close":{{close}}}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"breakout_long"}</div>
         </div>
         <div class="template-content" id="tpl-spy-short">
           <div class="code-label">SPY Breakout Short · Once Per Bar Close · 5-min chart</div>
-          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"breakout_short","close":{{close}}}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"breakout_short"}</div>
         </div>
         <div class="template-content" id="tpl-spy-stop">
           <div class="code-label">SPY Stop — create 2 alerts</div>
@@ -585,19 +589,24 @@
         </div>
         <div class="template-content" id="tpl-iwm-long">
           <div class="code-label">IWM Breakout Long · Once Per Bar Close · 5-min chart</div>
-          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"breakout_long","close":{{close}}}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"breakout_long"}</div>
         </div>
         <div class="template-content" id="tpl-iwm-short">
           <div class="code-label">IWM Breakout Short · Once Per Bar Close · 5-min chart</div>
-          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"breakout_short","close":{{close}}}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"breakout_short"}</div>
         </div>
         <div class="template-content" id="tpl-iwm-stop">
           <div class="code-label">IWM Stop — create 2 alerts</div>
           <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"stop_long"}</div>
           <div class="code-block" onclick="copyTemplate(this)">{"ticker":"IWM","event":"stop_short"}</div>
         </div>
+        <div class="template-content" id="tpl-optional">
+          <div class="code-label">Optional extras — slightly faster strike resolution if you add them later</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"breakout_long","close":{{close}}}</div>
+          <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"orb_set","orb_high":{{high}},"orb_low":{{low}}}</div>
+        </div>
         <div style="padding:8px;background:var(--amber-dim);border:1px solid var(--amber);font-size:10px;color:var(--amber);line-height:1.6;margin-top:8px">
-          ⚠ Set trigger to Once Per Bar Close. Add WEBHOOK_SECRET to Railway and append <code>?secret=YOUR_SECRET</code> to your TradingView webhook URL.
+          Set trigger to Once Per Bar Close.
         </div>
       </div>
     </div>
@@ -609,7 +618,7 @@
       <div class="panel-header"><span class="panel-title">Account & Auth</span></div>
       <div class="panel-body">
         <div style="font-size:11px;color:var(--text-dim);line-height:1.7;margin-bottom:12px;padding:10px;background:var(--bg);border:1px solid var(--border)">
-          Credentials stored as Railway env vars: <span style="color:var(--amber)">RH_EMAIL, RH_PASSWORD, RH_TOKEN, RH_REFRESH_TOKEN, RH_ACCOUNT_NUMBER, WEBHOOK_SECRET, DISCORD_WEBHOOK_URL</span>
+          Credentials stored as Railway env vars: <span style="color:var(--amber)">RH_EMAIL, RH_PASSWORD, RH_TOKEN, RH_REFRESH_TOKEN, RH_ACCOUNT_NUMBER, DISCORD_WEBHOOK_URL</span>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
           <button class="btn primary" onclick="triggerReauth()">Test Connection</button>

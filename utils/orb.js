@@ -71,4 +71,25 @@ function scheduleORBCapture() {
   setTimeout(run, 10000);
 }
 
-module.exports = { fetchOpeningRange: fetchOpeningRange, populateIfNeeded: populateIfNeeded, scheduleORBCapture: scheduleORBCapture };
+async function ensureOrbForTicker(ticker) {
+  var s = stateModule.getState();
+  var today = etDate();
+  var orb = s.orb && s.orb[ticker];
+  if (orb && orb.set && orb.high && orb.low && orb.date === today) {
+    return { high: orb.high, low: orb.low, source: orb.source || "cached" };
+  }
+  var result = await populateTicker(ticker, false);
+  s = stateModule.getState();
+  orb = s.orb && s.orb[ticker];
+  if (result.set && orb && orb.high && orb.low) {
+    return { high: orb.high, low: orb.low, source: result.source || orb.source || "yahoo" };
+  }
+  return null;
+}
+
+module.exports = {
+  fetchOpeningRange: fetchOpeningRange,
+  populateIfNeeded: populateIfNeeded,
+  scheduleORBCapture: scheduleORBCapture,
+  ensureOrbForTicker: ensureOrbForTicker
+};
