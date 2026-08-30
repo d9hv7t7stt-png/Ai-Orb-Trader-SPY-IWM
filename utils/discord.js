@@ -753,9 +753,9 @@ function createChannel(cfg) {
         var frac = paperLegs.exitFractionForLeg(pos.dteTag);
         var qty = paperLegs.sellQtyForLeg(pos, frac);
         var sideLabel = hit === "upper" ? "upper" : "lower";
-        pos.moveExitDone = true;
         await partialExitLeg(key, qty, optPrice,
           "Expected move " + sideLabel + " touch (underlying $" + (snap.price || 0).toFixed(2) + ")", 3);
+        if (account.positions[key]) account.positions[key].moveExitDone = true;
         console.log("[PAPER][" + cfg.id + "] move exit " + key + " " + sideLabel + " qty=" + qty);
       }
     }
@@ -846,15 +846,20 @@ function buildChannelConfigs() {
   return list;
 }
 
-function forSignal(ticker, fn) {
-  return Promise.all(channels.filter(function(c) { return c.acceptsSignal(ticker); }).map(fn));
+function forSignal(ticker, fn, channelIds) {
+  return Promise.all(channels.filter(function(c) {
+    if (!c.acceptsSignal(ticker)) return false;
+    if (channelIds && channelIds.length && channelIds.indexOf(c.cfg.id) === -1) return false;
+    return true;
+  }).map(fn));
 }
 
-async function onEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying) {
+async function onEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying, opts) {
+  var channelIds = opts && opts.channelIds ? opts.channelIds : null;
   await forSignal(ticker, function(c) {
     var trade = c.tradeTickerForSignal(ticker);
     return c.entry(trade, side, optionPrice, orbHigh, orbLow, underlying, ticker);
-  });
+  }, channelIds);
 }
 async function onAdd(ticker, optionPrice) {
   await forSignal(ticker, function(c) {

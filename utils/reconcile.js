@@ -29,7 +29,22 @@ function findRhPosition(rhPositions, ticker, pos) {
       if (byStrike) return byStrike;
     }
   }
-  return open[0];
+  return open.length === 1 ? open[0] : null;
+}
+
+function entryPriceFromRh(rhPos, markFallback) {
+  var avg = parseFloat(rhPos.average_price || rhPos.pending_average_price || 0);
+  if (avg > 0) return avg;
+  return markFallback && markFallback > 0 ? markFallback : 0;
+}
+
+function fillFromRhPosition(rhPos, markFallback) {
+  return {
+    entryPrice: entryPriceFromRh(rhPos, markFallback),
+    instrumentUrl: rhPos.option,
+    strike: rhPos.strike_price ? Math.round(parseFloat(rhPos.strike_price)) : null,
+    expiry: rhPos.expiration_date || null
+  };
 }
 
 async function backfillEntryFromRh(ticker, pos, rhPositions) {
@@ -38,13 +53,9 @@ async function backfillEntryFromRh(ticker, pos, rhPositions) {
   if (!rhPos) return pos;
 
   var mark = await rh.getOptionMarkByUrl(rhPos.option);
-  if (mark && mark > 0) {
-    stateModule.applyOrderFill(ticker, {
-      entryPrice: mark,
-      instrumentUrl: rhPos.option,
-      strike: rhPos.strike_price ? Math.round(parseFloat(rhPos.strike_price)) : null,
-      expiry: rhPos.expiration_date || null
-    });
+  var fill = fillFromRhPosition(rhPos, mark);
+  if (fill.entryPrice > 0) {
+    stateModule.applyOrderFill(ticker, fill);
     return stateModule.getPosition(ticker);
   }
   return pos;
@@ -77,12 +88,7 @@ async function reconcileRhPositions() {
 
     var qty = Math.max(1, Math.floor(parseFloat(rhPos.quantity)));
     var mark = await rh.getOptionMarkByUrl(rhPos.option);
-    var fill = {
-      entryPrice: mark && mark > 0 ? mark : 0,
-      instrumentUrl: rhPos.option,
-      strike: rhPos.strike_price ? Math.round(parseFloat(rhPos.strike_price)) : null,
-      expiry: rhPos.expiration_date || null
-    };
+    var fill = fillFromRhPosition(rhPos, mark);
 
     if (!statePos || statePos.stopped) {
       stateModule.openHalfPosition(ticker, side, qty, fill.entryPrice, fill);
@@ -112,6 +118,7 @@ async function reconcileRhPositions() {
 
 module.exports = {
   findRhPosition: findRhPosition,
+  entryPriceFromRh: entryPriceFromRh,
   backfillEntryFromRh: backfillEntryFromRh,
   reconcileRhPositions: reconcileRhPositions
 };
