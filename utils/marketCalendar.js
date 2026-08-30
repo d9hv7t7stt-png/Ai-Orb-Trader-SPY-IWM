@@ -152,6 +152,12 @@ function nextTradingDay(from) {
   return cursor;
 }
 
+// First trading day strictly after the ET calendar date of `from`.
+function nextTradingDayAfter(from) {
+  var cursor = new Date((from || new Date()).getTime() + 86400000);
+  return nextTradingDay(cursor);
+}
+
 function addTradingDays(from, days) {
   var cursor = nextTradingDay(from || new Date());
   var added = 0;
@@ -176,6 +182,7 @@ module.exports = {
   isMarketClosedET: isMarketClosedET,
   isTradingDayET: isTradingDayET,
   nextTradingDay: nextTradingDay,
+  nextTradingDayAfter: nextTradingDayAfter,
   addTradingDays: addTradingDays,
   holidayNameET: holidayNameET,
   getYearHolidays: getYearHolidays

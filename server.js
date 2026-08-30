@@ -178,6 +178,7 @@ if (authguard.allowTestRoutes()) {
       if (type === "5")  await discord.postGoodMorning(5);
       if (type === "1")  await discord.postGoodMorning(1);
       if (type === "summary") await discord.postDailySummary();
+      if (type === "expected") await discord.postExpectedMoves();
       if (type === "positions") await discord.postOpenPositions("Test");
       if (type === "entry") await discord.postEntry("SPY", "call", 2.40, 757.50, 754.25);
       if (type === "stop") await discord.postStopLoss("SPY", 1.80, "Stop Loss — ORB Midpoint");
