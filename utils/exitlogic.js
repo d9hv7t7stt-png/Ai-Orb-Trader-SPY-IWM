@@ -110,6 +110,31 @@ function msUntilNextTimeET(hour, minute) {
   return 86400000;
 }
 
+// Next occurrence of hour:minute ET on a specific weekday (e.g. Sun for Sunday premarket).
+function msUntilNextWeekdayTimeET(hour, minute, weekdayShort) {
+  var now = new Date();
+  var formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    weekday: "short",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
+  });
+  for (var addMin = 1; addMin <= 8 * 24 * 60; addMin++) {
+    var candidate = new Date(now.getTime() + addMin * 60000);
+    var parts = formatter.formatToParts(candidate);
+    function part(type) {
+      var p = parts.find(function(x) { return x.type === type; });
+      if (!p) return type === "weekday" ? "" : 0;
+      return type === "weekday" ? p.value : parseInt(p.value, 10);
+    }
+    if (part("weekday") !== weekdayShort) continue;
+    if (part("hour") === hour && part("minute") === minute) {
+      return addMin * 60000 - part("second") * 1000 - candidate.getMilliseconds();
+    }
+  }
+  return 7 * 86400000;
+}
+
 // Next trading-day occurrence of hour:minute ET (skips weekends + market holidays).
 function msUntilNextTradingTimeET(hour, minute) {
   var now = new Date();
@@ -146,6 +171,7 @@ module.exports = {
   isWeekdayET: isWeekdayET,
   isTradingDayET: isTradingDayET,
   msUntilNextTimeET: msUntilNextTimeET,
+  msUntilNextWeekdayTimeET: msUntilNextWeekdayTimeET,
   msUntilNextTradingTimeET: msUntilNextTradingTimeET,
   etDateKey: etDateKey,
   etMinutesOfDay: etMinutesOfDay,

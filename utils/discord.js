@@ -508,6 +508,35 @@ function createChannel(cfg) {
     console.log("[DISCORD][" + cfg.id + "] close digest posted (" + plan.label + ")");
   }
 
+  async function sundayPremarket() {
+    if (cfg.id !== "main") return;
+    var data = await closeDigestUtil.buildSundayPremarket();
+    var fields = data.blocks.map(function(b) {
+      return {
+        name: yahooUtil.displaySymbol(b.ticker),
+        value: closeDigestUtil.formatSundayBlock(b),
+        inline: false
+      };
+    }).filter(function(f) { return f.value !== "—"; });
+
+    if (!fields.length) {
+      console.log("[DISCORD][" + cfg.id + "] Sunday premarket skipped — no data");
+      return;
+    }
+
+    await send({
+      color: 0x00e5a0,
+      content: "@everyone",
+      title: "🌙 Sunday Premarket — Full Watchlist",
+      description: "Friday close · **21 EMA** · **55 SMA** · **Monday** expected move · **this week** expected move.\n\nNext session: **" + data.sessionLabel + "**",
+      fields: fields,
+      footer: { text: cfg.name + " · " + etTimeLabel() + " · Not financial advice" },
+      timestamp: new Date().toISOString()
+    }, false);
+
+    console.log("[DISCORD][" + cfg.id + "] Sunday premarket posted (" + fields.length + " symbols)");
+  }
+
   async function expectedMoves() {
     return closeDigest();
   }
@@ -620,7 +649,7 @@ function createChannel(cfg) {
     entry: entry, add: add, stop: stop, fullClose: fullClose,
     breakeven: breakeven, profitTier: profitTier, eodSell: eodSell,
     openPositions: openPositions, dailySummary: dailySummary, morning: morning,
-    closeDigest: closeDigest, expectedMoves: expectedMoves,
+    closeDigest: closeDigest, sundayPremarket: sundayPremarket, expectedMoves: expectedMoves,
     pollPosition: pollPosition, updateLastKnownPrice: updateLastKnownPrice,
     getAccount: function() { return account; }
   };
@@ -689,6 +718,21 @@ function scheduleDaily(channel) {
   })();
 }
 
+function scheduleSundayPremarket(channel) {
+  if (channel.cfg.id !== "main") return;
+  (function next() {
+    setTimeout(async function() {
+      var wd = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" }).format(new Date());
+      if (wd === "Sun") {
+        try { await channel.sundayPremarket(); }
+        catch (e) { console.log("[DISCORD][" + channel.cfg.id + "] Sunday premarket error: " + e.message); }
+      }
+      next();
+    }, exitlogic.msUntilNextWeekdayTimeET(18, 0, "Sun"));
+  })();
+  console.log("[DISCORD] " + channel.cfg.id + " Sunday premarket at 6:00 PM ET");
+}
+
 function scheduleCloseDigest(channel) {
   (function next() {
     setTimeout(async function() {
@@ -706,7 +750,7 @@ function initChannels(getToken) {
   channels = buildChannelConfigs().map(createChannel);
   if (channels.length === 0) { console.log("[DISCORD] no channels active (set DISCORD_WEBHOOK_URL / _FREE / _SPY0DTE)"); return; }
   console.log("[DISCORD] active channels: " + channels.map(function(c){ return c.cfg.id + "(" + c.cfg.tickers.join("+") + "," + c.cfg.contracts + "c)"; }).join(", "));
-  channels.forEach(function(c) { scheduleMorning(c); scheduleUpdates(c); scheduleDaily(c); scheduleCloseDigest(c); });
+  channels.forEach(function(c) { scheduleMorning(c); scheduleUpdates(c); scheduleDaily(c); scheduleCloseDigest(c); scheduleSundayPremarket(c); });
   // shared paper engine: one 30s loop pricing every channel's positions
   setInterval(async function() {
     try {
@@ -737,6 +781,7 @@ module.exports = {
   postDailySummary: function() { return first().dailySummary(); },
   postExpectedMoves: function() { return first().closeDigest(); },
   postCloseDigest: function() { return first().closeDigest(); },
+  postSundayPremarket: function() { return first().sundayPremarket(); },
   postOpenPositions: function(l) { return first().openPositions(l); },
   postEntry: function(ticker, side, optPrice, orbHigh, orbLow, underlying) { return first().entry(ticker, side, optPrice, orbHigh, orbLow, underlying); },
   postStopLoss: function(ticker, price, reason) { return first().stop(ticker, price, reason); },
