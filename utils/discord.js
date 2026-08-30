@@ -111,13 +111,13 @@ function morningMessages(theme, name) {
   if (theme === "free") {
     return {
       60: { color: 0x00e5a0, content: "@everyone", title: "☀️ Good Morning, Free Squad!",
-        description: "A brand new day, a brand new shot. 🌅\n\n**" + name + "** is awake and hunting **IWM** paper setups — 0DTE ATM + 1DTE expected-move legs.\n\n" + sizingBlurb(5) + "\n\nProtect your capital, trust the process, and let's go get it together. 💚",
+        description: "A brand new day, a brand new shot. 🌅\n\n**" + name + "** is awake and hunting **IWM** setups — 0DTE ATM + 1DTE expected-move legs.\n\n" + sizingBlurb(5) + "\n\nProtect your capital, trust the process, and let's go get it together. 💚",
         footer: "Free alerts • 5% balance/trade • Not financial advice." },
       45: { color: 0x4da6ff, title: "🌤️ 45 Minutes — Getting Ready",
-        description: "Coffee up. ☕ Reviewing **IWM 0DTE + 1DTE** paper legs and expected-move levels before the bell. Discipline beats hype every single time.",
+        description: "Coffee up. ☕ Reviewing **IWM 0DTE + 1DTE** legs and expected-move levels before the bell. Discipline beats hype every single time.",
         footer: "Free alerts • 0DTE + 1DTE • Not financial advice." },
       30: { color: 0xf5c518, content: "@everyone", title: "🌅 30 Minutes Out — Stay Patient",
-        description: "Half an hour to go. The best traders wait for *their* setup — they don't chase.\n\n**IWM** paper runs 0DTE ATM + 1DTE at the expected-move strike. We stay calm and let the plan come to us. 🧘",
+        description: "Half an hour to go. The best traders wait for *their* setup — they don't chase.\n\n**IWM** runs 0DTE ATM + 1DTE at the expected-move strike. We stay calm and let the plan come to us. 🧘",
         footer: "Free alerts • 0DTE + 1DTE • Trade at your own risk." },
       5:  { color: 0xff8c00, content: "@everyone", title: "⚡ 5 Minutes — Lock In",
         description: "Almost showtime. Alerts fire on **5m bar close** — not wicks. Each entry opens **0DTE + 1DTE** legs (5% total). Deep breath. 🔥",
@@ -129,31 +129,31 @@ function morningMessages(theme, name) {
   }
   if (theme === "spy") {
     return {
-      60: { color: 0x00e5a0, content: "@everyone", title: "☀️ Rise & Grind — SPY Paper",
-        description: "New day, clean slate. 🌅\n\n**" + name + "** is dialed in on **SPY** paper — 0DTE ATM + 1DTE expected-move legs.\n\n" + sizingBlurb(5) + "\n\nWe trade the plan, not the emotion. Let's make today count. 💪",
-        footer: "SPY paper • 0DTE + 1DTE • 5% balance/trade • Not financial advice." },
+      60: { color: 0x00e5a0, content: "@everyone", title: "☀️ Rise & Grind — SPY ORB",
+        description: "New day, clean slate. 🌅\n\n**" + name + "** is dialed in on **SPY** — 0DTE ATM + 1DTE expected-move legs.\n\n" + sizingBlurb(5) + "\n\nWe trade the plan, not the emotion. Let's make today count. 💪",
+        footer: "SPY ORB • 0DTE + 1DTE • 5% balance/trade • Not financial advice." },
       45: { color: 0x4da6ff, title: "🌤️ 45 Minutes — Pre-Flight Check",
-        description: "Reviewing **SPY 0DTE + 1DTE** paper legs and expected-move levels. Sharp focus now pays off when the bell rings. 📋",
-        footer: "SPY paper • 0DTE + 1DTE • Not financial advice." },
+        description: "Reviewing **SPY 0DTE + 1DTE** legs and expected-move levels. Sharp focus now pays off when the bell rings. 📋",
+        footer: "SPY ORB • 0DTE + 1DTE • Not financial advice." },
       30: { color: 0xf5c518, content: "@everyone", title: "🌅 30 Minutes — Eyes on SPY",
         description: "Thirty out. Each entry opens **0DTE ATM + 1DTE at the expected-move strike**. We wait for the break, then we execute.\n\nCalm hands win. 🧘",
-        footer: "SPY paper • 0DTE + 1DTE • Trade at your own risk." },
+        footer: "SPY ORB • 0DTE + 1DTE • Trade at your own risk." },
       5:  { color: 0xff8c00, content: "@everyone", title: "⚡ 5 Minutes — Locked In on SPY",
-        description: "Almost go time. Dual-leg paper (0DTE + 1DTE), 5% total risk per play. Stay present, stay disciplined. 🔥",
-        footer: "SPY paper • 0DTE + 1DTE • Trade at your own risk." },
+        description: "Almost go time. Dual-leg entries (0DTE + 1DTE), 5% total risk per play. Stay present, stay disciplined. 🔥",
+        footer: "SPY ORB • 0DTE + 1DTE • Trade at your own risk." },
       1:  { color: 0x00e5a0, content: "@everyone", title: "🚀 60 SECONDS — SPY Is Live",
         description: "This is it. Plan locked, risk defined — 2.5% per leg. Let's go earn it today. 💚",
-        footer: "SPY paper • Options trading carries substantial risk of loss." }
+        footer: "SPY ORB • Options trading carries substantial risk of loss." }
     };
   }
-  // default theme (main 50K — SPXW paper)
+  // default theme (main 50K — SPXW)
   return {
-    45: { color: 0x4da6ff, title: "👁️ 45 Minutes to Open — SPX Paper Check",
-      description: "Morning rundown incoming. Reviewing SPX 0DTE + 1DTE paper legs before the bell. 📋",
-      footer: "Paper SPXW · 5% risk/trade · Not financial advice." },
+    45: { color: 0x4da6ff, title: "👁️ 45 Minutes to Open — SPX Pre-Market Check",
+      description: "Morning rundown incoming. Reviewing SPX 0DTE + 1DTE legs before the bell. 📋",
+      footer: "SPXW · 5% risk/trade · Not financial advice." },
     60: { color: 0xf5c518, content: "@everyone", title: "☀️ Good Morning, Traders!",
-      description: "Market opens in one hour. **50K paper** is tracking **SPXW** off SPY ORB — 0DTE ATM + 1DTE expected-move strikes.\n\n" + sizingBlurb(5) + "\n\nArgus is warmed up and ready. 👁️",
-      footer: "Paper SPXW · 5% balance/trade · Not financial advice." },
+      description: "Market opens in one hour. **Argus ORB Trader 50K** is tracking **SPXW** off SPY ORB — 0DTE ATM + 1DTE expected-move strikes.\n\n" + sizingBlurb(5) + "\n\nArgus is warmed up and ready. 👁️",
+      footer: "SPXW · 5% balance/trade · Not financial advice." },
     30: { color: 0xf5a623, content: "@everyone", title: "🌅 30 Minutes Out",
       description: "Half hour to go. Argus is authenticated, connected, and on standby. All systems green.\n\nTake a breath. Trust the process. Let Argus do its thing. 💚",
       footer: "Not financial advice. Trade at your own risk." },
@@ -349,7 +349,7 @@ function createChannel(cfg) {
       };
     });
     var sigNote = signalTicker && signalTicker !== tradeTicker
-      ? "Signal: **" + signalTicker + "** ORB → **" + yahoo.displaySymbol(tradeTicker) + "** paper\n" : "";
+      ? "Signal: **" + signalTicker + "** ORB → **" + yahoo.displaySymbol(tradeTicker) + "**\n" : "";
 
     await send({
       color: color,
@@ -644,7 +644,7 @@ function createChannel(cfg) {
         title: "🔍 Watchlist — " + plan.label,
         description: plan.notableWatchlistOnly
           ? "Only names with a big move, EMA cross, or price near 21 EMA / 55 SMA today."
-          : "Full daily scan of the 50K paper watchlist.",
+          : "Full daily scan of the Argus 50K watchlist.",
         fields: wlFields,
         footer: { text: cfg.name + " · Not financial advice" },
         timestamp: new Date().toISOString()
@@ -897,7 +897,7 @@ function buildChannelConfigs() {
     });
   if (process.env.DISCORD_WEBHOOK_SPY0DTE)
     list.push({
-      id: "spy0dte", name: "SPY Paper", webhook: process.env.DISCORD_WEBHOOK_SPY0DTE,
+      id: "spy0dte", name: "SPY ORB Trader", webhook: process.env.DISCORD_WEBHOOK_SPY0DTE,
       startBalance: 10000, riskPct: 5, dualLeg: true, signalTickers: ["SPY"], tradeTicker: "SPY",
       tickers: ["SPY"], watchlist: ["SPY"], updateMins: 30, theme: "spy"
     });
