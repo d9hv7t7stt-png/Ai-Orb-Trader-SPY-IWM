@@ -576,7 +576,7 @@ function scheduleMorning(channel) {
     var min = fireMin % 60;
     (function next() {
       setTimeout(async function() {
-        if (exitlogic.isWeekdayET()) await channel.morning(a.m);
+        if (exitlogic.isTradingDayET()) await channel.morning(a.m);
         next();
       }, exitlogic.msUntilNextTradingTimeET(hour, min));
     })();
@@ -595,7 +595,7 @@ function scheduleUpdates(channel) {
 function scheduleDaily(channel) {
   (function next() {
     setTimeout(async function() {
-      if (exitlogic.isWeekdayET()) await channel.dailySummary();
+      if (exitlogic.isTradingDayET()) await channel.dailySummary();
       next();
     }, exitlogic.msUntilNextTradingTimeET(16, 0));
   })();

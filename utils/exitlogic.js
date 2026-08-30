@@ -18,6 +18,8 @@ var SCALE_SELL_FRAC  = 0.10;
 var TRAIL_EVERY_PCT  = 20;    // for every +20% above breakeven ...
 var TRAIL_MOVE_PCT   = 10;    // ... move the stop up +10%
 
+var marketCal = require("./marketCalendar");
+
 function gainPct(entry, price) {
   if (!entry || entry <= 0) return 0;
   var g = ((price - entry) / entry) * 100;
@@ -74,13 +76,15 @@ function isEndOfDayWindow() {
 }
 
 function isWeekdayET(date) {
-  var d = date || new Date();
-  var wd = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "short" }).format(d);
-  return wd !== "Sat" && wd !== "Sun";
+  return !marketCal.isWeekendET(date);
+}
+
+function isTradingDayET(date) {
+  return marketCal.isTradingDayET(date);
 }
 
 function isRegularMarketHours() {
-  if (!isWeekdayET()) return false;
+  if (!isTradingDayET()) return false;
   var m = etMinutesOfDay();
   return m >= (9 * 60 + 30) && m < (16 * 60);   // 9:30 AM–4:00 PM ET, DST-safe
 }
@@ -106,30 +110,28 @@ function msUntilNextTimeET(hour, minute) {
   return 86400000;
 }
 
-// Next Mon–Fri occurrence of hour:minute ET (skips Sat/Sun).
+// Next trading-day occurrence of hour:minute ET (skips weekends + market holidays).
 function msUntilNextTradingTimeET(hour, minute) {
   var now = new Date();
   var formatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
     year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-    weekday: "short"
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false
   });
-  for (var addMin = 1; addMin <= 7 * 24 * 60; addMin++) {
+  for (var addMin = 1; addMin <= 14 * 24 * 60; addMin++) {
     var candidate = new Date(now.getTime() + addMin * 60000);
     var parts = formatter.formatToParts(candidate);
     function part(type) {
       var p = parts.find(function(x) { return x.type === type; });
-      if (!p) return type === "weekday" ? "" : 0;
-      return type === "weekday" ? p.value : parseInt(p.value, 10);
+      if (!p) return 0;
+      return parseInt(p.value, 10);
     }
-    var wd = part("weekday");
-    if (wd === "Sat" || wd === "Sun") continue;
+    if (!isTradingDayET(candidate)) continue;
     if (part("hour") === hour && part("minute") === minute) {
       return addMin * 60000 - part("second") * 1000 - candidate.getMilliseconds();
     }
   }
-  return 7 * 86400000;
+  return 14 * 86400000;
 }
 
 function etDateKey() {
@@ -142,6 +144,7 @@ module.exports = {
   isEndOfDayWindow: isEndOfDayWindow,
   isRegularMarketHours: isRegularMarketHours,
   isWeekdayET: isWeekdayET,
+  isTradingDayET: isTradingDayET,
   msUntilNextTimeET: msUntilNextTimeET,
   msUntilNextTradingTimeET: msUntilNextTradingTimeET,
   etDateKey: etDateKey,
