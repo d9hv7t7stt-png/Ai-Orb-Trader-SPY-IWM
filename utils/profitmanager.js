@@ -44,18 +44,8 @@ async function checkCrossEntryStop(ticker, pos, s) {
   } else if (rhPos) {
     stateModule.logEvent("PNL_WARN", ticker + " cross-entry stop — no exit mark, P&L skipped");
   }
-  await notifyCrossEntryStop(ticker, exitPrice, reason);
   stateModule.closePosition(ticker, reason);
   return true;
-}
-
-async function notifyCrossEntryStop(ticker, optionPrice, reason) {
-  try {
-    var discord = require("./discord");
-    if (discord && typeof discord.onStop === "function") {
-      await discord.onStop(ticker, optionPrice || 0, reason);
-    }
-  } catch (e) { console.log("[DISCORD_NOTIFY_ERROR] onStop: " + e.message); }
 }
 
 async function checkProfitTiers() {

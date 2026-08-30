@@ -316,7 +316,7 @@ function createChannel(cfg) {
     var existing = paperLegs.listLegsForTrade(account.positions, tradeTicker);
     if (existing.length) {
       console.log("[PAPER][" + cfg.id + "] entry skipped — " + existing.length + " leg(s) already open for " + tradeTicker);
-      return;
+      return false;
     }
     var moveTargets = await paperLegs.getEntryMoveTargets(tradeTicker);
     var opened = [];
@@ -329,7 +329,7 @@ function createChannel(cfg) {
     }
     if (!opened.length) {
       console.log("[PAPER][" + cfg.id + "] no legs opened for " + tradeTicker);
-      return;
+      return false;
     }
 
     var dirLabel = side === "call" ? "LONG" : "SHORT";
@@ -361,6 +361,7 @@ function createChannel(cfg) {
       ]),
       footer: { text: footer() }, timestamp: new Date().toISOString()
     }, true);
+    return true;
   }
 
   async function add(tradeTicker, optionPrice, signalTicker) {
@@ -462,25 +463,18 @@ function createChannel(cfg) {
     }, true);
   }
 
-  async function expectedMoveNotice(signalTicker, optionPrice, timeframe) {
+  async function expectedMoveExit(signalTicker, optionPrice, timeframe) {
     var tradeTicker = tradeTickerForSignal(signalTicker);
     var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
-    var remaining = keys.map(function(k) {
-      var p = account.positions[k];
-      return p ? posLabelFromPos(p) + " · " + p.contracts + "c" : null;
-    }).filter(Boolean).join("\n") || "No paper legs open";
-    await send({
-      color: 0xf5a623,
-      title: "🎯 LIVE EXPECTED MOVE — 90% sold at Robinhood",
-      description: yahoo.displaySymbol(tradeTicker) + " **" + (timeframe || "daily") +
-        "** expected move hit on the live account.\nPaper legs keep autonomous touch-based exits (not trimmed here).",
-      fields: [
-        { name: "Live fill hint", value: "$" + (optionPrice || 0).toFixed(2), inline: true },
-        { name: "Paper legs (unchanged)", value: remaining, inline: false }
-      ],
-      footer: { text: footer() },
-      timestamp: new Date().toISOString()
-    }, true);
+    for (var i = 0; i < keys.length; i++) {
+      var pos = account.positions[keys[i]];
+      if (!pos) continue;
+      var qty = Math.floor(pos.contracts * 0.9);
+      if (qty < 1) continue;
+      var price = await resolveLegExitPrice(pos, signalTicker, tradeTicker, optionPrice);
+      await partialExitLeg(keys[i], qty, price,
+        (timeframe || "daily") + " expected move — 90% exit", 3);
+    }
   }
 
   async function stop(signalTicker, currentPrice, reason) {
@@ -874,7 +868,7 @@ function createChannel(cfg) {
     trades: acceptsSignal,
     entry: entry, add: add, stop: stop, fullClose: fullClose,
     breakeven: breakeven, profitTier: profitTier, eodSell: eodSell,
-    expectedMoveExit: expectedMoveNotice,
+    expectedMoveExit: expectedMoveExit,
     openPositions: openPositions, dailySummary: dailySummary, morning: morning,
     closeDigest: closeDigest, sundayPremarket: sundayPremarket, expectedMoves: expectedMoves,
     pollMoveTargets: pollMoveTargets, pollOptionMarks: pollOptionMarks,
@@ -919,10 +913,11 @@ function forSignal(ticker, fn, channelIds) {
 
 async function onEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying, opts) {
   var channelIds = opts && opts.channelIds ? opts.channelIds : null;
-  await forSignal(ticker, function(c) {
+  var results = await forSignal(ticker, function(c) {
     var trade = c.tradeTickerForSignal(ticker);
     return c.entry(trade, side, optionPrice, orbHigh, orbLow, underlying, ticker);
   }, channelIds);
+  return (results || []).some(Boolean);
 }
 async function onAdd(ticker, optionPrice) {
   await forSignal(ticker, function(c) {
