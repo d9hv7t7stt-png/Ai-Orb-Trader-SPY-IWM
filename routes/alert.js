@@ -181,7 +181,6 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       } catch (e) {
         stateModule.closePosition(ticker, "entry order failed");
         stateModule.logEvent("ORDER_ERROR", ticker + " breakout_long failed: " + e.message);
-        return { ok: true, paper: true, orderError: e.message };
       }
       await notifyEntryAfterFill(ticker, "call", order, optPrice, orbHigh, orbLow, close);
 
@@ -195,23 +194,23 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         stateModule.openHalfPosition("SPY", "call", spyHalf, optPrice || 0, { crossEntry: true, stopMode: "orb_low" });
         try {
           cross = await placeAndFill("SPY", "call", spyHalf);
-          await notifyEntryAfterFill("SPY", "call", cross, optPrice,
-            s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, null,
-            { channelIds: ["spy0dte"] });
         } catch (e) {
           stateModule.closePosition("SPY", "cross entry failed");
           stateModule.logEvent("CROSS_ERROR", "SPY cross entry failed: " + e.message);
         }
+        await notifyEntryAfterFill("SPY", "call", cross, optPrice,
+          s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, null,
+          { channelIds: ["spy0dte"] });
       }
-      return { ok: true, entry: order, cross: cross };
+      return { ok: true, entry: order || null, cross: cross, paper: !order };
     }
 
     if (pos.halfIn && !pos.stopped) {
       var addQty = pos.totalContracts;
       stateModule.logEvent("RETEST", ticker + " retest add " + addQty + "c");
-      stateModule.addSecondHalf(ticker, addQty, optPrice || pos.entryPrice);
       try {
         await placeAndFill(ticker, "call", addQty);
+        stateModule.addSecondHalf(ticker, addQty, optPrice || pos.entryPrice);
       } catch (e) {
         stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
       }
@@ -244,7 +243,6 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       } catch (e) {
         stateModule.closePosition(ticker, "entry order failed");
         stateModule.logEvent("ORDER_ERROR", ticker + " breakout_short failed: " + e.message);
-        return { ok: true, paper: true, orderError: e.message };
       }
       await notifyEntryAfterFill(ticker, "put", order2, optPrice, orbHigh, orbLow, close);
 
@@ -258,23 +256,23 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         stateModule.openHalfPosition("SPY", "put", spyHalf2, optPrice || 0, { crossEntry: true, stopMode: "orb_high" });
         try {
           cross2 = await placeAndFill("SPY", "put", spyHalf2);
-          await notifyEntryAfterFill("SPY", "put", cross2, optPrice,
-            s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, null,
-            { channelIds: ["spy0dte"] });
         } catch (e) {
           stateModule.closePosition("SPY", "cross entry failed");
           stateModule.logEvent("CROSS_ERROR", "SPY cross entry failed: " + e.message);
         }
+        await notifyEntryAfterFill("SPY", "put", cross2, optPrice,
+          s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, null,
+          { channelIds: ["spy0dte"] });
       }
-      return { ok: true, entry: order2, cross: cross2 };
+      return { ok: true, entry: order2 || null, cross: cross2, paper: !order2 };
     }
 
     if (pos.halfIn && !pos.stopped) {
       var addQty2 = pos.totalContracts;
       stateModule.logEvent("RETEST", ticker + " retest add " + addQty2 + "c");
-      stateModule.addSecondHalf(ticker, addQty2, optPrice || pos.entryPrice);
       try {
         await placeAndFill(ticker, "put", addQty2);
+        stateModule.addSecondHalf(ticker, addQty2, optPrice || pos.entryPrice);
       } catch (e) {
         stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
       }
@@ -298,7 +296,11 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var qty90 = Math.floor(pos.contracts * 0.9);
     if (qty90 < 1) return { ok: true, message: ticker + " not enough contracts" };
     stateModule.logEvent("PROFIT_TIER_3", ticker + " " + timeframe + " expected move — selling 90% (" + qty90 + "c)");
-    await trayd.closePartialPosition({ ticker: ticker, contracts: qty90, reason: timeframe + " expected move 90% exit" });
+    var closed = await trayd.closePartialPosition({ ticker: ticker, contracts: qty90, reason: timeframe + " expected move 90% exit" });
+    if (closed && closed.ok === false) {
+      stateModule.logEvent("ORDER_ERROR", ticker + " expected move close failed: " + (closed.error || "no RH position"));
+      return { ok: true, message: ticker + " expected move RH close skipped" };
+    }
     if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, qty90);
     stateModule.reduceContracts(ticker, qty90);
     stateModule.markProfitTier(ticker, 300);

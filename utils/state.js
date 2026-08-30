@@ -195,8 +195,8 @@ function getTradeSizing(ticker) {
   return {
     total: total,
     halfEntry: half,
-    retestAdd: total,
-    fullPosition: half + total
+    retestAdd: half,
+    fullPosition: half * 2
   };
 }
 

@@ -12,10 +12,8 @@ const yahoo = require("./yahoo");
 const expiryUtil = require("./expiry");
 const exitlogic = require("./exitlogic");
 const persist = require("./persist");
-const expectedMoveUtil = require("./expectedMove");
 const closeDigestUtil = require("./closeDigest");
 const technicalsUtil = require("./technicals");
-const yahooUtil = require("./yahoo");
 const paperLegs = require("./paperLegs");
 
 var underlyingSnaps = {};
@@ -317,11 +315,11 @@ function createChannel(cfg) {
       };
     });
     var sigNote = signalTicker && signalTicker !== tradeTicker
-      ? "Signal: **" + signalTicker + "** ORB → **" + yahooUtil.displaySymbol(tradeTicker) + "** paper\n" : "";
+      ? "Signal: **" + signalTicker + "** ORB → **" + yahoo.displaySymbol(tradeTicker) + "** paper\n" : "";
 
     await send({
       color: color,
-      title: (side === "call" ? "🟢" : "🔴") + " " + dirLabel + " ENTRY — " + yahooUtil.displaySymbol(tradeTicker) + " (0DTE + 1DTE)",
+      title: (side === "call" ? "🟢" : "🔴") + " " + dirLabel + " ENTRY — " + yahoo.displaySymbol(tradeTicker) + " (0DTE + 1DTE)",
       description: sigNote + "Signal at " + etTimeLabel() + " · 5m bar close · **" + riskPct() + "%** total (2.5% per leg)",
       fields: fields.concat([
         { name: "ORB High", value: "$" + (parseFloat(orbHigh) || 0).toFixed(2), inline: true },
@@ -602,7 +600,7 @@ function createChannel(cfg) {
     if (digest.watchlistMoves.length) {
       var mvFields = digest.watchlistMoves.map(function(w) {
         return {
-          name: yahooUtil.displaySymbol(w.ticker) + " expected moves",
+          name: yahoo.displaySymbol(w.ticker) + " expected moves",
           value: closeDigestUtil.formatMovesBlock(w.moves, true) || "—",
           inline: true
         };
@@ -625,7 +623,7 @@ function createChannel(cfg) {
     var data = await closeDigestUtil.buildSundayPremarket();
     var fields = data.blocks.map(function(b) {
       return {
-        name: yahooUtil.displaySymbol(b.ticker),
+        name: yahoo.displaySymbol(b.ticker),
         value: closeDigestUtil.formatSundayBlock(b),
         inline: false
       };
