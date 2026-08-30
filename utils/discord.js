@@ -1,4 +1,5 @@
 // Discord Paper Trading — MULTI-CHANNEL
+// Discord is paper-only. Live Robinhood fills, size, and P&L never post here.
 // Paper accounts: percent sizing, 0DTE ATM + 1DTE expected-move legs, touch-based move exits.
 //
 // Channels (webhook env vars):
