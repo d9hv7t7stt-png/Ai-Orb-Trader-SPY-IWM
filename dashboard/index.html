@@ -606,7 +606,7 @@
           <div class="code-block" onclick="copyTemplate(this)">{"ticker":"SPY","event":"orb_set","orb_high":{{high}},"orb_low":{{low}}}</div>
         </div>
         <div style="padding:8px;background:var(--amber-dim);border:1px solid var(--amber);font-size:10px;color:var(--amber);line-height:1.6;margin-top:8px">
-          Set trigger to Once Per Bar Close. WEBHOOK_SECRET is optional — only add <code>?secret=</code> to your URL if you enable it in Railway.
+          Set trigger to Once Per Bar Close.
         </div>
       </div>
     </div>
@@ -618,7 +618,7 @@
       <div class="panel-header"><span class="panel-title">Account & Auth</span></div>
       <div class="panel-body">
         <div style="font-size:11px;color:var(--text-dim);line-height:1.7;margin-bottom:12px;padding:10px;background:var(--bg);border:1px solid var(--border)">
-          Credentials stored as Railway env vars: <span style="color:var(--amber)">RH_EMAIL, RH_PASSWORD, RH_TOKEN, RH_REFRESH_TOKEN, RH_ACCOUNT_NUMBER, WEBHOOK_SECRET, DISCORD_WEBHOOK_URL</span>
+          Credentials stored as Railway env vars: <span style="color:var(--amber)">RH_EMAIL, RH_PASSWORD, RH_TOKEN, RH_REFRESH_TOKEN, RH_ACCOUNT_NUMBER, DISCORD_WEBHOOK_URL</span>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
           <button class="btn primary" onclick="triggerReauth()">Test Connection</button>
