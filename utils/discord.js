@@ -24,6 +24,11 @@ function etTimeLabel() {
   return new Date().toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET";
 }
 
+function sizingBlurb(riskPctVal) {
+  var rp = riskPctVal || 5;
+  return "**Sizing:** " + rp + "% of account balance per trade (2.5% per leg). Contract count scales with option premium — not a fixed number of contracts.";
+}
+
 function paperMarketHours() {
   return exitlogic.isRegularMarketHours();
 }
@@ -107,8 +112,8 @@ function morningMessages(theme, name) {
   if (theme === "free") {
     return {
       60: { color: 0x00e5a0, content: "@everyone", title: "☀️ Good Morning, Free Squad!",
-        description: "A brand new day, a brand new shot. 🌅\n\n**" + name + "** is awake and hunting IWM 0DTE setups for you — completely free. No noise, just clean alerts.\n\nProtect your capital, trust the process, and let's go get it together. 💚",
-        footer: "Free alerts • Not financial advice. Options trading involves significant risk of loss." },
+        description: "A brand new day, a brand new shot. 🌅\n\n**" + name + "** is awake and hunting **IWM** paper setups — 0DTE ATM + 1DTE expected-move legs.\n\n" + sizingBlurb(5) + "\n\nProtect your capital, trust the process, and let's go get it together. 💚",
+        footer: "Free alerts • 5% balance/trade • Not financial advice." },
       45: { color: 0x4da6ff, title: "🌤️ 45 Minutes — Getting Ready",
         description: "Coffee up. ☕ Reviewing the board and any open IWM plays before the bell. Discipline beats hype every single time.",
         footer: "Free alerts • Not financial advice." },
@@ -126,8 +131,8 @@ function morningMessages(theme, name) {
   if (theme === "spy") {
     return {
       60: { color: 0x00e5a0, content: "@everyone", title: "☀️ Rise & Grind — SPY 0DTE",
-        description: "New day, clean slate. 🌅\n\n**" + name + "** is dialed in on SPY 0DTE. Big speed, big respect for risk.\n\nWe trade the plan, not the emotion. Let's make today count. 💪",
-        footer: "SPY 0DTE • Not financial advice. 0DTE options are extremely high risk." },
+        description: "New day, clean slate. 🌅\n\n**" + name + "** is dialed in on **SPY** paper — 0DTE ATM + 1DTE expected-move legs.\n\n" + sizingBlurb(5) + "\n\nWe trade the plan, not the emotion. Let's make today count. 💪",
+        footer: "SPY 0DTE • 5% balance/trade • Not financial advice." },
       45: { color: 0x4da6ff, title: "🌤️ 45 Minutes — Pre-Flight Check",
         description: "Reviewing SPY levels and any open plays. Sharp focus now pays off when the bell rings. 📋",
         footer: "SPY 0DTE • Not financial advice." },
@@ -148,8 +153,8 @@ function morningMessages(theme, name) {
       description: "Morning rundown incoming. Reviewing SPX 0DTE + 1DTE paper legs before the bell. 📋",
       footer: "Paper SPXW · 5% risk/trade · Not financial advice." },
     60: { color: 0xf5c518, content: "@everyone", title: "☀️ Good Morning, Traders!",
-      description: "Market opens in one hour. **50K paper** is tracking **SPXW** off SPY ORB — 0DTE ATM + 1DTE expected-move strikes, 5% per play.\n\nArgus is warmed up and ready. 👁️",
-      footer: "Paper trading only · Not financial advice." },
+      description: "Market opens in one hour. **50K paper** is tracking **SPXW** off SPY ORB — 0DTE ATM + 1DTE expected-move strikes.\n\n" + sizingBlurb(5) + "\n\nArgus is warmed up and ready. 👁️",
+      footer: "Paper SPXW · 5% balance/trade · Not financial advice." },
     30: { color: 0xf5a623, content: "@everyone", title: "🌅 30 Minutes Out",
       description: "Half hour to go. Argus is authenticated, connected, and on standby. All systems green.\n\nTake a breath. Trust the process. Let Argus do its thing. 💚",
       footer: "Not financial advice. Trade at your own risk." },
@@ -207,6 +212,13 @@ function createChannel(cfg) {
   function riskPct() { return cfg.riskPct || 5; }
   function legFraction() { return 0.5; }
 
+  async function resolveLegExitPrice(pos, signalTicker, tradeTicker, signalOptionPrice) {
+    if (signalTicker === tradeTicker && signalOptionPrice && signalOptionPrice > 0) return signalOptionPrice;
+    var m = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry);
+    if (m && m.price > 0) return m.price;
+    return pos.lastKnownPrice || pos.entryPrice || 0;
+  }
+
   async function send(embed, pingEveryone) {
     if (!cfg.webhook) return;
     var content = pingEveryone ? "@everyone" : null;
@@ -236,13 +248,15 @@ function createChannel(cfg) {
     account.totalTrades++;
   }
 
-  async function openLeg(tradeTicker, side, dteTag, orbHigh, orbLow, underlying, moveTargets, optionPriceHint) {
+  async function openLeg(tradeTicker, side, dteTag, orbHigh, orbLow, underlying, moveTargets, optionPriceHint, signalTicker) {
+    var sameTicker = !signalTicker || signalTicker === tradeTicker;
     var expiry = expiryUtil.getExpiryForDTE(dteTag);
-    var und = await resolveUnderlying(tradeTicker, underlying);
+    var und = await resolveUnderlying(tradeTicker, sameTicker ? underlying : null);
     if (!und) return null;
     var strike = paperLegs.strikeForLegTicker(tradeTicker, side, dteTag, und, moveTargets);
     var m = await fetchOptionMark(tradeTicker, side, strike, expiry);
-    var price = (dteTag === 0 && optionPriceHint && optionPriceHint > 0) ? optionPriceHint : (m && m.price) || 0;
+    var hint = sameTicker && dteTag === 0 ? optionPriceHint : null;
+    var price = (hint && hint > 0) ? hint : (m && m.price) || 0;
     var contracts = paperLegs.sizeContracts(account.balance, riskPct(), legFraction(), price);
     if (contracts < 1) {
       console.log("[PAPER][" + cfg.id + "] skip " + tradeTicker + " " + dteTag + "DTE — premium too high for " + (riskPct() * legFraction()) + "% sizing");
@@ -268,11 +282,16 @@ function createChannel(cfg) {
   }
 
   async function entry(tradeTicker, side, optionPrice, orbHigh, orbLow, underlying, signalTicker) {
+    var existing = paperLegs.listLegsForTrade(account.positions, tradeTicker);
+    if (existing.length) {
+      console.log("[PAPER][" + cfg.id + "] entry skipped — " + existing.length + " leg(s) already open for " + tradeTicker);
+      return;
+    }
     var moveTargets = await paperLegs.getEntryMoveTargets(tradeTicker);
     var opened = [];
-    var leg0 = await openLeg(tradeTicker, side, 0, orbHigh, orbLow, underlying, moveTargets, optionPrice);
+    var leg0 = await openLeg(tradeTicker, side, 0, orbHigh, orbLow, underlying, moveTargets, optionPrice, signalTicker);
     if (leg0) opened.push(leg0);
-    var leg1 = await openLeg(tradeTicker, side, 1, orbHigh, orbLow, underlying, moveTargets, null);
+    var leg1 = await openLeg(tradeTicker, side, 1, orbHigh, orbLow, underlying, moveTargets, null, signalTicker);
     if (leg1) opened.push(leg1);
     if (!opened.length) {
       console.log("[PAPER][" + cfg.id + "] no legs opened for " + tradeTicker);
@@ -310,11 +329,12 @@ function createChannel(cfg) {
     }, true);
   }
 
-  async function add(tradeTicker, optionPrice) {
+  async function add(tradeTicker, optionPrice, signalTicker) {
     var key = paperLegs.legKey(tradeTicker, 0);
     var pos = account.positions[key];
     if (!pos) return;
-    if (!optionPrice || optionPrice <= 0) {
+    var sameTicker = !signalTicker || signalTicker === tradeTicker;
+    if (!sameTicker || !optionPrice || optionPrice <= 0) {
       var m = await fetchOptionMark(tradeTicker, pos.side, pos.strike, pos.expiry);
       optionPrice = m && m.price ? m.price : pos.lastKnownPrice || pos.entryPrice || 0;
     }
@@ -406,13 +426,23 @@ function createChannel(cfg) {
   async function stop(signalTicker, currentPrice, reason) {
     var tradeTicker = tradeTickerForSignal(signalTicker);
     var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
-    for (var i = 0; i < keys.length; i++) await stopLeg(keys[i], currentPrice, reason);
+    for (var i = 0; i < keys.length; i++) {
+      var pos = account.positions[keys[i]];
+      if (!pos) continue;
+      var price = await resolveLegExitPrice(pos, signalTicker, tradeTicker, currentPrice);
+      await stopLeg(keys[i], price, reason);
+    }
   }
 
   async function fullClose(signalTicker, currentPrice) {
     var tradeTicker = tradeTickerForSignal(signalTicker);
     var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
-    for (var i = 0; i < keys.length; i++) await stopLeg(keys[i], currentPrice, "Position fully closed");
+    for (var i = 0; i < keys.length; i++) {
+      var pos = account.positions[keys[i]];
+      if (!pos) continue;
+      var price = await resolveLegExitPrice(pos, signalTicker, tradeTicker, currentPrice);
+      await stopLeg(keys[i], price, "Position fully closed");
+    }
   }
 
   async function breakeven(ticker) {
@@ -644,8 +674,9 @@ function createChannel(cfg) {
     await send({
       color: 0x4da6ff,
       title: "📊 " + cfg.name + " · " + label + " Update",
+      description: sizingBlurb(riskPct()),
       fields: fields,
-      footer: { text: footer() + " · " + riskPct() + "% risk/trade" },
+      footer: { text: footer() },
       timestamp: new Date().toISOString()
     }, false);
   }
@@ -824,7 +855,7 @@ async function onEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying) {
 }
 async function onAdd(ticker, optionPrice) {
   await forSignal(ticker, function(c) {
-    return c.add(c.tradeTickerForSignal(ticker), optionPrice);
+    return c.add(c.tradeTickerForSignal(ticker), optionPrice, ticker);
   });
 }
 async function onStop(ticker, optionPrice, reason) {
