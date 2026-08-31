@@ -6,6 +6,7 @@
 //   main     DISCORD_WEBHOOK_URL      SPXW from SPY signals  $50k  5%/trade (2.5% per leg)  15-min
 //   free     DISCORD_WEBHOOK_FREE     IWM                    $10k  5%/trade (2.5% per leg)  30-min
 //   spy0dte  DISCORD_WEBHOOK_SPY0DTE  SPY                    $10k  5%/trade (2.5% per leg)  30-min
+//   qqq      DISCORD_WEBHOOK_QQQ      QQQ (paper-only)       $10k  5%/trade (2.5% per leg)  30-min
 
 const https = require("https");
 const rh = require("./robinhood");
@@ -144,6 +145,25 @@ function morningMessages(theme, name) {
       1:  { color: 0x00e5a0, content: "@everyone", title: "🚀 60 SECONDS — SPY Is Live",
         description: "This is it. Plan locked, risk defined — 2.5% per leg. Let's go earn it today. 💚",
         footer: "SPY ORB • Options trading carries substantial risk of loss." }
+    };
+  }
+  if (theme === "qqq") {
+    return {
+      60: { color: 0x00e5a0, content: "@everyone", title: "☀️ Good Morning — QQQ Paper",
+        description: "New session, clean book. 🌅\n\n**" + name + "** is tracking **QQQ** paper — 0DTE ATM + 1DTE expected-move legs. ORB from Yahoo, marks from Yahoo/RH.\n\n" + sizingBlurb(5) + "\n\nPaper only — no live Robinhood fills here.",
+        footer: "QQQ paper • 0DTE + 1DTE • 5% balance/trade • Not financial advice." },
+      45: { color: 0x4da6ff, title: "🌤️ 45 Minutes — QQQ Pre-Flight",
+        description: "Reviewing **QQQ 0DTE + 1DTE** legs and expected-move levels before the open. 📋",
+        footer: "QQQ paper • 0DTE + 1DTE • Not financial advice." },
+      30: { color: 0xf5c518, content: "@everyone", title: "🌅 30 Minutes — Eyes on QQQ",
+        description: "Thirty out. Each paper entry opens **0DTE ATM + 1DTE at the expected-move strike**. Wait for the break, then execute.\n\nCalm hands win. 🧘",
+        footer: "QQQ paper • 0DTE + 1DTE • Trade at your own risk." },
+      5:  { color: 0xff8c00, content: "@everyone", title: "⚡ 5 Minutes — QQQ Locked In",
+        description: "Almost go time. Dual-leg paper entries (0DTE + 1DTE), 5% total risk per play. Stay present. 🔥",
+        footer: "QQQ paper • 0DTE + 1DTE • Trade at your own risk." },
+      1:  { color: 0x00e5a0, content: "@everyone", title: "🚀 60 SECONDS — QQQ Paper Live",
+        description: "Plan locked, risk defined — 2.5% per leg. Let's work the tape. 💚",
+        footer: "QQQ paper • Options trading carries substantial risk of loss." }
     };
   }
   // default theme (main 50K — SPXW)
@@ -316,8 +336,13 @@ function createChannel(cfg) {
   async function entry(tradeTicker, side, optionPrice, orbHigh, orbLow, underlying, signalTicker) {
     var existing = paperLegs.listLegsForTrade(account.positions, tradeTicker);
     if (existing.length) {
-      console.log("[PAPER][" + cfg.id + "] entry skipped — " + existing.length + " leg(s) already open for " + tradeTicker);
-      return false;
+      var first = account.positions[existing[0]];
+      if (first && first.side === side) {
+        console.log("[PAPER][" + cfg.id + "] entry skipped — " + existing.length + " leg(s) already open for " + tradeTicker);
+        return false;
+      }
+      console.log("[PAPER][" + cfg.id + "] flipping " + tradeTicker + " " + first.side + " → " + side);
+      await fullClose(signalTicker || tradeTicker, optionPrice || 0);
     }
     var moveTargets = await paperLegs.getEntryMoveTargets(tradeTicker);
     var opened = [];
@@ -905,6 +930,12 @@ function buildChannelConfigs() {
       startBalance: 10000, riskPct: 5, dualLeg: true, signalTickers: ["SPY"], tradeTicker: "SPY",
       tickers: ["SPY"], watchlist: ["SPY"], updateMins: 30, theme: "spy"
     });
+  if (process.env.DISCORD_WEBHOOK_QQQ)
+    list.push({
+      id: "qqq", name: "QQQ ORB Paper", webhook: process.env.DISCORD_WEBHOOK_QQQ,
+      startBalance: 10000, riskPct: 5, dualLeg: true, signalTickers: ["QQQ"], tradeTicker: "QQQ",
+      tickers: ["QQQ"], watchlist: ["QQQ"], updateMins: 30, theme: "qqq"
+    });
   return list;
 }
 
@@ -1011,7 +1042,7 @@ function scheduleCloseDigest(channel) {
 
 function initChannels(getToken) {
   channels = buildChannelConfigs().map(createChannel);
-  if (channels.length === 0) { console.log("[DISCORD] no channels active (set DISCORD_WEBHOOK_URL / _FREE / _SPY0DTE)"); return; }
+  if (channels.length === 0) { console.log("[DISCORD] no channels active (set DISCORD_WEBHOOK_URL / _FREE / _SPY0DTE / _QQQ)"); return; }
   console.log("[DISCORD] active channels: " + channels.map(function(c) {
     return c.cfg.id + "(" + (c.cfg.tradeTicker || c.cfg.signalTickers.join("+")) + "," + (c.cfg.riskPct || 5) + "%,"
       + (c.cfg.dualLeg !== false ? "0+1DTE" : "0DTE") + ")";

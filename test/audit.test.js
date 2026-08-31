@@ -346,6 +346,10 @@ test("Sunday premarket tickers scoped per Discord channel", function() {
     closeDigest.sundayTickersForChannel({ id: "free", tickers: ["IWM"] }),
     ["IWM"]
   );
+  assert.deepStrictEqual(
+    closeDigest.sundayTickersForChannel({ id: "qqq", tickers: ["QQQ"] }),
+    ["QQQ"]
+  );
 });
 
 if (process.exitCode) {

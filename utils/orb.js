@@ -50,7 +50,11 @@ async function populateTicker(ticker, force) {
 }
 
 async function populateIfNeeded(force) {
-  return [await populateTicker("SPY", force), await populateTicker("IWM", force)];
+  return [
+    await populateTicker("SPY", force),
+    await populateTicker("IWM", force),
+    await populateTicker("QQQ", force)
+  ];
 }
 
 function scheduleORBCapture() {

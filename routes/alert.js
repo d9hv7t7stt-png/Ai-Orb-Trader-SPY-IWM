@@ -87,13 +87,17 @@ function recentlySeen(ticker, event) {
   return 0;
 }
 
+function isLiveTicker(ticker) {
+  return ticker === "SPY" || ticker === "IWM";
+}
+
 async function handleAlert(payload) {
   stateModule.resetDay();
   var ticker = ((payload.ticker) || "").toUpperCase();
   var event  = (payload.event || "").toLowerCase();
 
   if (!ticker || !event) throw new Error("Missing ticker or event");
-  if (ticker !== "SPY" && ticker !== "IWM") throw new Error("Unknown ticker: " + ticker);
+  if (ticker !== "SPY" && ticker !== "IWM" && ticker !== "QQQ") throw new Error("Unknown ticker: " + ticker);
 
   var TRADE_EVENTS = ["breakout_long", "breakout_short", "stop_long", "stop_short", "expected_move_hit"];
   var guarded = TRADE_EVENTS.indexOf(event) !== -1;
@@ -161,6 +165,9 @@ async function tryIwmCrossEntry(side, spyOrbHigh, spyOrbLow, s, lockedTickers) {
 
 async function notifyPaperAndMaybeLiveEntry(ticker, side, half, total, optPrice, orbHigh, orbLow, close, s, lockedTickers) {
   await notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close);
+  if (!isLiveTicker(ticker)) {
+    return { order: null, cross: null, paper: true, live: false, retryable: false };
+  }
   var livePos = stateModule.getPosition(ticker);
   var liveFlat = !livePos || livePos.stopped;
   var entryResult = { order: null, retryable: false };
@@ -245,8 +252,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
   }
 
   if (event === "breakout_long") {
-    var total = s.contracts[ticker];
-    var half  = Math.ceil(total / 2);
+    var total = isLiveTicker(ticker) ? (s.contracts[ticker] || 1) : 0;
+    var half  = isLiveTicker(ticker) ? Math.ceil(total / 2) : 0;
 
     if (pos && !pos.stopped && pos.side === "put") {
       stateModule.logEvent("FLIP", ticker + " breakout long — paper close + live close if possible");
@@ -287,8 +294,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
   }
 
   if (event === "breakout_short") {
-    var total2 = s.contracts[ticker];
-    var half2  = Math.ceil(total2 / 2);
+    var total2 = isLiveTicker(ticker) ? (s.contracts[ticker] || 1) : 0;
+    var half2  = isLiveTicker(ticker) ? Math.ceil(total2 / 2) : 0;
 
     if (pos && !pos.stopped && pos.side === "call") {
       stateModule.logEvent("FLIP", ticker + " breakout short — paper close + live close if possible");
