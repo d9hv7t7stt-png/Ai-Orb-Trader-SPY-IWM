@@ -1150,13 +1150,8 @@ function initChannels(getToken) {
   }).join(", "));
   channels.forEach(function(c) { scheduleMorning(c); scheduleUpdates(c); scheduleDaily(c); scheduleCloseDigest(c); scheduleSundayPremarket(c); });
 
-  setTimeout(function() {
-    postExistingOrbs(false).then(function(posted) {
-      if (posted && posted.length) console.log("[DISCORD] ORB announce: " + posted.join(", "));
-    }).catch(function(e) {
-      console.log("[DISCORD] ORB announce error: " + e.message);
-    });
-  }, 4000);
+  // Do not auto-repost ORBs on every redeploy. New ORBs announce when Yahoo/TV sets them.
+  // Use GET /api/discord/orb?force=1 only when you intentionally want a re-post.
 
   var moveBusy = false;
   var markBusy = false;
