@@ -712,13 +712,10 @@ function createChannel(cfg) {
     var l = parseFloat(low) || 0;
     var m = mid != null ? parseFloat(mid) : (h + l) / 2;
     var srcLabel = formatOrbSource(source);
-    var tradeNote = cfg.tradeTicker && cfg.tradeTicker !== ticker
-      ? "Signal **" + ticker + "** → **" + display + "**"
-      : "**" + display + "**";
     await send({
       color: 0x4da6ff,
       title: "📐 ORB SET — " + display,
-      description: tradeNote + " · opening range locked · " + etTimeLabel(),
+      description: "**" + display + "** · opening range locked · " + etTimeLabel(),
       fields: [
         { name: "ORB High", value: "$" + h.toFixed(2), inline: true },
         { name: "ORB Low", value: "$" + l.toFixed(2), inline: true },
