@@ -219,6 +219,17 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       await notify("onOrbSet", [ticker, orbHigh, orbLow, midWh, "webhook"]);
       return { ok: true, message: ticker + " ORB set (from TradingView)" };
     }
+
+    // Bare orb_set (no high/low): keep an existing same-day ORB — do not overwrite
+    // TradingView levels with Yahoo. Only Yahoo-fill when nothing is set yet.
+    s = stateModule.getState();
+    var existing = s.orb && s.orb[ticker];
+    var today = new Date().toLocaleDateString("en-US", { timeZone: "America/New_York" });
+    if (existing && existing.set && existing.date === today && existing.high > 0 && existing.low > 0) {
+      await notify("onOrbSet", [ticker, existing.high, existing.low, existing.mid, existing.source || "webhook"]);
+      return { ok: true, message: ticker + " ORB already set (" + (existing.source || "cached") + ") — preserved" };
+    }
+
     stateModule.logEvent("ORB_WARN", ticker + " orb_set without levels — auto-fetching from Yahoo");
     var range = await orbUtil.fetchOpeningRange(ticker);
     if (range && range.high && range.low) {

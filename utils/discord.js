@@ -107,6 +107,15 @@ function formatMoney(n) {
 function formatPct(n) { return (n >= 0 ? "+" : "") + n.toFixed(1) + "%"; }
 function etISODate() { return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }); }
 
+function formatOrbSource(source) {
+  var s = String(source || "").toLowerCase();
+  if (s === "webhook" || s === "tradingview" || s === "tv") return "TradingView";
+  if (s === "yahoo") return "Yahoo";
+  if (s === "cached") return "Cached";
+  if (!s) return "Yahoo";
+  return String(source);
+}
+
 // ── morning themes ──────────────────────────────────────────────────────────
 function morningMessages(theme, name) {
   if (theme === "free") {
@@ -702,7 +711,7 @@ function createChannel(cfg) {
     var h = parseFloat(high) || 0;
     var l = parseFloat(low) || 0;
     var m = mid != null ? parseFloat(mid) : (h + l) / 2;
-    var src = source || "yahoo";
+    var srcLabel = formatOrbSource(source);
     var tradeNote = cfg.tradeTicker && cfg.tradeTicker !== ticker
       ? "Signal **" + ticker + "** → **" + display + "**"
       : "**" + display + "**";
@@ -714,7 +723,7 @@ function createChannel(cfg) {
         { name: "ORB High", value: "$" + h.toFixed(2), inline: true },
         { name: "ORB Low", value: "$" + l.toFixed(2), inline: true },
         { name: "Mid (Stop)", value: "$" + m.toFixed(2), inline: true },
-        { name: "Source", value: String(src), inline: true },
+        { name: "Source", value: srcLabel, inline: true },
         { name: "Plan", value: "Watching for **5m bar close** breakout · 0DTE ATM + 1DTE expected-move legs", inline: false }
       ],
       footer: { text: footer() + " · Not financial advice" },
