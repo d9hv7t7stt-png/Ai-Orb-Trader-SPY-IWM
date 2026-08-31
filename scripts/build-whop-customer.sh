@@ -234,9 +234,13 @@ cat > "$DEST/README.md" <<'EOF'
 Live-only ORB auto-trader for Robinhood. Requires an active Whop license key.
 
 See **WHOP-SETUP.md** for keys and deploy steps.
+
+Before selling: open `config/whop.baked.json` and replace `REPLACE_ME_SELLER_API_KEY` with your Whop seller API key (`apik_…`), or run `bash inject-whop-api-key.sh` from this folder.
 EOF
 
-# Remove seller-only / paper docs noise from dashboard copy if present — light touch
+cp "$ROOT/scripts/inject-whop-api-key.sh" "$DEST/inject-whop-api-key.sh"
+chmod +x "$DEST/inject-whop-api-key.sh"
+
 # Zip
 rm -f "$ZIP"
 ( cd "$OUT_ROOT" && zip -qr "$(basename "$ZIP")" "$(basename "$DEST")" )
