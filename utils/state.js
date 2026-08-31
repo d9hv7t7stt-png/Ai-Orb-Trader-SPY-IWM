@@ -32,14 +32,15 @@ function freshOrb() {
   return {
     SPY: { high: null, low: null, mid: null, set: false, date: null, source: null },
     IWM: { high: null, low: null, mid: null, set: false, date: null, source: null },
-    QQQ: { high: null, low: null, mid: null, set: false, date: null, source: null }
+    QQQ: { high: null, low: null, mid: null, set: false, date: null, source: null },
+    SPX: { high: null, low: null, mid: null, set: false, date: null, source: null }
   };
 }
 
 function restoreOrb(savedOrb) {
   var orb = freshOrb();
   if (!savedOrb) return orb;
-  ["SPY", "IWM", "QQQ"].forEach(function(t) {
+  ["SPY", "IWM", "QQQ", "SPX"].forEach(function(t) {
     var o = savedOrb[t];
     if (o && o.set && o.date === _today) orb[t] = o;
   });

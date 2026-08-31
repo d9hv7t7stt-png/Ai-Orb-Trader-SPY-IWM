@@ -67,7 +67,8 @@ async function populateIfNeeded(force) {
   return [
     await populateTicker("SPY", force),
     await populateTicker("IWM", force),
-    await populateTicker("QQQ", force)
+    await populateTicker("QQQ", force),
+    await populateTicker("SPX", force)
   ];
 }
 

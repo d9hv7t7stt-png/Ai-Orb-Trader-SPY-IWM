@@ -1010,22 +1010,37 @@ function orbFingerprint(high, low) {
   return etISODate() + "|" + (parseFloat(high) || 0).toFixed(2) + "|" + (parseFloat(low) || 0).toFixed(2);
 }
 
+function forOrbAnnounce(ticker, fn) {
+  return Promise.all(channels.filter(function(c) {
+    var trade = c.cfg.tradeTicker || (c.cfg.signalTickers && c.cfg.signalTickers[0]);
+    // Main SPXW channel announces SPX Yahoo ORB only — never SPY levels as "SPX"
+    if (trade === "SPXW" || trade === "SPX") {
+      return ticker === "SPX" || ticker === "SPXW";
+    }
+    return c.acceptsSignal(ticker);
+  }).map(fn));
+}
+
 async function onOrbSet(ticker, high, low, mid, source, opts) {
   opts = opts || {};
   if (!(parseFloat(high) > 0) || !(parseFloat(low) > 0)) return false;
   var fp = orbFingerprint(high, low);
-  if (!opts.force && _orbPosted[ticker] === fp) return false;
-  _orbPosted[ticker] = fp;
-  await forSignal(ticker, function(c) {
-    return c.orbSet(ticker, high, low, mid, source);
+  var key = ticker === "SPXW" ? "SPX" : ticker;
+  if (!opts.force && _orbPosted[key] === fp) return false;
+  _orbPosted[key] = fp;
+  await forOrbAnnounce(key, function(c) {
+    return c.orbSet(key, high, low, mid, source);
   });
   return true;
 }
 
 async function postExistingOrbs(force) {
   var stateModule = require("./state");
+  var orbUtil = require("./orb");
+  try { await orbUtil.ensureOrbForTicker("SPX"); } catch (e) {}
+  try { await orbUtil.ensureOrbForTicker("QQQ"); } catch (e) {}
   var s = stateModule.getState();
-  var tickers = ["SPY", "IWM", "QQQ"];
+  var tickers = ["SPY", "IWM", "QQQ", "SPX"];
   var posted = [];
   for (var i = 0; i < tickers.length; i++) {
     var t = tickers[i];
