@@ -6,7 +6,7 @@ var fs = require("fs");
 var persist = require("./persist");
 var FILE = persist.filePath("orb-settings.json");
 
-var DEFAULTS = { dte: { SPY: 1, IWM: 0 } };
+var DEFAULTS = { dte: { SPY: 1, IWM: 0 }, trading_enabled: true };
 
 function deepDefault() { return JSON.parse(JSON.stringify(DEFAULTS)); }
 
@@ -15,6 +15,7 @@ function normalize(s) {
   s.dte = s.dte || {};
   if (typeof s.dte.SPY !== "number") s.dte.SPY = DEFAULTS.dte.SPY;
   if (typeof s.dte.IWM !== "number") s.dte.IWM = DEFAULTS.dte.IWM;
+  if (typeof s.trading_enabled !== "boolean") s.trading_enabled = DEFAULTS.trading_enabled;
   return s;
 }
 
@@ -46,7 +47,21 @@ function setDTE(ticker, val) {
 }
 
 function getAll() {
-  return { dte: { SPY: getDTE("SPY"), IWM: getDTE("IWM") }, durable: persist.isDurable() };
+  return {
+    dte: { SPY: getDTE("SPY"), IWM: getDTE("IWM") },
+    trading_enabled: isTradingEnabled(),
+    durable: persist.isDurable()
+  };
 }
 
-module.exports = { getDTE, setDTE, getAll, FILE };
+function isTradingEnabled() {
+  return settings.trading_enabled !== false;
+}
+
+function setTradingEnabled(on) {
+  settings.trading_enabled = !!on;
+  save();
+  return settings.trading_enabled;
+}
+
+module.exports = { getDTE, setDTE, getAll, isTradingEnabled, setTradingEnabled, FILE };

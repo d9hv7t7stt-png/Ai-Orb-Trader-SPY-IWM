@@ -166,6 +166,25 @@ function scheduleDailyReauth() {
   scheduleNext();
 }
 
+function scheduleProactiveRefresh() {
+  var CHECK_MS = 60 * 60 * 1000;
+  var refreshBusy = false;
+  async function check() {
+    if (refreshBusy) return;
+    if (!rh.needsProactiveRefresh()) return;
+    refreshBusy = true;
+    try {
+      stateModule.logEvent("AUTH", "Proactive token refresh (expiring within 24h)");
+      await refreshAccessToken();
+    } finally {
+      refreshBusy = false;
+    }
+  }
+  setInterval(check, CHECK_MS);
+  setTimeout(check, 15000);
+  console.log("[AUTH] Proactive refresh check every " + (CHECK_MS / 60000) + " min");
+}
+
 async function getAuthInfo() {
   var pending = !!pendingWorkflow;
   var refreshReady = !!(rh.getStoredRefreshToken() && rh.getStoredDeviceToken());
@@ -194,6 +213,7 @@ module.exports = {
   submitSmsCode: submitSmsCode,
   getPendingWorkflow: getPendingWorkflow,
   scheduleDailyReauth: scheduleDailyReauth,
+  scheduleProactiveRefresh: scheduleProactiveRefresh,
   getAuthInfo: getAuthInfo,
   verifyCurrentToken: verifyCurrentToken
 };

@@ -3,6 +3,7 @@ var trayd = require("../utils/trayd");
 var orbUtil = require("../utils/orb");
 var yahoo = require("../utils/yahoo");
 var pnlUtil = require("../utils/pnl");
+var settings = require("../utils/settings");
 
 var discord = null;
 try { discord = require("../utils/discord"); } catch (e) { discord = null; }
@@ -47,6 +48,19 @@ async function notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close, 
 
 async function closeLiveOrLog(ticker, contracts, reason) {
   return trayd.closeLiveOrLog(ticker, contracts, reason);
+}
+
+function liveEntryBlocked(ticker, action) {
+  if (settings.isTradingEnabled()) return false;
+  stateModule.logEvent("KILL_SWITCH", ticker + " live " + action + " blocked");
+  return true;
+}
+
+function isRetryableRhError(msg) {
+  var m = (msg || "").toLowerCase();
+  return m.indexOf("token") !== -1 || m.indexOf("auth") !== -1 || m.indexOf("timeout") !== -1
+    || m.indexOf("econn") !== -1 || m.indexOf("network") !== -1 || m.indexOf("503") !== -1
+    || m.indexOf("502") !== -1 || m.indexOf("429") !== -1;
 }
 
 var DEDUP_WINDOW_MS = parseInt(process.env.ORB_DEDUP_MS, 10) || 30000;
@@ -109,14 +123,16 @@ async function handleAlert(payload) {
 }
 
 async function tryLiveHalfEntry(ticker, side, half, total, optPrice) {
+  if (liveEntryBlocked(ticker, "entry")) return { order: null, retryable: false, blocked: true };
   stateModule.logEvent("ENTRY", ticker + " " + side + " @ half=" + half + "/" + total);
   stateModule.openHalfPosition(ticker, side, half, optPrice || 0);
   try {
-    return await placeAndFill(ticker, side, half);
+    var order = await placeAndFill(ticker, side, half);
+    return { order: order, retryable: false };
   } catch (e) {
     stateModule.closePosition(ticker, "entry order failed");
     stateModule.logEvent("ORDER_ERROR", ticker + " " + side + " entry failed: " + e.message);
-    return null;
+    return { order: null, retryable: isRetryableRhError(e.message), error: e.message };
   }
 }
 
@@ -124,6 +140,7 @@ async function tryIwmCrossEntry(side, spyOrbHigh, spyOrbLow, s, lockedTickers) {
   var spyPos = stateModule.getPosition("SPY");
   var stopMode = side === "call" ? "orb_low" : "orb_high";
   var spyHalf = Math.ceil(s.contracts.SPY / 2);
+  if (liveEntryBlocked("SPY", "cross-entry")) return { order: null, retryable: false, blocked: true };
   if (!processing["SPY"] && (!spyPos || spyPos.stopped) && s.orb.SPY.set) {
     processing["SPY"] = true;
     lockedTickers.push("SPY");
@@ -132,11 +149,11 @@ async function tryIwmCrossEntry(side, spyOrbHigh, spyOrbLow, s, lockedTickers) {
     try {
       var cross = await placeAndFill("SPY", side, spyHalf);
       recentlySeen("SPY", side === "call" ? "cross_long" : "cross_short");
-      return cross;
+      return { order: cross, retryable: false };
     } catch (e) {
       stateModule.closePosition("SPY", "cross entry failed");
       stateModule.logEvent("CROSS_ERROR", "SPY cross entry failed: " + e.message);
-      return null;
+      return { order: null, retryable: isRetryableRhError(e.message), error: e.message };
     }
   }
   return null;
@@ -146,17 +163,23 @@ async function notifyPaperAndMaybeLiveEntry(ticker, side, half, total, optPrice,
   await notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close);
   var livePos = stateModule.getPosition(ticker);
   var liveFlat = !livePos || livePos.stopped;
-  var order = null;
-  if (liveFlat) {
-    order = await tryLiveHalfEntry(ticker, side, half, total, optPrice);
-  }
+  var entryResult = { order: null, retryable: false };
+  if (liveFlat) entryResult = await tryLiveHalfEntry(ticker, side, half, total, optPrice);
   var cross = null;
   if (ticker === "IWM") {
     await notifyPaperEntry("SPY", side, null, s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, null,
       { channelIds: ["spy0dte"], ignoreWebhookPrice: true });
     cross = await tryIwmCrossEntry(side, s.orb.SPY.high || orbHigh || 0, s.orb.SPY.low || orbLow || 0, s, lockedTickers);
   }
-  return { order: order, cross: cross, paper: true, live: !!order };
+  var retryable = !!(entryResult.retryable || (cross && cross.retryable));
+  return {
+    order: entryResult.order,
+    cross: cross && cross.order,
+    paper: true,
+    live: !!entryResult.order,
+    retryable: retryable,
+    error: entryResult.error || (cross && cross.error)
+  };
 }
 
 function stopLabel(pos) {
@@ -240,11 +263,16 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       await notify("onAdd", [ticker, optPrice || 0]);
       if (pos.halfIn) {
         stateModule.logEvent("RETEST", ticker + " retest add " + pos.totalContracts + "c");
-        try {
-          var addOrder = await placeAndFill(ticker, "call", pos.totalContracts);
-          stateModule.addSecondHalf(ticker, pos.totalContracts, (addOrder && addOrder.entryPrice) || optPrice || pos.entryPrice);
-        } catch (e) {
-          stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
+        if (!liveEntryBlocked(ticker, "retest")) {
+          try {
+            var addOrder = await placeAndFill(ticker, "call", pos.totalContracts);
+            stateModule.addSecondHalf(ticker, pos.totalContracts, (addOrder && addOrder.entryPrice) || optPrice || pos.entryPrice);
+          } catch (e) {
+            stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
+            if (isRetryableRhError(e.message)) {
+              return { ok: false, retryable: true, message: ticker + " retest RH failed: " + e.message };
+            }
+          }
         }
         return { ok: true, message: ticker + " paper retest sent" + (pos.halfIn ? " · live add attempted" : "") };
       }
@@ -252,6 +280,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     }
 
     var opened = await notifyPaperAndMaybeLiveEntry(ticker, "call", half, total, optPrice, orbHigh, orbLow, close, s, lockedTickers);
+    if (opened.retryable) {
+      return { ok: false, retryable: true, message: ticker + " live entry failed: " + (opened.error || "RH error") };
+    }
     return { ok: true, entry: opened.order, cross: opened.cross, paper: true, live: opened.live };
   }
 
@@ -274,11 +305,16 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       await notify("onAdd", [ticker, optPrice || 0]);
       if (pos.halfIn) {
         stateModule.logEvent("RETEST", ticker + " retest add " + pos.totalContracts + "c");
-        try {
-          var addOrder2 = await placeAndFill(ticker, "put", pos.totalContracts);
-          stateModule.addSecondHalf(ticker, pos.totalContracts, (addOrder2 && addOrder2.entryPrice) || optPrice || pos.entryPrice);
-        } catch (e) {
-          stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
+        if (!liveEntryBlocked(ticker, "retest")) {
+          try {
+            var addOrder2 = await placeAndFill(ticker, "put", pos.totalContracts);
+            stateModule.addSecondHalf(ticker, pos.totalContracts, (addOrder2 && addOrder2.entryPrice) || optPrice || pos.entryPrice);
+          } catch (e) {
+            stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
+            if (isRetryableRhError(e.message)) {
+              return { ok: false, retryable: true, message: ticker + " retest RH failed: " + e.message };
+            }
+          }
         }
         return { ok: true, message: ticker + " paper retest sent" };
       }
@@ -286,6 +322,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     }
 
     var opened2 = await notifyPaperAndMaybeLiveEntry(ticker, "put", half2, total2, optPrice, orbHigh, orbLow, close, s, lockedTickers);
+    if (opened2.retryable) {
+      return { ok: false, retryable: true, message: ticker + " live entry failed: " + (opened2.error || "RH error") };
+    }
     return { ok: true, entry: opened2.order, cross: opened2.cross, paper: true, live: opened2.live };
   }
 

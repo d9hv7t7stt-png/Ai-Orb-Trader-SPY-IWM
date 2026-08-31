@@ -368,6 +368,17 @@
     color: var(--text-mid); cursor: pointer;
   }
   .preset-btn:active { border-color: var(--green); color: var(--green); }
+  .btn.danger {
+    border-color: var(--red); color: var(--red); background: rgba(255, 77, 106, 0.08);
+  }
+  .btn.danger:active { background: rgba(255, 77, 106, 0.18); }
+  .safety-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+  .safety-pill {
+    font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 4px 8px; border: 1px solid var(--border2); color: var(--text-mid);
+  }
+  .safety-pill.on { border-color: var(--green); color: var(--green); }
+  .safety-pill.off { border-color: var(--red); color: var(--red); }
   @media (max-width: 520px) { .trade-config-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -414,6 +425,13 @@
         <div class="stat-label">Buying Power</div>
         <div class="stat-value" id="val-buying-power">—</div>
         <div class="stat-sub">Robinhood live account · limit orders at ask/bid</div>
+        <div class="safety-row">
+          <span class="safety-pill on" id="pill-trading">Live: ON</span>
+          <span class="safety-pill" id="pill-queue">Queue: —</span>
+          <button class="btn danger" onclick="killSwitch('flatten')">Kill · Flatten</button>
+          <button class="btn" onclick="killSwitch('halt')">Halt Entries</button>
+          <button class="btn primary" id="btn-resume-trading" style="display:none" onclick="killSwitch('resume')">Resume Live</button>
+        </div>
       </div>
     </div>
 
@@ -826,8 +844,50 @@ function renderBanners() {
   if (healthInfo && healthInfo.durable === false) {
     parts.push('<strong>Storage is temporary.</strong> Attach a Railway volume at <code>/data</code> so tokens and settings survive redeploys.');
   }
+  if (healthInfo && healthInfo.webhook_queue) {
+    var q = healthInfo.webhook_queue;
+    var pending = (q.pending || 0) + (q.retry || 0);
+    if (q.failed > 0) parts.push('<strong>Webhook queue:</strong> ' + q.failed + ' failed alert(s) — check Activity Log.');
+    else if (pending > 0) parts.push('<strong>Webhook queue:</strong> ' + pending + ' alert(s) pending/retrying.');
+  }
+  if (healthInfo && healthInfo.trading_enabled === false) {
+    parts.push('<strong>Live trading halted.</strong> Stops/exits still run. Tap <strong>Resume Live</strong> to re-enable entries.');
+  }
   if (parts.length) setBanner('warn', parts.join('<br><br>'));
   else setBanner('', '');
+}
+
+function updateSafetyUI(data) {
+  var on = data && data.trading_enabled !== false;
+  var pill = document.getElementById('pill-trading');
+  var resumeBtn = document.getElementById('btn-resume-trading');
+  if (pill) {
+    pill.textContent = on ? 'Live: ON' : 'Live: HALTED';
+    pill.className = 'safety-pill ' + (on ? 'on' : 'off');
+  }
+  if (resumeBtn) resumeBtn.style.display = on ? 'none' : 'inline-block';
+  var qpill = document.getElementById('pill-queue');
+  if (qpill && data && data.webhook_queue) {
+    var c = data.webhook_queue.counts || data.webhook_queue;
+    var pending = (c.pending || 0) + (c.retry || 0);
+    var failed = c.failed || 0;
+    qpill.textContent = failed ? ('Queue: ' + failed + ' failed') : ('Queue: ' + pending + ' pending');
+    qpill.className = 'safety-pill ' + (failed ? 'off' : '');
+  }
+}
+
+async function killSwitch(action) {
+  var labels = { flatten: 'Flatten ALL live SPY/IWM positions and halt entries?', halt: 'Halt new live entries (stops still run)?', resume: 'Resume live entries?' };
+  if (!confirm(labels[action] || 'Continue?')) return;
+  try {
+    var res = await apiFetch('/api/kill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action }) });
+    var data = await res.json();
+    if (data.ok) {
+      toast(action === 'resume' ? 'Live trading resumed' : action === 'halt' ? 'Entries halted' : 'Flatten requested');
+      loadState();
+      checkAuth();
+    } else toast(data.error || 'Kill switch failed', 'red');
+  } catch (e) { toast(e.message || 'Error', 'red'); }
 }
 
 async function loadLivePrices() {
@@ -902,6 +962,7 @@ async function loadState() {
     const res = await apiFetch('/api/state');
     state = await res.json();
     renderState(state);
+    updateSafetyUI(state);
     if (state.auth) updateAuthUI(state.auth);
     try {
       const bpRes = await apiFetch('/api/buying-power');
@@ -1233,6 +1294,7 @@ async function checkAuth() {
       pending: healthInfo.pending_verification
     });
     renderBanners();
+    updateSafetyUI(healthInfo);
     if (healthInfo.webhook_url) updateWebhookURL();
   } catch {
     const dot = document.getElementById('auth-dot');
