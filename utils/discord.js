@@ -1005,6 +1005,25 @@ async function onFullClose(ticker, optionPrice) {
 }
 
 var _orbPosted = {};
+var ORB_POSTED_FILE = persist.filePath("discord-orb-posted.json");
+
+function loadOrbPosted() {
+  try {
+    var fs = require("fs");
+    if (fs.existsSync(ORB_POSTED_FILE)) {
+      var d = JSON.parse(fs.readFileSync(ORB_POSTED_FILE, "utf8"));
+      if (d && typeof d === "object") _orbPosted = d;
+    }
+  } catch (e) {}
+}
+
+function saveOrbPosted() {
+  try {
+    require("fs").writeFileSync(ORB_POSTED_FILE, JSON.stringify(_orbPosted));
+  } catch (e) {
+    console.log("[DISCORD] orb-posted save failed: " + e.message);
+  }
+}
 
 function orbFingerprint(high, low) {
   return etISODate() + "|" + (parseFloat(high) || 0).toFixed(2) + "|" + (parseFloat(low) || 0).toFixed(2);
@@ -1024,10 +1043,12 @@ function forOrbAnnounce(ticker, fn) {
 async function onOrbSet(ticker, high, low, mid, source, opts) {
   opts = opts || {};
   if (!(parseFloat(high) > 0) || !(parseFloat(low) > 0)) return false;
+  loadOrbPosted();
   var fp = orbFingerprint(high, low);
   var key = ticker === "SPXW" ? "SPX" : ticker;
   if (!opts.force && _orbPosted[key] === fp) return false;
   _orbPosted[key] = fp;
+  saveOrbPosted();
   await forOrbAnnounce(key, function(c) {
     return c.orbSet(key, high, low, mid, source);
   });
