@@ -6,7 +6,7 @@
 //   main     DISCORD_WEBHOOK_URL      SPXW from SPY signals  $50k  5%/trade (2.5% per leg)  15-min
 //   free     DISCORD_WEBHOOK_FREE     IWM                    $10k  5%/trade (2.5% per leg)  30-min
 //   spy0dte  DISCORD_WEBHOOK_SPY0DTE  SPY                    $10k  5%/trade (2.5% per leg)  30-min
-//   qqq      DISCORD_WEBHOOK_QQQ      QQQ (paper-only)       $10k  5%/trade (2.5% per leg)  30-min
+//   qqq      DISCORD_WEBHOOK_QQQ      QQQ                    $10k  5%/trade (2.5% per leg)  30-min
 
 const https = require("https");
 const rh = require("./robinhood");
@@ -149,21 +149,21 @@ function morningMessages(theme, name) {
   }
   if (theme === "qqq") {
     return {
-      60: { color: 0x00e5a0, content: "@everyone", title: "☀️ Good Morning — QQQ Paper",
-        description: "New session, clean book. 🌅\n\n**" + name + "** is tracking **QQQ** paper — 0DTE ATM + 1DTE expected-move legs. ORB from Yahoo, marks from Yahoo/RH.\n\n" + sizingBlurb(5) + "\n\nPaper only — no live Robinhood fills here.",
-        footer: "QQQ paper • 0DTE + 1DTE • 5% balance/trade • Not financial advice." },
+      60: { color: 0x00e5a0, content: "@everyone", title: "☀️ Good Morning — QQQ ORB",
+        description: "New session, clean book. 🌅\n\n**" + name + "** is dialed in on **QQQ** — 0DTE ATM + 1DTE expected-move legs.\n\n" + sizingBlurb(5) + "\n\nWe trade the plan, not the emotion. Let's make today count. 💪",
+        footer: "QQQ ORB • 0DTE + 1DTE • 5% balance/trade • Not financial advice." },
       45: { color: 0x4da6ff, title: "🌤️ 45 Minutes — QQQ Pre-Flight",
         description: "Reviewing **QQQ 0DTE + 1DTE** legs and expected-move levels before the open. 📋",
-        footer: "QQQ paper • 0DTE + 1DTE • Not financial advice." },
+        footer: "QQQ ORB • 0DTE + 1DTE • Not financial advice." },
       30: { color: 0xf5c518, content: "@everyone", title: "🌅 30 Minutes — Eyes on QQQ",
-        description: "Thirty out. Each paper entry opens **0DTE ATM + 1DTE at the expected-move strike**. Wait for the break, then execute.\n\nCalm hands win. 🧘",
-        footer: "QQQ paper • 0DTE + 1DTE • Trade at your own risk." },
+        description: "Thirty out. Each entry opens **0DTE ATM + 1DTE at the expected-move strike**. Wait for the break, then execute.\n\nCalm hands win. 🧘",
+        footer: "QQQ ORB • 0DTE + 1DTE • Trade at your own risk." },
       5:  { color: 0xff8c00, content: "@everyone", title: "⚡ 5 Minutes — QQQ Locked In",
-        description: "Almost go time. Dual-leg paper entries (0DTE + 1DTE), 5% total risk per play. Stay present. 🔥",
-        footer: "QQQ paper • 0DTE + 1DTE • Trade at your own risk." },
-      1:  { color: 0x00e5a0, content: "@everyone", title: "🚀 60 SECONDS — QQQ Paper Live",
+        description: "Almost go time. Dual-leg entries (0DTE + 1DTE), 5% total risk per play. Stay present. 🔥",
+        footer: "QQQ ORB • 0DTE + 1DTE • Trade at your own risk." },
+      1:  { color: 0x00e5a0, content: "@everyone", title: "🚀 60 SECONDS — QQQ Is Live",
         description: "Plan locked, risk defined — 2.5% per leg. Let's work the tape. 💚",
-        footer: "QQQ paper • Options trading carries substantial risk of loss." }
+        footer: "QQQ ORB • Options trading carries substantial risk of loss." }
     };
   }
   // default theme (main 50K — SPXW)
@@ -704,8 +704,8 @@ function createChannel(cfg) {
     var m = mid != null ? parseFloat(mid) : (h + l) / 2;
     var src = source || "yahoo";
     var tradeNote = cfg.tradeTicker && cfg.tradeTicker !== ticker
-      ? "Signal **" + ticker + "** → paper **" + display + "**"
-      : "Paper **" + display + "**";
+      ? "Signal **" + ticker + "** → **" + display + "**"
+      : "**" + display + "**";
     await send({
       color: 0x4da6ff,
       title: "📐 ORB SET — " + display,
@@ -958,7 +958,7 @@ function buildChannelConfigs() {
     });
   if (process.env.DISCORD_WEBHOOK_QQQ)
     list.push({
-      id: "qqq", name: "QQQ ORB Paper", webhook: process.env.DISCORD_WEBHOOK_QQQ,
+      id: "qqq", name: "QQQ ORB Trader", webhook: process.env.DISCORD_WEBHOOK_QQQ,
       startBalance: 10000, riskPct: 5, dualLeg: true, signalTickers: ["QQQ"], tradeTicker: "QQQ",
       tickers: ["QQQ"], watchlist: ["QQQ"], updateMins: 30, theme: "qqq"
     });
