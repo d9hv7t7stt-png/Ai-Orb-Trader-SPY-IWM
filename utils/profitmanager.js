@@ -1,5 +1,6 @@
 // Profit Manager — polls open option positions every 30 seconds during market hours.
 // Handles: cross-entry ORB level stops, breakeven, +20% scale-outs, EOD 50%, trailing stops.
+// Dual-leg (0DTE+1DTE) positions are managed per leg via instrument URL.
 
 var stateModule = require("./state");
 var exitlogic = require("./exitlogic");
@@ -32,22 +33,156 @@ async function checkCrossEntryStop(ticker, pos, s) {
   }
   if (!hit) return false;
 
-  var contracts = pos.contracts;
   stateModule.logEvent("STOP_OUT", ticker + " " + reason + " (underlying $" + und.toFixed(2) + ")");
   var rhPositions = await rh.getOpenOptionPositions();
-  var rhPos = reconcile.findRhPosition(rhPositions, ticker, pos);
-  var exitPrice = 0;
-  if (rhPos) exitPrice = await rh.getOptionMarkByUrl(rhPos.option) || 0;
-  else if (pos.instrumentUrl) exitPrice = await rh.getOptionMarkByUrl(pos.instrumentUrl) || 0;
-  var closed = await trayd.closeLiveOrLog(ticker, contracts, reason);
-  if (!closed) return false;
-  if (exitPrice > 0) {
-    pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, exitPrice, contracts);
-  } else if (rhPos || pos.instrumentUrl) {
-    stateModule.logEvent("PNL_WARN", ticker + " cross-entry stop — no exit mark, P&L skipped");
+  if (pos.legs && pos.legs.length) {
+    for (var i = 0; i < pos.legs.length; i++) {
+      var leg = pos.legs[i];
+      if (!leg || leg.contracts < 1) continue;
+      var match = {
+        side: leg.side || pos.side,
+        strike: leg.strike,
+        expiry: leg.expiry,
+        instrumentUrl: leg.instrumentUrl
+      };
+      var rhLeg = reconcile.findRhPosition(rhPositions, ticker, match);
+      var exitPx = 0;
+      var url = (rhLeg && rhLeg.option) || leg.instrumentUrl;
+      if (url) exitPx = await rh.getOptionMarkByUrl(url) || 0;
+      if (exitPx > 0) pnlUtil.logTradePnL(ticker, pos.side, leg.entryPrice, exitPx, leg.contracts);
+    }
+  } else {
+    var rhPos = reconcile.findRhPosition(rhPositions, ticker, pos);
+    var exitPrice = 0;
+    if (rhPos) exitPrice = await rh.getOptionMarkByUrl(rhPos.option) || 0;
+    else if (pos.instrumentUrl) exitPrice = await rh.getOptionMarkByUrl(pos.instrumentUrl) || 0;
+    if (exitPrice > 0) {
+      pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, exitPrice, pos.contracts);
+    } else if (rhPos || pos.instrumentUrl) {
+      stateModule.logEvent("PNL_WARN", ticker + " cross-entry stop — no exit mark, P&L skipped");
+    }
   }
+  var closed = await trayd.closeAllLegs(ticker, reason);
+  if (!closed) return false;
   stateModule.closePosition(ticker, reason);
   return true;
+}
+
+async function manageOneLeg(ticker, pos, legIndex, rhPositions) {
+  var leg = pos.legs[legIndex];
+  if (!leg || leg.contracts < 1) return;
+  if (!(leg.entryPrice > 0)) {
+    console.log("[PROFIT_MGR] " + ticker + " DTE" + leg.dteTag + " waiting for entry price");
+    return;
+  }
+
+  var match = {
+    side: leg.side || pos.side,
+    strike: leg.strike,
+    expiry: leg.expiry,
+    instrumentUrl: leg.instrumentUrl
+  };
+  var rhPos = reconcile.findRhPosition(rhPositions, ticker, match);
+  var instrumentUrl = (rhPos && rhPos.option) || leg.instrumentUrl || null;
+  if (!instrumentUrl) {
+    console.log("[PROFIT_MGR] No instrument for " + ticker + " DTE" + leg.dteTag);
+    return;
+  }
+
+  if (rhPos) {
+    var qty = Math.floor(rh.optionPositionQty(rhPos));
+    if (qty !== leg.contracts) {
+      leg.contracts = Math.max(0, qty);
+      if (rhPos.option) leg.instrumentUrl = rhPos.option;
+      if (rhPos.strike_price) leg.strike = Math.round(parseFloat(rhPos.strike_price));
+      if (rhPos.expiration_date) leg.expiry = rhPos.expiration_date;
+      stateModule.setPositionLegs(ticker, pos.legs);
+      pos = stateModule.getPosition(ticker) || pos;
+      leg = pos.legs[legIndex];
+      if (!leg || leg.contracts < 1) return;
+    }
+  }
+
+  var optionPrice = await rh.getOptionMarkByUrl(instrumentUrl);
+  if (!optionPrice || optionPrice <= 0) {
+    console.log("[PROFIT_MGR] Could not get mark for " + ticker + " DTE" + leg.dteTag);
+    return;
+  }
+
+  var entryPrice = leg.entryPrice;
+  var contracts = leg.contracts;
+  var decision = exitlogic.evaluate(leg, optionPrice);
+  var gainPct = decision.gain;
+  var tag = ticker + " DTE" + leg.dteTag;
+
+  console.log("[PROFIT_MGR] " + tag + " entry=$" + entryPrice.toFixed(2) +
+    " current=$" + optionPrice.toFixed(2) + " gain=" + gainPct.toFixed(1) +
+    "% tier=" + (leg.lastProfitTier || 0) + " stop=" + decision.newStopPct + "%");
+
+  leg.stopPct = decision.newStopPct;
+
+  if (exitlogic.isEndOfDayWindow() && pos.eodSold !== exitlogic.etDateKey()) {
+    var eodQty = Math.max(1, Math.floor(contracts * exitlogic.EOD_SELL_FRAC));
+    stateModule.logEvent("EOD_SELL", tag + " 3:45 ET — selling 50% (" + eodQty + "c)");
+    if (!await trayd.closeLiveOrLog(ticker, eodQty, "EOD 50% (15m before close)", match)) return;
+    pnlUtil.logTradePnL(ticker, pos.side, entryPrice, optionPrice, eodQty);
+    stateModule.reduceLegContracts(ticker, legIndex, eodQty);
+    pos = stateModule.getPosition(ticker);
+    if (!pos || pos.contracts <= 0) {
+      stateModule.closePosition(ticker, "EOD flat");
+      return;
+    }
+    leg = pos.legs[legIndex];
+    if (!leg || leg.contracts < 1) return;
+    contracts = leg.contracts;
+  }
+
+  if (decision.activateBreakeven) {
+    stateModule.setLegBreakEven(ticker, legIndex);
+  }
+
+  if (decision.stopOut) {
+    var reason = leg.breakEvenActivated || decision.activateBreakeven
+      ? "Trailing stop " + decision.newStopPct + "%"
+      : "Initial stop -15%";
+    stateModule.logEvent("STOP_OUT", tag + " " + reason + " @ $" + optionPrice.toFixed(2)
+      + " (gain " + gainPct.toFixed(1) + "%)");
+    if (!await trayd.closeLiveOrLog(ticker, contracts, reason, match)) return;
+    pnlUtil.logTradePnL(ticker, pos.side, entryPrice, optionPrice, contracts);
+    stateModule.reduceLegContracts(ticker, legIndex, contracts);
+    pos = stateModule.getPosition(ticker);
+    if (!pos || pos.contracts <= 0) stateModule.closePosition(ticker, reason);
+    return;
+  }
+
+  if (decision.scaleOut) {
+    var sellQty = Math.max(1, Math.floor(contracts * decision.sellFraction));
+    stateModule.logEvent("PROFIT_TIER", tag + " +" + gainPct.toFixed(1) +
+      "% — selling " + Math.round(decision.sellFraction * 100) + "% (" + sellQty + "c) @ $"
+      + optionPrice.toFixed(2));
+    if (!await trayd.closeLiveOrLog(ticker, sellQty, "+" + Math.floor(gainPct) + "% scale-out", match)) return;
+    pnlUtil.logTradePnL(ticker, pos.side, entryPrice, optionPrice, sellQty);
+    stateModule.markLegProfitTier(ticker, legIndex, decision.newTier);
+    stateModule.reduceLegContracts(ticker, legIndex, sellQty);
+    pos = stateModule.getPosition(ticker);
+    if (!pos || pos.contracts <= 0) stateModule.closePosition(ticker, "scaled out");
+  }
+}
+
+async function manageDualLegPosition(ticker, pos, rhPositions) {
+  for (var i = 0; i < pos.legs.length; i++) {
+    pos = stateModule.getPosition(ticker);
+    if (!pos || pos.stopped || !pos.legs) return;
+    await manageOneLeg(ticker, pos, i, rhPositions);
+  }
+  if (exitlogic.isEndOfDayWindow()) {
+    pos = stateModule.getPosition(ticker);
+    if (pos && !pos.stopped && pos.eodSold !== exitlogic.etDateKey()) {
+      // Mark once after all legs had a chance to take the EOD trim this poll.
+      var anyLive = (pos.legs || []).some(function(l) { return l && l.contracts > 0; });
+      if (anyLive) stateModule.markEodSold(ticker, exitlogic.etDateKey());
+    }
+  }
 }
 
 async function checkProfitTiers() {
@@ -84,6 +219,11 @@ async function checkProfitTiers() {
     if (!pos || pos.stopped) continue;
 
     if (await checkCrossEntryStop(ticker, pos, s)) continue;
+
+    if (pos.legs && pos.legs.length) {
+      await manageDualLegPosition(ticker, pos, rhPositions);
+      continue;
+    }
 
     pos = await reconcile.backfillEntryFromRh(ticker, pos, rhPositions);
     if (!pos || pos.entryPrice <= 0) {

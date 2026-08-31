@@ -49,6 +49,8 @@ app.get("/health", async (req, res) => {
     pending_verification: auth.pending,
     durable: persist.isDurable(),
     trading_enabled: settings.isTradingEnabled(),
+    dual_leg_live: settings.isDualLegLive(),
+    cross_entry_enabled: settings.isCrossEntryEnabled(),
     webhook_queue: webhookQueue.summary().counts,
     token_expires_at: rh.getAccessTokenExpiryMs() ? new Date(rh.getAccessTokenExpiryMs()).toISOString() : null,
     webhook_url: ((req.get("x-forwarded-proto") || req.protocol) + "://" + req.get("host") + "/webhook"),
@@ -101,8 +103,26 @@ app.get("/api/state", authguard.requireSecret, async (req, res) => {
   s.webhook_secret_required = !!authguard.getSecret();
   s.durable = persist.isDurable();
   s.trading_enabled = settings.isTradingEnabled();
+  s.dual_leg_live = settings.isDualLegLive();
+  s.cross_entry_enabled = settings.isCrossEntryEnabled();
   s.webhook_queue = webhookQueue.summary();
   res.json(s);
+});
+
+app.post("/api/settings/flags", authguard.requireSecret, (req, res) => {
+  try {
+    var body = req.body || {};
+    if (body.dual_leg_live !== undefined) settings.setDualLegLive(!!body.dual_leg_live);
+    if (body.cross_entry_enabled !== undefined) settings.setCrossEntryEnabled(!!body.cross_entry_enabled);
+    res.json({
+      ok: true,
+      dual_leg_live: settings.isDualLegLive(),
+      cross_entry_enabled: settings.isCrossEntryEnabled(),
+      durable: settings.getAll().durable
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.post("/api/settings/dte", authguard.requireSecret, (req, res) => {

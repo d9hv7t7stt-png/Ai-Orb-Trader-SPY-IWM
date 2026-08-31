@@ -47,6 +47,10 @@ async function notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close, 
 }
 
 async function closeLiveOrLog(ticker, contracts, reason) {
+  var pos = stateModule.getPosition(ticker);
+  if (pos && pos.legs && pos.legs.length && contracts >= pos.contracts) {
+    return trayd.closeAllLegs(ticker, reason);
+  }
   return trayd.closeLiveOrLog(ticker, contracts, reason);
 }
 
@@ -126,9 +130,65 @@ async function handleAlert(payload) {
   }
 }
 
+async function tryLiveRetestAdd(ticker, side, qty, pos) {
+  if (pos && pos.dualLeg && pos.legs && pos.legs.length) {
+    var perLeg = Math.max(1, qty);
+    stateModule.logEvent("RETEST", ticker + " dual-leg retest add " + perLeg + "c per leg");
+    var dualAdd = await trayd.placeDualLegAdd(ticker, side, perLeg, pos.legs);
+    stateModule.addToLegs(ticker, dualAdd.legs || []);
+    if (dualAdd.partial) {
+      stateModule.logEvent("ORDER_WARN", ticker + " dual-leg retest partial");
+    }
+    return dualAdd.order;
+  }
+  var addOrder = await placeAndFill(ticker, side, qty);
+  stateModule.addSecondHalf(ticker, qty, (addOrder && addOrder.entryPrice) || pos.entryPrice);
+  return addOrder;
+}
+
 async function tryLiveHalfEntry(ticker, side, half, total, optPrice) {
   if (liveEntryBlocked(ticker, "entry")) return { order: null, retryable: false, blocked: true };
-  stateModule.logEvent("ENTRY", ticker + " " + side + " @ half=" + half + "/" + total);
+  var dual = settings.isDualLegLive();
+  stateModule.logEvent("ENTRY", ticker + " " + side + " @ half=" + half + "/" + total +
+    (dual ? " (0DTE+1DTE dual-leg)" : ""));
+
+  if (dual) {
+    var perLeg = Math.max(1, half);
+    stateModule.openHalfPosition(ticker, side, perLeg * 2, optPrice || 0, {
+      dualLeg: true,
+      totalContracts: perLeg
+    });
+    try {
+      var dualRes = await trayd.placeDualLegEntry(ticker, side, perLeg);
+      var legStates = (dualRes.legs || []).map(function(o) {
+        return {
+          dteTag: o.dteTag,
+          side: side,
+          contracts: o.contracts,
+          entryPrice: o.entryPrice,
+          strike: o.strike,
+          expiry: o.expiry,
+          instrumentUrl: o.instrumentUrl,
+          breakEvenActivated: false,
+          lastProfitTier: 0,
+          stopPct: null
+        };
+      });
+      stateModule.setPositionLegs(ticker, legStates);
+      if (dualRes.partial) {
+        stateModule.logEvent("ORDER_WARN", ticker + " dual-leg partial — 0DTE live, 1DTE failed: " +
+          (dualRes.error || "unknown"));
+      } else {
+        stateModule.logEvent("ENTRY_FILL", ticker + " dual-leg 0DTE+1DTE filled");
+      }
+      return { order: dualRes.order, retryable: false, dual: true, partial: !!dualRes.partial };
+    } catch (e) {
+      stateModule.closePosition(ticker, "dual-leg entry order failed");
+      stateModule.logEvent("ORDER_ERROR", ticker + " " + side + " dual-leg entry failed: " + e.message);
+      return { order: null, retryable: isRetryableRhError(e.message), error: e.message };
+    }
+  }
+
   stateModule.openHalfPosition(ticker, side, half, optPrice || 0);
   try {
     var order = await placeAndFill(ticker, side, half);
@@ -141,6 +201,10 @@ async function tryLiveHalfEntry(ticker, side, half, total, optPrice) {
 }
 
 async function tryIwmCrossEntry(side, spyOrbHigh, spyOrbLow, s, lockedTickers) {
+  if (!settings.isCrossEntryEnabled()) {
+    stateModule.logEvent("CROSS_SKIP", "IWM → SPY cross-entry disabled in settings");
+    return null;
+  }
   var spyPos = stateModule.getPosition("SPY");
   var stopMode = side === "call" ? "orb_low" : "orb_high";
   var spyHalf = Math.ceil(s.contracts.SPY / 2);
@@ -287,8 +351,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         stateModule.logEvent("RETEST", ticker + " retest add " + pos.totalContracts + "c");
         if (!liveEntryBlocked(ticker, "retest")) {
           try {
-            var addOrder = await placeAndFill(ticker, "call", pos.totalContracts);
-            stateModule.addSecondHalf(ticker, pos.totalContracts, (addOrder && addOrder.entryPrice) || optPrice || pos.entryPrice);
+            await tryLiveRetestAdd(ticker, "call", pos.totalContracts, pos);
           } catch (e) {
             stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
             if (isRetryableRhError(e.message)) {
@@ -329,8 +392,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
         stateModule.logEvent("RETEST", ticker + " retest add " + pos.totalContracts + "c");
         if (!liveEntryBlocked(ticker, "retest")) {
           try {
-            var addOrder2 = await placeAndFill(ticker, "put", pos.totalContracts);
-            stateModule.addSecondHalf(ticker, pos.totalContracts, (addOrder2 && addOrder2.entryPrice) || optPrice || pos.entryPrice);
+            await tryLiveRetestAdd(ticker, "put", pos.totalContracts, pos);
           } catch (e) {
             stateModule.logEvent("RETEST_ERROR", ticker + " retest order failed: " + e.message);
             if (isRetryableRhError(e.message)) {

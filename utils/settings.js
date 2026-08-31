@@ -6,7 +6,12 @@ var fs = require("fs");
 var persist = require("./persist");
 var FILE = persist.filePath("orb-settings.json");
 
-var DEFAULTS = { dte: { SPY: 1, IWM: 0 }, trading_enabled: true };
+var DEFAULTS = {
+  dte: { SPY: 1, IWM: 0 },
+  trading_enabled: true,
+  dual_leg_live: false,
+  cross_entry_enabled: true
+};
 
 function deepDefault() { return JSON.parse(JSON.stringify(DEFAULTS)); }
 
@@ -16,6 +21,8 @@ function normalize(s) {
   if (typeof s.dte.SPY !== "number") s.dte.SPY = DEFAULTS.dte.SPY;
   if (typeof s.dte.IWM !== "number") s.dte.IWM = DEFAULTS.dte.IWM;
   if (typeof s.trading_enabled !== "boolean") s.trading_enabled = DEFAULTS.trading_enabled;
+  if (typeof s.dual_leg_live !== "boolean") s.dual_leg_live = DEFAULTS.dual_leg_live;
+  if (typeof s.cross_entry_enabled !== "boolean") s.cross_entry_enabled = DEFAULTS.cross_entry_enabled;
   return s;
 }
 
@@ -50,6 +57,8 @@ function getAll() {
   return {
     dte: { SPY: getDTE("SPY"), IWM: getDTE("IWM") },
     trading_enabled: isTradingEnabled(),
+    dual_leg_live: isDualLegLive(),
+    cross_entry_enabled: isCrossEntryEnabled(),
     durable: persist.isDurable()
   };
 }
@@ -64,4 +73,35 @@ function setTradingEnabled(on) {
   return settings.trading_enabled;
 }
 
-module.exports = { getDTE, setDTE, getAll, isTradingEnabled, setTradingEnabled, FILE };
+function isDualLegLive() {
+  return settings.dual_leg_live === true;
+}
+
+function setDualLegLive(on) {
+  settings.dual_leg_live = !!on;
+  save();
+  return settings.dual_leg_live;
+}
+
+function isCrossEntryEnabled() {
+  return settings.cross_entry_enabled !== false;
+}
+
+function setCrossEntryEnabled(on) {
+  settings.cross_entry_enabled = !!on;
+  save();
+  return settings.cross_entry_enabled;
+}
+
+module.exports = {
+  getDTE: getDTE,
+  setDTE: setDTE,
+  getAll: getAll,
+  isTradingEnabled: isTradingEnabled,
+  setTradingEnabled: setTradingEnabled,
+  isDualLegLive: isDualLegLive,
+  setDualLegLive: setDualLegLive,
+  isCrossEntryEnabled: isCrossEntryEnabled,
+  setCrossEntryEnabled: setCrossEntryEnabled,
+  FILE: FILE
+};

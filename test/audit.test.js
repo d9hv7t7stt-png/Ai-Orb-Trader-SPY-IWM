@@ -347,6 +347,51 @@ test("trading_enabled defaults true and persists", function() {
   settings.setTradingEnabled(true);
 });
 
+test("dual_leg_live defaults false and persists", function() {
+  var settings = require("../utils/settings");
+  settings.setDualLegLive(false);
+  assert.strictEqual(settings.isDualLegLive(), false);
+  settings.setDualLegLive(true);
+  assert.strictEqual(settings.isDualLegLive(), true);
+  settings.setDualLegLive(false);
+  assert.strictEqual(settings.isDualLegLive(), false);
+  var all = settings.getAll();
+  assert.strictEqual(all.dual_leg_live, false);
+});
+
+test("cross_entry_enabled defaults true and persists", function() {
+  var settings = require("../utils/settings");
+  settings.setCrossEntryEnabled(true);
+  assert.strictEqual(settings.isCrossEntryEnabled(), true);
+  settings.setCrossEntryEnabled(false);
+  assert.strictEqual(settings.isCrossEntryEnabled(), false);
+  settings.setCrossEntryEnabled(true);
+  assert.strictEqual(settings.isCrossEntryEnabled(), true);
+  var all = settings.getAll();
+  assert.strictEqual(all.cross_entry_enabled, true);
+});
+
+test("setPositionLegs averages dual-leg entry and totals contracts", function() {
+  var stateModule = require("../utils/state");
+  stateModule.openHalfPosition("SPY", "call", 2, 1.0, { dualLeg: true, totalContracts: 1 });
+  stateModule.setPositionLegs("SPY", [
+    { dteTag: 0, contracts: 1, entryPrice: 1.0, strike: 500, expiry: "2099-01-01", instrumentUrl: "u0" },
+    { dteTag: 1, contracts: 1, entryPrice: 2.0, strike: 505, expiry: "2099-01-02", instrumentUrl: "u1" }
+  ]);
+  var pos = stateModule.getPosition("SPY");
+  assert.ok(pos);
+  assert.strictEqual(pos.contracts, 2);
+  assert.strictEqual(pos.dualLeg, true);
+  assert.strictEqual(pos.totalContracts, 1);
+  assert.ok(Math.abs(pos.entryPrice - 1.5) < 1e-9);
+  stateModule.reduceLegContracts("SPY", 0, 1);
+  pos = stateModule.getPosition("SPY");
+  assert.strictEqual(pos.contracts, 1);
+  assert.strictEqual(pos.legs[0].contracts, 0);
+  assert.strictEqual(pos.instrumentUrl, "u1");
+  stateModule.closePosition("SPY", "test cleanup");
+});
+
 test("webhook queue enqueues and summarizes", function() {
   var webhookQueue = require("../utils/webhookQueue");
   var before = webhookQueue.summary().total;

@@ -97,12 +97,15 @@ function getPosition(ticker) { return state.positions[ticker]; }
 
 function openHalfPosition(ticker, side, contracts, entryPrice, meta) {
   meta = meta || {};
+  var totalForRetest = meta.totalContracts != null
+    ? Math.max(1, Math.floor(parseFloat(meta.totalContracts) || 1))
+    : contracts;
   state.positions[ticker] = {
     side: side,
     halfIn: true,
     fullIn: false,
     contracts: contracts,
-    totalContracts: contracts,
+    totalContracts: totalForRetest,
     entryPrice: parseFloat(entryPrice) || 0,
     breakEvenActivated: false,
     lastProfitTier: 0,
@@ -113,10 +116,119 @@ function openHalfPosition(ticker, side, contracts, entryPrice, meta) {
     strike: meta.strike || null,
     expiry: meta.expiry || null,
     instrumentUrl: meta.instrumentUrl || null,
+    legs: meta.legs || null,
+    dualLeg: !!meta.dualLeg,
     openedAtMs: Date.now()
   };
   logEvent("POSITION_OPEN", ticker + " " + side + " half " + contracts + "c @ $" + entryPrice +
+    (meta.dualLeg ? " (0DTE+1DTE)" : "") +
     (meta.crossEntry ? " (cross-entry stop=" + meta.stopMode + ")" : ""));
+  savePersistedState();
+}
+
+function setPositionLegs(ticker, legs) {
+  var pos = state.positions[ticker];
+  if (!pos || pos.stopped || !legs || !legs.length) return;
+  pos.legs = legs.map(function(l) {
+    return {
+      dteTag: l.dteTag != null ? l.dteTag : 0,
+      side: l.side || pos.side,
+      contracts: Math.max(0, Math.floor(parseFloat(l.contracts) || 0)),
+      entryPrice: parseFloat(l.entryPrice) || 0,
+      strike: l.strike != null ? Math.round(parseFloat(l.strike)) : null,
+      expiry: l.expiry || null,
+      instrumentUrl: l.instrumentUrl || null,
+      breakEvenActivated: !!l.breakEvenActivated,
+      lastProfitTier: l.lastProfitTier || 0,
+      stopPct: typeof l.stopPct === "number" ? l.stopPct : null
+    };
+  });
+  refreshPositionFromLegs(pos);
+  savePersistedState();
+}
+
+function refreshPositionFromLegs(pos) {
+  if (!pos || !pos.legs) return;
+  var totalC = 0;
+  var weighted = 0;
+  pos.legs.forEach(function(l) {
+    totalC += l.contracts;
+    weighted += (l.entryPrice || 0) * l.contracts;
+  });
+  pos.contracts = totalC;
+  if (totalC > 0 && weighted > 0) pos.entryPrice = weighted / totalC;
+  pos.dualLeg = pos.legs.filter(function(l) { return l.contracts > 0; }).length > 1;
+  var live = pos.legs.find(function(l) { return l.contracts > 0; });
+  if (live) {
+    pos.instrumentUrl = live.instrumentUrl;
+    pos.strike = live.strike;
+    pos.expiry = live.expiry;
+  }
+}
+
+function reduceLegContracts(ticker, legIndex, sold) {
+  var pos = state.positions[ticker];
+  if (!pos || !pos.legs || !pos.legs[legIndex]) {
+    reduceContracts(ticker, sold);
+    return;
+  }
+  var leg = pos.legs[legIndex];
+  leg.contracts = Math.max(0, leg.contracts - sold);
+  refreshPositionFromLegs(pos);
+  savePersistedState();
+}
+
+function setLegBreakEven(ticker, legIndex) {
+  var pos = state.positions[ticker];
+  if (!pos || !pos.legs || !pos.legs[legIndex]) return;
+  var leg = pos.legs[legIndex];
+  if (!leg.breakEvenActivated) {
+    leg.breakEvenActivated = true;
+    pos.breakEvenActivated = pos.legs.every(function(l) {
+      return l.contracts <= 0 || l.breakEvenActivated;
+    });
+    logEvent("BREAKEVEN", ticker + " leg DTE" + leg.dteTag + " breakeven @ $" + (leg.entryPrice || 0).toFixed(2));
+    savePersistedState();
+  }
+}
+
+function markLegProfitTier(ticker, legIndex, tier) {
+  var pos = state.positions[ticker];
+  if (!pos || !pos.legs || !pos.legs[legIndex]) return;
+  var leg = pos.legs[legIndex];
+  leg.lastProfitTier = Math.max(leg.lastProfitTier || 0, tier);
+  pos.lastProfitTier = Math.max(pos.lastProfitTier || 0, tier);
+  savePersistedState();
+}
+
+function addToLegs(ticker, filledLegs) {
+  var pos = state.positions[ticker];
+  if (!pos || pos.stopped || !pos.legs || !filledLegs || !filledLegs.length) return;
+  filledLegs.forEach(function(fill) {
+    var qty = Math.max(0, Math.floor(parseFloat(fill.contracts) || 0));
+    if (qty < 1) return;
+    var leg = null;
+    for (var i = 0; i < pos.legs.length; i++) {
+      if (fill.dteTag != null && pos.legs[i].dteTag === fill.dteTag) { leg = pos.legs[i]; break; }
+      if (fill.instrumentUrl && pos.legs[i].instrumentUrl === fill.instrumentUrl) { leg = pos.legs[i]; break; }
+    }
+    if (!leg) return;
+    var px = parseFloat(fill.entryPrice) || 0;
+    if (leg.entryPrice > 0 && px > 0 && leg.contracts > 0) {
+      leg.entryPrice = (leg.entryPrice * leg.contracts + px * qty) / (leg.contracts + qty);
+    } else if (px > 0) {
+      leg.entryPrice = px;
+    }
+    leg.contracts += qty;
+    if (fill.instrumentUrl) leg.instrumentUrl = fill.instrumentUrl;
+    if (fill.strike != null) leg.strike = Math.round(parseFloat(fill.strike));
+    if (fill.expiry) leg.expiry = fill.expiry;
+  });
+  pos.fullIn = true;
+  pos.halfIn = false;
+  refreshPositionFromLegs(pos);
+  logEvent("POSITION_ADD", ticker + " dual-leg retest add — total " + pos.contracts + "c avg=$" +
+    (pos.entryPrice ? pos.entryPrice.toFixed(2) : "0"));
   savePersistedState();
 }
 
@@ -289,6 +401,11 @@ module.exports = {
   setORB: setORB,
   getPosition: getPosition,
   openHalfPosition: openHalfPosition,
+  setPositionLegs: setPositionLegs,
+  reduceLegContracts: reduceLegContracts,
+  setLegBreakEven: setLegBreakEven,
+  markLegProfitTier: markLegProfitTier,
+  addToLegs: addToLegs,
   addSecondHalf: addSecondHalf,
   setBreakEven: setBreakEven,
   markProfitTier: markProfitTier,

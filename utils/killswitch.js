@@ -10,7 +10,7 @@ async function flattenTicker(ticker, reason) {
   var closed = [];
   if (pos && !pos.stopped && pos.contracts > 0) {
     var qty = pos.contracts;
-    var ok = await trayd.closeLiveOrLog(ticker, qty, reason);
+    var ok = await trayd.closeAllLegs(ticker, reason);
     if (ok) {
       stateModule.closePosition(ticker, reason);
       closed.push({ ticker: ticker, contracts: qty, source: "state", ok: true });
@@ -28,8 +28,6 @@ async function flattenTicker(ticker, reason) {
       var p = matching[i];
       var q = Math.floor(rh.optionPositionQty(p));
       if (q < 1) continue;
-      var already = closed.some(function(c) { return c.ticker === ticker && c.ok; });
-      if (already && pos) continue;
       var res = await trayd.closePartialPosition({
         ticker: ticker,
         contracts: q,

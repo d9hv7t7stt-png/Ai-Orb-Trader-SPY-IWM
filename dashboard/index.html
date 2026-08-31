@@ -379,6 +379,10 @@
   }
   .safety-pill.on { border-color: var(--green); color: var(--green); }
   .safety-pill.off { border-color: var(--red); color: var(--red); }
+  button.safety-pill.toggle-pill {
+    cursor: pointer; background: transparent; font-family: inherit;
+  }
+  button.safety-pill.toggle-pill:hover { border-color: var(--text); color: var(--text); }
   @media (max-width: 520px) { .trade-config-grid { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -428,6 +432,8 @@
         <div class="safety-row">
           <span class="safety-pill on" id="pill-trading">Live: ON</span>
           <span class="safety-pill" id="pill-queue">Queue: —</span>
+          <button type="button" class="safety-pill toggle-pill" id="pill-dual" onclick="toggleFlag('dual_leg_live')">Dual-Leg: OFF</button>
+          <button type="button" class="safety-pill toggle-pill" id="pill-cross" onclick="toggleFlag('cross_entry_enabled')">Cross: ON</button>
           <button class="btn danger" onclick="killSwitch('flatten')">Kill · Flatten</button>
           <button class="btn" onclick="killSwitch('halt')">Halt Entries</button>
           <button class="btn primary" id="btn-resume-trading" style="display:none" onclick="killSwitch('resume')">Resume Live</button>
@@ -445,6 +451,8 @@
         <div style="font-size:10px;color:var(--text-dim);line-height:1.55;margin-bottom:10px">
           Controls real Robinhood orders. <strong style="color:var(--text)">Half</strong> enters on breakout ·
           <strong style="color:var(--text)">retest</strong> adds the rest · Discord alerts use percent-based sizing.
+          <br>When <strong style="color:var(--text)">Dual-Leg</strong> is on, each half places ATM <strong style="color:var(--text)">0DTE</strong> + expected-move <strong style="color:var(--text)">1DTE</strong> (same as Discord SPY/IWM) — DTE dropdowns are ignored for those entries.
+          <strong style="color:var(--text)">Cross</strong> toggles IWM→SPY cross-entry.
         </div>
         <div class="trade-config-grid">
           <div class="trade-config-card">
@@ -874,6 +882,47 @@ function updateSafetyUI(data) {
     qpill.textContent = failed ? ('Queue: ' + failed + ' failed') : ('Queue: ' + pending + ' pending');
     qpill.className = 'safety-pill ' + (failed ? 'off' : '');
   }
+  var dualOn = !!(data && data.dual_leg_live);
+  var dualPill = document.getElementById('pill-dual');
+  if (dualPill) {
+    dualPill.textContent = dualOn ? 'Dual-Leg: ON' : 'Dual-Leg: OFF';
+    dualPill.className = 'safety-pill toggle-pill ' + (dualOn ? 'on' : 'off');
+  }
+  var crossOn = !(data && data.cross_entry_enabled === false);
+  var crossPill = document.getElementById('pill-cross');
+  if (crossPill) {
+    crossPill.textContent = crossOn ? 'Cross: ON' : 'Cross: OFF';
+    crossPill.className = 'safety-pill toggle-pill ' + (crossOn ? 'on' : 'off');
+  }
+}
+
+async function toggleFlag(key) {
+  var body = {};
+  if (key === 'dual_leg_live') {
+    var nextDual = !(state && state.dual_leg_live);
+    if (nextDual && !confirm('Turn ON live dual-leg (0DTE ATM + 1DTE expected-move) for SPY/IWM entries?\n\nEach half buys both legs — with 1 contract setting that is 2 contracts total per half.')) return;
+    body.dual_leg_live = nextDual;
+  } else if (key === 'cross_entry_enabled') {
+    var nextCross = !(state && state.cross_entry_enabled !== false);
+    body.cross_entry_enabled = nextCross;
+  } else return;
+  try {
+    var res = await apiFetch('/api/settings/flags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    var data = await res.json();
+    if (!data.ok) { toast(data.error || 'Flag update failed', 'red'); return; }
+    if (state) {
+      state.dual_leg_live = data.dual_leg_live;
+      state.cross_entry_enabled = data.cross_entry_enabled;
+    }
+    updateSafetyUI(Object.assign({}, state || {}, data, { trading_enabled: state && state.trading_enabled }));
+    toast(key === 'dual_leg_live'
+      ? (data.dual_leg_live ? 'Dual-leg live ON' : 'Dual-leg live OFF')
+      : (data.cross_entry_enabled ? 'Cross-entry ON' : 'Cross-entry OFF'));
+  } catch (e) { toast(e.message || 'Error', 'red'); }
 }
 
 async function killSwitch(action) {
