@@ -697,6 +697,31 @@ function createChannel(cfg) {
     console.log("[DISCORD][" + cfg.id + "] close digest posted (" + plan.label + ")");
   }
 
+  async function orbSet(ticker, high, low, mid, source) {
+    var display = yahoo.displaySymbol(cfg.tradeTicker || ticker);
+    var h = parseFloat(high) || 0;
+    var l = parseFloat(low) || 0;
+    var m = mid != null ? parseFloat(mid) : (h + l) / 2;
+    var src = source || "yahoo";
+    var tradeNote = cfg.tradeTicker && cfg.tradeTicker !== ticker
+      ? "Signal **" + ticker + "** → paper **" + display + "**"
+      : "Paper **" + display + "**";
+    await send({
+      color: 0x4da6ff,
+      title: "📐 ORB SET — " + display,
+      description: tradeNote + " · opening range locked · " + etTimeLabel(),
+      fields: [
+        { name: "ORB High", value: "$" + h.toFixed(2), inline: true },
+        { name: "ORB Low", value: "$" + l.toFixed(2), inline: true },
+        { name: "Mid (Stop)", value: "$" + m.toFixed(2), inline: true },
+        { name: "Source", value: String(src), inline: true },
+        { name: "Plan", value: "Watching for **5m bar close** breakout · 0DTE ATM + 1DTE expected-move legs", inline: false }
+      ],
+      footer: { text: footer() + " · Not financial advice" },
+      timestamp: new Date().toISOString()
+    }, true);
+  }
+
   async function sundayPremarket() {
     var tickers = closeDigestUtil.sundayTickersForChannel(cfg);
     var data = await closeDigestUtil.buildSundayPremarket(tickers);
@@ -901,6 +926,7 @@ function createChannel(cfg) {
     expectedMoveExit: expectedMoveExit,
     openPositions: openPositions, dailySummary: dailySummary, morning: morning,
     closeDigest: closeDigest, sundayPremarket: sundayPremarket, expectedMoves: expectedMoves,
+    orbSet: orbSet,
     pollMoveTargets: pollMoveTargets, pollOptionMarks: pollOptionMarks,
     getAccount: function() { return account; }
   };
@@ -970,6 +996,39 @@ async function onStop(ticker, optionPrice, reason) {
 }
 async function onFullClose(ticker, optionPrice) {
   await forSignal(ticker, function(c) { return c.fullClose(ticker, optionPrice); });
+}
+
+var _orbPosted = {};
+
+function orbFingerprint(high, low) {
+  return etISODate() + "|" + (parseFloat(high) || 0).toFixed(2) + "|" + (parseFloat(low) || 0).toFixed(2);
+}
+
+async function onOrbSet(ticker, high, low, mid, source, opts) {
+  opts = opts || {};
+  if (!(parseFloat(high) > 0) || !(parseFloat(low) > 0)) return false;
+  var fp = orbFingerprint(high, low);
+  if (!opts.force && _orbPosted[ticker] === fp) return false;
+  _orbPosted[ticker] = fp;
+  await forSignal(ticker, function(c) {
+    return c.orbSet(ticker, high, low, mid, source);
+  });
+  return true;
+}
+
+async function postExistingOrbs(force) {
+  var stateModule = require("./state");
+  var s = stateModule.getState();
+  var tickers = ["SPY", "IWM", "QQQ"];
+  var posted = [];
+  for (var i = 0; i < tickers.length; i++) {
+    var t = tickers[i];
+    var orb = s.orb && s.orb[t];
+    if (!orb || !orb.set || !(orb.high > 0) || !(orb.low > 0)) continue;
+    var ok = await onOrbSet(t, orb.high, orb.low, orb.mid, orb.source || "yahoo", { force: !!force });
+    if (ok) posted.push(t);
+  }
+  return posted;
 }
 
 // ── schedulers ──────────────────────────────────────────────────────────────
@@ -1049,6 +1108,14 @@ function initChannels(getToken) {
   }).join(", "));
   channels.forEach(function(c) { scheduleMorning(c); scheduleUpdates(c); scheduleDaily(c); scheduleCloseDigest(c); scheduleSundayPremarket(c); });
 
+  setTimeout(function() {
+    postExistingOrbs(false).then(function(posted) {
+      if (posted && posted.length) console.log("[DISCORD] ORB announce: " + posted.join(", "));
+    }).catch(function(e) {
+      console.log("[DISCORD] ORB announce error: " + e.message);
+    });
+  }, 4000);
+
   var moveBusy = false;
   var markBusy = false;
   setInterval(async function() {
@@ -1098,6 +1165,8 @@ module.exports = {
   initChannels: initChannels,
   onEntry: onEntry, onAdd: onAdd, onStop: onStop, onFullClose: onFullClose,
   onExpectedMoveExit: onExpectedMoveExit,
+  onOrbSet: onOrbSet,
+  postExistingOrbs: postExistingOrbs,
   getChannels: function() { return channels; },
   // test-route compatibility
   postGoodMorning: function(m) { return first().morning(m); },

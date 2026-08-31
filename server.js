@@ -257,6 +257,16 @@ app.get("/api/discord/sunday", authguard.requireSecret, async (req, res) => {
   }
 });
 
+app.get("/api/discord/orb", authguard.requireSecret, async (req, res) => {
+  try {
+    var force = String(req.query.force || "") === "1";
+    var posted = await discord.postExistingOrbs(force);
+    res.json({ ok: true, posted: posted || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/queue", authguard.requireSecret, (req, res) => {
   res.json(webhookQueue.summary());
 });

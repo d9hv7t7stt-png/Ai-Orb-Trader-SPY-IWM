@@ -5,6 +5,9 @@
 var yahoo = require("./yahoo");
 var stateModule = require("./state");
 
+var discord = null;
+try { discord = require("./discord"); } catch (e) { discord = null; }
+
 var ORB_INTERVAL = process.env.ORB_INTERVAL || "5m";
 
 function etDate() {
@@ -34,6 +37,16 @@ function fetchOpeningRange(ticker) {
   });
 }
 
+async function announceOrb(ticker, high, low, source) {
+  try {
+    if (discord && typeof discord.onOrbSet === "function") {
+      await discord.onOrbSet(ticker, high, low, (high + low) / 2, source);
+    }
+  } catch (e) {
+    console.log("[DISCORD_ORB_ERROR] " + ticker + ": " + e.message);
+  }
+}
+
 async function populateTicker(ticker, force) {
   var s = stateModule.getState();
   var today = etDate();
@@ -44,6 +57,7 @@ async function populateTicker(ticker, force) {
   var range = await fetchOpeningRange(ticker);
   if (range && range.high && range.low) {
     stateModule.setORB(ticker, range.high, range.low, "yahoo");
+    await announceOrb(ticker, range.high, range.low, "yahoo");
     return { ticker: ticker, set: true, high: range.high, low: range.low, source: "yahoo" };
   }
   return { ticker: ticker, set: false, reason: "opening-range data not available yet" };

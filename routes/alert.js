@@ -215,12 +215,16 @@ async function processEvent(payload, ticker, event, lockedTickers) {
   if (event === "orb_set") {
     if (orbHigh && orbLow) {
       stateModule.setORB(ticker, orbHigh, orbLow, "webhook");
+      var midWh = (parseFloat(orbHigh) + parseFloat(orbLow)) / 2;
+      await notify("onOrbSet", [ticker, orbHigh, orbLow, midWh, "webhook"]);
       return { ok: true, message: ticker + " ORB set (from TradingView)" };
     }
     stateModule.logEvent("ORB_WARN", ticker + " orb_set without levels — auto-fetching from Yahoo");
     var range = await orbUtil.fetchOpeningRange(ticker);
     if (range && range.high && range.low) {
       stateModule.setORB(ticker, range.high, range.low, "yahoo");
+      var midY = (range.high + range.low) / 2;
+      await notify("onOrbSet", [ticker, range.high, range.low, midY, "yahoo"]);
       return { ok: true, message: ticker + " ORB set (Yahoo fallback)" };
     }
     stateModule.logEvent("ORB_SET", ticker + " ORB levels unavailable yet");
