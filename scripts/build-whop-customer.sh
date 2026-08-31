@@ -154,6 +154,7 @@ PY
 cat > "$DEST/.env.example" <<'EOF'
 # === Whop (required) ===
 # Paste the license key from your Whop purchase (Software Licensing).
+# Format: uppercase letters/numbers with dashes, e.g. ABCD12-EF3456-GH7890
 WHOP_LICENSE_KEY=
 
 # === Robinhood ===
@@ -191,13 +192,15 @@ Buyers only paste **`WHOP_LICENSE_KEY`** into Railway / `.env`.
 1. Unzip and deploy (Railway recommended) with a volume at `/data`.
 2. Set env from `.env.example` (especially `WHOP_LICENSE_KEY` + Robinhood tokens).
 3. Start: `npm install && npm start`
-4. On boot the app validates the license with Whop (binds a machine fingerprint / HWID).
-5. If license fails or is revoked, the process exits and live orders are blocked.
+4. On boot the app validates the license with Whop (binds a stable device id stored on your `/data` volume).
+5. **Every trading day** at **8:30 AM ET** and **9:29 AM ET** the app re-validates with Whop.
+6. If license fails or is revoked, the process **exits** and live orders are blocked.
 
 ## Anti-tamper (practical)
 
 - License check on startup (process exits if invalid)
-- Re-check every 6 hours
+- Re-check **8:30 ET** and **9:29 ET** every trading day (process exits if invalid)
+- Device id persisted at `/data/whop-device-id` (survives Railway redeploys on the same volume)
 - Live place/close orders call `requireLicense`
 - Profit manager no-ops if unlicensed
 - `config/whop.baked.json` stores a SHA-256 of `utils/whopLicense.js` — if that file is edited/deleted, integrity fails and the app refuses to run

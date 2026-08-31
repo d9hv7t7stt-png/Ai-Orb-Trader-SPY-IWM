@@ -371,6 +371,23 @@ test("cross_entry_enabled defaults true and persists", function() {
   assert.strictEqual(all.cross_entry_enabled, true);
 });
 
+test("Whop license key format accepts dash-separated uppercase", function() {
+  var whop = require("../scripts/whop-customer-templates/whopLicense");
+  assert.strictEqual(whop.isLicenseKeyFormat("ABCD12-EF3456-GH7890"), true);
+  assert.strictEqual(whop.isLicenseKeyFormat("abcd12-ef3456-gh7890"), false);
+  assert.strictEqual(whop.isLicenseKeyFormat("NODASHES"), false);
+  assert.strictEqual(whop.isLicenseKeyFormat(""), false);
+});
+
+test("Whop premarket slotDue fires in 2-minute ET window", function() {
+  var whop = require("../scripts/whop-customer-templates/whopLicense");
+  assert.strictEqual(whop.slotDue(whop.CHECK_T60_MIN, whop.CHECK_T60_MIN, false), true);
+  assert.strictEqual(whop.slotDue(whop.CHECK_T60_MIN + 1, whop.CHECK_T60_MIN, false), true);
+  assert.strictEqual(whop.slotDue(whop.CHECK_T60_MIN + 2, whop.CHECK_T60_MIN, false), false);
+  assert.strictEqual(whop.slotDue(whop.CHECK_T60_MIN, whop.CHECK_T60_MIN, true), false);
+  assert.strictEqual(whop.slotDue(whop.CHECK_T1_MIN, whop.CHECK_T1_MIN, false), true);
+});
+
 test("setPositionLegs averages dual-leg entry and totals contracts", function() {
   var stateModule = require("../utils/state");
   stateModule.openHalfPosition("SPY", "call", 2, 1.0, { dualLeg: true, totalContracts: 1 });
