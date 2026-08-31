@@ -40,10 +40,43 @@ function saveAuthSession(patch) {
   try {
     var cur = readAuthFile() || {};
     var next = Object.assign({}, cur, patch || {}, { ts: Date.now() });
+    if (next.access_token) {
+      var expMs = decodeJwtExp(next.access_token);
+      if (expMs) next.expires_at = Math.floor(expMs / 1000);
+    }
     fs.writeFileSync(AUTH_FILE, JSON.stringify(next));
   } catch (e) {
     console.log("[AUTH] Could not persist auth session: " + e.message);
   }
+}
+
+var REFRESH_SKEW_MS = 24 * 60 * 60 * 1000;
+
+function decodeJwtExp(token) {
+  if (!token) return null;
+  var parts = String(token).split(".");
+  if (parts.length < 2) return null;
+  try {
+    var b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    while (b64.length % 4) b64 += "=";
+    var payload = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+    return payload.exp ? payload.exp * 1000 : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function getAccessTokenExpiryMs() {
+  var session = readAuthFile();
+  if (session && session.expires_at) return session.expires_at * 1000;
+  return decodeJwtExp(_token || process.env.RH_TOKEN);
+}
+
+function needsProactiveRefresh() {
+  if (!getStoredRefreshToken()) return false;
+  var exp = getAccessTokenExpiryMs();
+  if (!exp) return true;
+  return (exp - Date.now()) < REFRESH_SKEW_MS;
 }
 
 function clearAuthSession() {
@@ -577,6 +610,7 @@ async function getOpenOptionPositions() {
 module.exports = {
   login, setToken, getToken, setDeviceToken, refreshToken, refreshWithStoredTokens,
   getStoredRefreshToken, getStoredDeviceToken, clearAuthSession, reauthorize, checkAuthStatus,
+  decodeJwtExp, getAccessTokenExpiryMs, needsProactiveRefresh,
   handleVerificationWorkflow, completeWorkflow,
   respondToSmsChallenge, waitForPushApproval,
   getQuote, placeOptionOrder, closeOptionPosition,

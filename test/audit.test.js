@@ -289,6 +289,44 @@ test("Robinhood refresh requires device_token", async function() {
   if (savedDevice) process.env.RH_DEVICE_TOKEN = savedDevice;
 });
 
+test("Robinhood refresh requires device_token", async function() {
+  var rh = require("../utils/robinhood");
+  var savedDevice = process.env.RH_DEVICE_TOKEN;
+  delete process.env.RH_DEVICE_TOKEN;
+  rh.clearAuthSession();
+  rh.setDeviceToken(null);
+  var r = await rh.refreshToken("fake-refresh-token");
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error, "missing_device_token");
+  if (savedDevice) process.env.RH_DEVICE_TOKEN = savedDevice;
+});
+
+test("JWT expiry decode for proactive refresh", function() {
+  var rh = require("../utils/robinhood");
+  var header = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  var payload = Buffer.from(JSON.stringify({ exp: 2000000000 })).toString("base64url");
+  var token = header + "." + payload + ".sig";
+  assert.strictEqual(rh.decodeJwtExp(token), 2000000000 * 1000);
+});
+
+test("trading_enabled defaults true and persists", function() {
+  var settings = require("../utils/settings");
+  settings.setTradingEnabled(true);
+  assert.strictEqual(settings.isTradingEnabled(), true);
+  settings.setTradingEnabled(false);
+  assert.strictEqual(settings.isTradingEnabled(), false);
+  settings.setTradingEnabled(true);
+});
+
+test("webhook queue enqueues and summarizes", function() {
+  var webhookQueue = require("../utils/webhookQueue");
+  var before = webhookQueue.summary().total;
+  webhookQueue.enqueue({ ticker: "SPY", event: "orb_set" });
+  var after = webhookQueue.summary();
+  assert.ok(after.total >= before + 1);
+  assert.ok(after.counts.pending >= 1 || after.counts.retry >= 1 || after.counts.processing >= 1 || after.counts.done >= 1);
+});
+
 test("Sunday premarket tickers scoped per Discord channel", function() {
   assert.deepStrictEqual(
     closeDigest.sundayTickersForChannel({ id: "main", tickers: ["SPXW"] }),

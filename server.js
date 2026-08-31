@@ -7,7 +7,7 @@ app.use(express.static(path.join(__dirname, "dashboard")));
 
 const { handleAlert } = require("./routes/alert");
 const { getState, setContractSize, getTradeSizingFromTotal } = require("./utils/state");
-const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth, getAuthInfo } = require("./utils/reauth");
+const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth, scheduleProactiveRefresh, getAuthInfo } = require("./utils/reauth");
 const rh = require("./utils/robinhood");
 const discord = require("./utils/discord");
 const profitManager = require("./utils/profitmanager");
@@ -19,6 +19,8 @@ const authguard = require("./utils/authguard");
 const persist = require("./utils/persist");
 const reconcile = require("./utils/reconcile");
 const expiryUtil = require("./utils/expiry");
+const webhookQueue = require("./utils/webhookQueue");
+const killswitch = require("./utils/killswitch");
 
 process.on("unhandledRejection", (err) => {
   console.error("[UNHANDLED_REJECTION]", err && err.message ? err.message : err);
@@ -46,6 +48,9 @@ app.get("/health", async (req, res) => {
     verified: auth.verified,
     pending_verification: auth.pending,
     durable: persist.isDurable(),
+    trading_enabled: settings.isTradingEnabled(),
+    webhook_queue: webhookQueue.summary().counts,
+    token_expires_at: rh.getAccessTokenExpiryMs() ? new Date(rh.getAccessTokenExpiryMs()).toISOString() : null,
     webhook_url: ((req.get("x-forwarded-proto") || req.protocol) + "://" + req.get("host") + "/webhook"),
     auth_hint: lastAuthErr ? lastAuthErr.message : null
   });
@@ -95,6 +100,8 @@ app.get("/api/state", authguard.requireSecret, async (req, res) => {
   );
   s.webhook_secret_required = !!authguard.getSecret();
   s.durable = persist.isDurable();
+  s.trading_enabled = settings.isTradingEnabled();
+  s.webhook_queue = webhookQueue.summary();
   res.json(s);
 });
 
@@ -250,6 +257,38 @@ app.get("/api/discord/sunday", authguard.requireSecret, async (req, res) => {
   }
 });
 
+app.get("/api/queue", authguard.requireSecret, (req, res) => {
+  res.json(webhookQueue.summary());
+});
+
+app.post("/api/kill", authguard.requireSecret, async (req, res) => {
+  try {
+    var action = ((req.body && req.body.action) || "flatten").toLowerCase();
+    if (action === "halt") return res.json(killswitch.halt());
+    if (action === "resume") return res.json(killswitch.resume());
+    if (action === "flatten") return res.json(await killswitch.flattenAll("Kill switch flatten"));
+    return res.status(400).json({ error: "action must be halt, resume, or flatten" });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+async function processWebhookPayload(payload) {
+  try {
+    if (!rh.getToken()) await ensureLoggedIn();
+    else {
+      var auth = await rh.checkAuthStatus();
+      if (!auth.ok) await ensureLoggedIn();
+    }
+  } catch (authErr) {
+    console.warn("[WEBHOOK_QUEUE] Robinhood offline — will retry if retryable:", authErr.message);
+    return { ok: false, retryable: true, message: "Robinhood auth: " + authErr.message };
+  }
+  var result = await handleAlert(payload);
+  console.log("[WEBHOOK_DONE]", JSON.stringify(result));
+  return result;
+}
+
 if (authguard.allowTestRoutes()) {
   app.get("/test/discord/:type", authguard.requireSecret, async (req, res) => {
     try {
@@ -321,26 +360,8 @@ if (authguard.allowTestRoutes()) {
 
 app.post("/webhook", authguard.requireSecret, (req, res) => {
   console.log("[WEBHOOK]", JSON.stringify(req.body));
-  res.status(200).json({ ok: true, accepted: true });
-
-  setImmediate(async function() {
-    try {
-      // Best-effort RH auth — never drop the signal; Discord paper + Yahoo work without RH.
-      try {
-        if (!rh.getToken()) await ensureLoggedIn();
-        else {
-          var auth = await rh.checkAuthStatus();
-          if (!auth.ok) await ensureLoggedIn();
-        }
-      } catch (authErr) {
-        console.warn("[WEBHOOK_ASYNC] Robinhood offline — paper alerts still processing:", authErr.message);
-      }
-      var result = await handleAlert(req.body);
-      console.log("[WEBHOOK_DONE]", JSON.stringify(result));
-    } catch (err) {
-      console.error("[WEBHOOK_ASYNC_ERROR]", err.message);
-    }
-  });
+  var item = webhookQueue.enqueue(req.body);
+  res.status(200).json({ ok: true, accepted: true, queue_id: item.id });
 });
 
 app.get("*", (req, res) => {
@@ -360,6 +381,8 @@ app.listen(PORT, async () => {
     console.log("[RECONCILE_ERROR]", e.message);
   }
   scheduleDailyReauth();
+  scheduleProactiveRefresh();
+  webhookQueue.startWorker(processWebhookPayload, 2000);
   discord.initChannels(rh.getToken.bind(rh));
   profitManager.startProfitManager();
   orbUtil.scheduleORBCapture();
