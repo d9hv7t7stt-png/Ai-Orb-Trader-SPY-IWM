@@ -40,6 +40,20 @@ function readBakedConfig() {
   }
 }
 
+function allowedProductIds() {
+  var baked = readBakedConfig();
+  var ids = [];
+  if (Array.isArray(baked.productIds)) ids = ids.concat(baked.productIds);
+  else if (baked.productId) ids.push(baked.productId);
+  return ids.filter(Boolean);
+}
+
+function isAllowedProductId(productId) {
+  var allowed = allowedProductIds();
+  if (!allowed.length) return true;
+  return allowed.indexOf(productId) !== -1;
+}
+
 function etParts(date) {
   var d = date || new Date();
   var ymd = d.toLocaleDateString("en-CA", { timeZone: "America/New_York" });
@@ -121,6 +135,30 @@ function postValidate(license, token, metadata) {
   });
 }
 
+function getMembership(license, token) {
+  return new Promise(function(resolve, reject) {
+    var req = https.request({
+      hostname: "api.whop.com",
+      path: "/api/v2/memberships/" + encodeURIComponent(license),
+      method: "GET",
+      headers: {
+        Authorization: "Bearer " + token,
+        Accept: "application/json"
+      }
+    }, function(res) {
+      var raw = "";
+      res.on("data", function(c) { raw += c; });
+      res.on("end", function() {
+        var parsed = null;
+        try { parsed = JSON.parse(raw); } catch (e) { parsed = { raw: raw }; }
+        resolve({ status: res.statusCode, body: parsed });
+      });
+    });
+    req.on("error", reject);
+    req.end();
+  });
+}
+
 function moduleFingerprint() {
   try {
     var p = path.join(__dirname, "whopLicense.js");
@@ -185,6 +223,26 @@ async function validateNow() {
       if (!statusIsActive(st)) {
         _ok = false;
         _lastError = "membership_status_" + (st || "unknown");
+        _lastCheck = Date.now();
+        return false;
+      }
+      var productId = res.body && (res.body.product_id || (res.body.membership && res.body.membership.product_id));
+      if (!productId && allowedProductIds().length) {
+        var mem = await getMembership(key, token);
+        if (mem.status === 200 && mem.body) {
+          productId = mem.body.product_id;
+          st = parseMembershipStatus(mem.body) || st;
+          if (!statusIsActive(st)) {
+            _ok = false;
+            _lastError = "membership_status_" + (st || "unknown");
+            _lastCheck = Date.now();
+            return false;
+          }
+        }
+      }
+      if (productId && !isAllowedProductId(productId)) {
+        _ok = false;
+        _lastError = "product_not_allowed_" + productId;
         _lastCheck = Date.now();
         return false;
       }
@@ -286,6 +344,8 @@ module.exports = {
   moduleFingerprint: moduleFingerprint,
   verifyIntegrity: verifyIntegrity,
   isLicenseKeyFormat: isLicenseKeyFormat,
+  isAllowedProductId: isAllowedProductId,
+  allowedProductIds: allowedProductIds,
   slotDue: slotDue,
   etParts: etParts,
   LICENSE_KEY_RE: LICENSE_KEY_RE,

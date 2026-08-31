@@ -388,6 +388,15 @@ test("Whop premarket slotDue fires in 2-minute ET window", function() {
   assert.strictEqual(whop.slotDue(whop.CHECK_T1_MIN, whop.CHECK_T1_MIN, false), true);
 });
 
+test("Whop product catalog lists all AI Orb Trader Pro tiers", function() {
+  var catalog = require("../scripts/whop-customer-templates/whop-products.json");
+  assert.strictEqual(catalog.companyId, "biz_WtV0OPGXfsal8r");
+  assert.strictEqual(catalog.products.length, 4);
+  var ids = catalog.products.map(function(p) { return p.id; });
+  assert.ok(ids.indexOf("prod_qp6ewBBRjFpze") !== -1);
+  assert.ok(ids.indexOf("prod_ffd2vAuWFMXaN") !== -1);
+});
+
 test("setPositionLegs averages dual-leg entry and totals contracts", function() {
   var stateModule = require("../utils/state");
   stateModule.openHalfPosition("SPY", "call", 2, 1.0, { dualLeg: true, totalContracts: 1 });

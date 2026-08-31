@@ -5,7 +5,8 @@
 #
 # Required to bake seller credentials:
 #   WHOP_API_KEY   — Dashboard → Developer → API keys (Bearer token)
-#   optional WHOP_PRODUCT_ID — prod_… from Dashboard → Products
+#   optional WHOP_PRODUCT_ID — single prod_… override
+#   optional WHOP_PRODUCT_IDS — comma-separated prod_… list (default: whop-products.json)
 #
 # Buyer later sets only:
 #   WHOP_LICENSE_KEY — from their Whop Software Licensing purchase
@@ -135,19 +136,34 @@ PY
 
 # Bake seller API key + integrity hash
 python3 - <<PY
-import json, hashlib, pathlib
+import json, hashlib, pathlib, os
 dest = pathlib.Path("$DEST")
+root = pathlib.Path("$ROOT")
 lic = (dest / "utils" / "whopLicense.js").read_bytes()
 sha = hashlib.sha256(lic).hexdigest()
+catalog_path = root / "scripts" / "whop-customer-templates" / "whop-products.json"
+catalog = json.loads(catalog_path.read_text()) if catalog_path.exists() else {}
+
+if os.environ.get("WHOP_PRODUCT_IDS"):
+  product_ids = [p.strip() for p in os.environ["WHOP_PRODUCT_IDS"].split(",") if p.strip()]
+elif os.environ.get("WHOP_PRODUCT_ID"):
+  product_ids = [os.environ["WHOP_PRODUCT_ID"].strip()]
+else:
+  product_ids = [p["id"] for p in catalog.get("products", []) if p.get("id")]
+
+company_id = catalog.get("companyId") or ""
+
 cfg = {
   "apiKey": """$WHOP_API_KEY""",
-  "productId": """${WHOP_PRODUCT_ID:-}""",
+  "productIds": product_ids,
+  "productId": product_ids[0] if len(product_ids) == 1 else "",
+  "companyId": company_id,
   "licenseModuleSha256": sha,
   "builtAt": "$STAMP",
   "build": "whop-customer-live"
 }
 (dest / "config" / "whop.baked.json").write_text(json.dumps(cfg, indent=2) + "\n")
-print("baked whop config sha=", sha[:16])
+print("baked whop config sha=", sha[:16], "products=", len(product_ids))
 PY
 
 # Customer env example + setup
@@ -181,7 +197,7 @@ Live Robinhood ORB trader only. **No Discord paper trading.**
    Used at zip **build** time (`WHOP_API_KEY`). Baked into `config/whop.baked.json`.
 2. **Software Licensing** — add the Software app on your Whop product and enable license keys.  
    Each buyer gets a **license key** after purchase.
-3. Optional: **Product ID** `prod_…` — Dashboard → Products (`WHOP_PRODUCT_ID` at build).
+3. **Product IDs** `prod_…` — baked at build from `scripts/whop-customer-templates/whop-products.json` (all AI Orb Trader Pro tiers).
 
 Buyers only paste **`WHOP_LICENSE_KEY`** into Railway / `.env`.
 
