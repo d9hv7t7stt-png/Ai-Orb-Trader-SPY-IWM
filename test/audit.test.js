@@ -222,14 +222,32 @@ test("syncPositionQty does not re-arm halfIn after a trim", function() {
   }
 });
 
-test("fill price ignores limit and uses processed_premium / executions", function() {
+test("fill price uses per-share execution and total processed_premium", function() {
   var rh = require("../utils/robinhood");
-  assert.strictEqual(rh.fillPriceFromOrder({ price: "2.10", state: "filled" }), 0);
-  assert.strictEqual(rh.fillPriceFromOrder({ price: "2.10", processed_premium: "1.85" }), 1.85);
+  assert.strictEqual(rh.fillPriceFromOrder({ price: "2.10", state: "filled" }), 2.10);
+  assert.strictEqual(rh.fillPriceFromOrder({
+    price: "2.10",
+    processed_premium: "61",
+    quantity: "1",
+    trade_value_multiplier: "100"
+  }), 0.61);
   assert.strictEqual(rh.fillPriceFromOrder({
     price: "2.10",
     legs: [{ executions: [{ price: "1.92" }] }]
   }), 1.92);
+  assert.strictEqual(rh.fillPriceFromOrder({ price: "1.85", processed_premium: "185", quantity: "1" }), 1.85);
+});
+
+test("RH position average_price normalizes to per-share", function() {
+  var reconcile = require("../utils/reconcile");
+  assert.strictEqual(reconcile.entryPriceFromRh({ average_price: "1.85" }, 2.40), 1.85);
+  assert.strictEqual(reconcile.entryPriceFromRh({ average_price: "61.00", trade_value_multiplier: "100" }, 0.58), 0.61);
+});
+
+test("entryLooksInflated detects premium stored as total", function() {
+  var reconcile = require("../utils/reconcile");
+  assert.strictEqual(reconcile.entryLooksInflated(61, 0.61, 0.85), true);
+  assert.strictEqual(reconcile.entryLooksInflated(1.85, 1.85, 2.40), false);
 });
 
 test("ET interval aligns to Eastern clock boundaries", function() {
@@ -275,18 +293,6 @@ test("Sunday digest header and implied-move levels", function() {
   assert.ok(body.indexOf("⚡") === -1);
   var spyIdx = body.indexOf("$SPY:");
   assert.ok(spyIdx === -1, "ticker header lives in the field name, not the body");
-});
-
-test("Robinhood refresh requires device_token", async function() {
-  var rh = require("../utils/robinhood");
-  var savedDevice = process.env.RH_DEVICE_TOKEN;
-  delete process.env.RH_DEVICE_TOKEN;
-  rh.clearAuthSession();
-  rh.setDeviceToken(null);
-  var r = await rh.refreshToken("fake-refresh-token");
-  assert.strictEqual(r.ok, false);
-  assert.strictEqual(r.error, "missing_device_token");
-  if (savedDevice) process.env.RH_DEVICE_TOKEN = savedDevice;
 });
 
 test("Robinhood refresh requires device_token", async function() {

@@ -33,9 +33,14 @@ function findRhPosition(rhPositions, ticker, pos) {
 }
 
 function entryPriceFromRh(rhPos, markFallback) {
-  var avg = parseFloat(rhPos.average_price || rhPos.pending_average_price || 0);
-  if (avg > 0) return avg;
-  return markFallback && markFallback > 0 ? markFallback : 0;
+  return rh.perShareFromRhPosition(rhPos, markFallback);
+}
+
+function entryLooksInflated(stored, corrected, mark) {
+  if (!stored || stored <= 0 || !corrected || corrected <= 0) return false;
+  if (stored <= corrected * 5) return false;
+  if (mark && mark > 0 && stored > mark * 20) return true;
+  return stored >= corrected * 20;
 }
 
 function fillFromRhPosition(rhPos, markFallback) {
@@ -48,18 +53,28 @@ function fillFromRhPosition(rhPos, markFallback) {
 }
 
 async function backfillEntryFromRh(ticker, pos, rhPositions) {
-  if (!pos || pos.entryPrice > 0) return pos;
+  if (!pos) return pos;
   var rhPos = findRhPosition(rhPositions, ticker, pos);
   if (!rhPos) return pos;
 
   var mark = await rh.getOptionMarkByUrl(rhPos.option);
   var fill = fillFromRhPosition(rhPos, mark);
   if (fill.entryPrice > 0) {
-    stateModule.applyOrderFill(ticker, fill);
-    return stateModule.getPosition(ticker);
+    var missing = !(pos.entryPrice > 0);
+    var inflated = entryLooksInflated(pos.entryPrice, fill.entryPrice, mark);
+    if (missing || inflated) {
+      if (inflated) {
+        stateModule.logEvent("RECONCILE", ticker + " corrected entry $" + pos.entryPrice.toFixed(2)
+          + " → $" + fill.entryPrice.toFixed(2));
+      }
+      stateModule.applyOrderFill(ticker, fill);
+      return stateModule.getPosition(ticker);
+    }
   }
   return pos;
 }
+
+var RH_FLAT_GRACE_MS = 3 * 60 * 1000;
 
 async function reconcileRhPositions() {
   if (!rh.getToken()) return { ok: false, reason: "no_token" };
@@ -77,6 +92,12 @@ async function reconcileRhPositions() {
 
     if (!rhPos) {
       if (statePos && !statePos.stopped) {
+        var ageMs = statePos.openedAtMs ? (Date.now() - statePos.openedAtMs) : null;
+        if (ageMs != null && ageMs < RH_FLAT_GRACE_MS) {
+          stateModule.logEvent("RECONCILE", ticker + " RH flat but opened " + Math.round(ageMs / 1000)
+            + "s ago — keeping state (grace " + Math.round(RH_FLAT_GRACE_MS / 1000) + "s)");
+          continue;
+        }
         stateModule.logEvent("RECONCILE", ticker + " state open but RH flat — marking closed");
         stateModule.closePosition(ticker, "reconcile: RH flat");
       }
@@ -131,7 +152,13 @@ async function reconcileRhPositions() {
 
     stateModule.syncPositionQty(ticker, qty);
     var meta = { instrumentUrl: fill.instrumentUrl, strike: fill.strike, expiry: fill.expiry };
-    if (!(statePos.entryPrice > 0)) meta.entryPrice = fill.entryPrice;
+    if (!(statePos.entryPrice > 0) || entryLooksInflated(statePos.entryPrice, fill.entryPrice, mark)) {
+      meta.entryPrice = fill.entryPrice;
+      if (statePos.entryPrice > 0 && fill.entryPrice > 0) {
+        stateModule.logEvent("RECONCILE", ticker + " corrected entry $" + statePos.entryPrice.toFixed(2)
+          + " → $" + fill.entryPrice.toFixed(2));
+      }
+    }
     stateModule.applyOrderFill(ticker, meta);
     synced.push(ticker);
   }
@@ -142,6 +169,7 @@ async function reconcileRhPositions() {
 module.exports = {
   findRhPosition: findRhPosition,
   entryPriceFromRh: entryPriceFromRh,
+  entryLooksInflated: entryLooksInflated,
   backfillEntryFromRh: backfillEntryFromRh,
   reconcileRhPositions: reconcileRhPositions
 };

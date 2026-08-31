@@ -455,10 +455,31 @@ async function getOptionOrder(orderId) {
   return await authedRequest("GET", "/options/orders/" + orderId + "/", null, "json");
 }
 
+function optionContractMultiplier(source) {
+  var m = parseFloat((source && source.trade_value_multiplier) || 100);
+  return m > 0 ? m : 100;
+}
+
+function orderContractQuantity(order) {
+  var q = parseFloat((order && (order.processed_quantity || order.quantity)) || 1);
+  return q > 0 ? q : 1;
+}
+
+function pickPerShareOptionPrice(raw, markHint, multiplier) {
+  var v = parseFloat(raw);
+  if (!v || v <= 0) return 0;
+  multiplier = multiplier || 100;
+  var asTotal = v / multiplier;
+  if (markHint && markHint > 0) {
+    if (Math.abs(asTotal - markHint) < Math.abs(v - markHint)) return asTotal;
+    return v;
+  }
+  if (v >= 10 && asTotal >= 0.01 && asTotal <= 50) return asTotal;
+  return v;
+}
+
 function fillPriceFromOrder(order) {
   if (!order) return 0;
-  var premium = parseFloat(order.processed_premium || order.average_price || 0);
-  if (premium > 0) return premium;
   var legs = order.legs || [];
   for (var i = 0; i < legs.length; i++) {
     var ex = legs[i].executions || [];
@@ -467,7 +488,23 @@ function fillPriceFromOrder(order) {
       if (p > 0) return p;
     }
   }
+  var limit = parseFloat(order.price || 0);
+  var mult = optionContractMultiplier(order);
+  var qty = orderContractQuantity(order);
+  var premium = parseFloat(order.processed_premium || 0);
+  if (premium > 0) return premium / (mult * qty);
+  if (limit > 0) return limit;
+  var avg = parseFloat(order.average_price || 0);
+  if (avg > 0) return pickPerShareOptionPrice(avg, null, mult);
   return 0;
+}
+
+function perShareFromRhPosition(rhPos, markHint) {
+  if (!rhPos) return 0;
+  var mult = optionContractMultiplier(rhPos);
+  var avg = parseFloat(rhPos.average_price || rhPos.pending_average_price || 0);
+  if (avg > 0) return pickPerShareOptionPrice(avg, markHint, mult);
+  return markHint && markHint > 0 ? markHint : 0;
 }
 
 async function waitForFillPrice(orderId, instrumentUrl, opts) {
@@ -492,7 +529,7 @@ async function waitForFillPrice(orderId, instrumentUrl, opts) {
     var pos = positions.find(function(p) { return p.option === instrumentUrl; });
     if (pos) {
       var fromPos = parseFloat(pos.average_price || pos.pending_average_price || 0);
-      if (fromPos > 0) return fromPos;
+      if (fromPos > 0) return perShareFromRhPosition(pos, null);
     }
   }
   return 0;
@@ -614,6 +651,6 @@ module.exports = {
   handleVerificationWorkflow, completeWorkflow,
   respondToSmsChallenge, waitForPushApproval,
   getQuote, placeOptionOrder, closeOptionPosition,
-  getOptionOrder, waitForFillPrice, fillPriceFromOrder,
+  getOptionOrder, waitForFillPrice, fillPriceFromOrder, perShareFromRhPosition,
   getOptionMark, getOptionMarkByUrl, getOpenOptionPositions
 };

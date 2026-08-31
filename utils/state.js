@@ -110,7 +110,8 @@ function openHalfPosition(ticker, side, contracts, entryPrice, meta) {
     stopMode: meta.stopMode || "mid",
     strike: meta.strike || null,
     expiry: meta.expiry || null,
-    instrumentUrl: meta.instrumentUrl || null
+    instrumentUrl: meta.instrumentUrl || null,
+    openedAtMs: Date.now()
   };
   logEvent("POSITION_OPEN", ticker + " " + side + " half " + contracts + "c @ $" + entryPrice +
     (meta.crossEntry ? " (cross-entry stop=" + meta.stopMode + ")" : ""));
@@ -180,7 +181,10 @@ function applyOrderFill(ticker, order) {
   if (!order) return;
   var pos = state.positions[ticker];
   if (!pos || pos.stopped) return;
-  if (order.entryPrice && order.entryPrice > 0) pos.entryPrice = parseFloat(order.entryPrice);
+  if (order.entryPrice && order.entryPrice > 0) {
+    pos.entryPrice = parseFloat(order.entryPrice);
+    if (!pos.openedAtMs) pos.openedAtMs = Date.now();
+  }
   if (order.instrumentUrl) pos.instrumentUrl = order.instrumentUrl;
   if (order.strike) pos.strike = Math.round(parseFloat(order.strike));
   if (order.expiry) pos.expiry = order.expiry;
@@ -241,7 +245,8 @@ function importRhPosition(ticker, side, qty, entryPrice, meta) {
     stopMode: meta.stopMode || "mid",
     strike: meta.strike || null,
     expiry: meta.expiry || null,
-    instrumentUrl: meta.instrumentUrl || null
+    instrumentUrl: meta.instrumentUrl || null,
+    openedAtMs: Date.now()
   };
   logEvent("POSITION_OPEN", ticker + " " + side + " " + phase.contracts + "c @ $" + entryPrice +
     (phase.halfIn ? " (half)" : " (full)") +
