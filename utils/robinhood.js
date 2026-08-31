@@ -5,27 +5,74 @@ const fs = require("fs");
 const persist = require("./persist");
 
 const RH_BASE = "api.robinhood.com";
-const REFRESH_FILE = persist.filePath("rh-refresh.json");   // volume-backed: survives redeploys
+const AUTH_FILE = persist.filePath("rh-auth.json");
+const LEGACY_REFRESH_FILE = persist.filePath("rh-refresh.json");
 let _token = null;
 let _deviceToken = null;
 
-// Robinhood ROTATES the refresh token on every refresh: each success returns a
-// new refresh_token and invalidates the previous one. We persist the latest to
-// /tmp so in-container restarts keep a valid token instead of falling back to a
-// stale Railway env value (the cause of repeated invalid_grant errors).
-function persistRefreshToken(rt) {
-  try { fs.writeFileSync(REFRESH_FILE, JSON.stringify({ refresh_token: rt, ts: Date.now() })); }
-  catch(e) { console.log("[AUTH] Could not persist refresh token: " + e.message); }
+function readAuthFile() {
+  try {
+    if (fs.existsSync(AUTH_FILE)) {
+      var d = JSON.parse(fs.readFileSync(AUTH_FILE, "utf8"));
+      if (d && typeof d === "object") return d;
+    }
+  } catch (e) {}
+  // One-time migration from older refresh-only file.
+  try {
+    if (fs.existsSync(LEGACY_REFRESH_FILE)) {
+      var legacy = JSON.parse(fs.readFileSync(LEGACY_REFRESH_FILE, "utf8"));
+      if (legacy && legacy.refresh_token) {
+        var migrated = {
+          refresh_token: legacy.refresh_token,
+          device_token: process.env.RH_DEVICE_TOKEN || null,
+          ts: legacy.ts || Date.now()
+        };
+        saveAuthSession(migrated);
+        try { fs.unlinkSync(LEGACY_REFRESH_FILE); } catch (e) {}
+        return migrated;
+      }
+    }
+  } catch (e) {}
+  return null;
+}
+
+function saveAuthSession(patch) {
+  try {
+    var cur = readAuthFile() || {};
+    var next = Object.assign({}, cur, patch || {}, { ts: Date.now() });
+    fs.writeFileSync(AUTH_FILE, JSON.stringify(next));
+  } catch (e) {
+    console.log("[AUTH] Could not persist auth session: " + e.message);
+  }
+}
+
+function clearAuthSession() {
+  try { if (fs.existsSync(AUTH_FILE)) fs.unlinkSync(AUTH_FILE); } catch (e) {}
+  try { if (fs.existsSync(LEGACY_REFRESH_FILE)) fs.unlinkSync(LEGACY_REFRESH_FILE); } catch (e) {}
+}
+
+function ensureDeviceToken() {
+  if (_deviceToken) return _deviceToken;
+  var session = readAuthFile();
+  if (session && session.device_token) {
+    _deviceToken = session.device_token;
+    return _deviceToken;
+  }
+  if (process.env.RH_DEVICE_TOKEN) {
+    _deviceToken = process.env.RH_DEVICE_TOKEN;
+    return _deviceToken;
+  }
+  return null;
 }
 
 function getStoredRefreshToken() {
-  try {
-    if (fs.existsSync(REFRESH_FILE)) {
-      var d = JSON.parse(fs.readFileSync(REFRESH_FILE, "utf8"));
-      if (d && d.refresh_token) return d.refresh_token;   // most recent rotation wins
-    }
-  } catch(e) {}
-  return process.env.RH_REFRESH_TOKEN || null;            // fall back to Railway env
+  var session = readAuthFile();
+  if (session && session.refresh_token) return session.refresh_token;
+  return process.env.RH_REFRESH_TOKEN || null;
+}
+
+function getStoredDeviceToken() {
+  return ensureDeviceToken();
 }
 
 function generateDeviceToken() {
@@ -99,9 +146,7 @@ function isAuthError(r) {
 
 // Force a token refresh using the freshest stored refresh token.
 async function reauthorize() {
-  var rt = getStoredRefreshToken();
-  if (!rt) { console.log("[AUTH] reauthorize: no refresh token available"); return false; }
-  var res = await refreshToken(rt);
+  var res = await refreshWithStoredTokens();
   if (res.ok) { console.log("[AUTH] reauthorize: token refreshed"); return true; }
   console.log("[AUTH] reauthorize failed: " + res.error);
   return false;
@@ -121,7 +166,7 @@ async function authedRequest(method, path, data, contentType) {
 }
 
 async function login(email, password, mfa_code) {
-  if (!_deviceToken) _deviceToken = process.env.RH_DEVICE_TOKEN || generateDeviceToken();
+  if (!_deviceToken) _deviceToken = ensureDeviceToken() || process.env.RH_DEVICE_TOKEN || generateDeviceToken();
 
   const payload = {
     client_id: "c82SH0WZOsabOXGP2sxqcj34FxkvfnWRZBKlBjFS",
@@ -142,6 +187,11 @@ async function login(email, password, mfa_code) {
 
   if (data.access_token) {
     _token = data.access_token;
+    saveAuthSession({
+      access_token: data.access_token,
+      refresh_token: data.refresh_token || null,
+      device_token: _deviceToken
+    });
     console.log("[AUTH] Login successful");
     return { ok: true, token: _token };
   }
@@ -415,29 +465,67 @@ async function waitForFillPrice(orderId, instrumentUrl, opts) {
   return 0;
 }
 
-async function refreshToken(refreshTokenValue) {
+async function refreshToken(refreshTokenValue, opts) {
+  opts = opts || {};
+  var deviceToken = opts.deviceToken || ensureDeviceToken();
+  if (!deviceToken) {
+    return { ok: false, error: "missing_device_token", invalid_grant: false };
+  }
+
   var payload = {
     client_id: "c82SH0WZOsabOXGP2sxqcj34FxkvfnWRZBKlBjFS",
     expires_in: 86400,
     grant_type: "refresh_token",
     refresh_token: refreshTokenValue,
-    scope: "internal"
+    scope: "internal",
+    device_token: deviceToken
   };
   try {
     var data = await request("POST", "/oauth2/token/", payload, null, "form");
     if (data.access_token) {
       _token = data.access_token;
-      if (data.refresh_token) {
-        process.env.RH_REFRESH_TOKEN = data.refresh_token;
-        persistRefreshToken(data.refresh_token);   // survive in-container restarts
-      }
+      saveAuthSession({
+        access_token: data.access_token,
+        refresh_token: data.refresh_token || refreshTokenValue,
+        device_token: deviceToken
+      });
+      if (data.refresh_token) process.env.RH_REFRESH_TOKEN = data.refresh_token;
       console.log("[AUTH] Token refreshed successfully");
       return { ok: true, token: _token };
     }
-    return { ok: false, error: JSON.stringify(data) };
+    var errText = JSON.stringify(data);
+    var invalidGrant = !!(data && data.error === "invalid_grant");
+    if (invalidGrant && !opts.skipClear) clearAuthSession();
+    return { ok: false, error: errText, invalid_grant: invalidGrant };
   } catch(err) {
-    return { ok: false, error: err.message };
+    return { ok: false, error: err.message, invalid_grant: false };
   }
+}
+
+async function refreshWithStoredTokens() {
+  ensureDeviceToken();
+  var fileSession = readAuthFile();
+  var fileRt = fileSession && fileSession.refresh_token;
+  if (fileRt) {
+    var fromFile = await refreshToken(fileRt, { deviceToken: fileSession.device_token });
+    if (fromFile.ok) return fromFile;
+    if (fromFile.invalid_grant) {
+      console.log("[AUTH] Persisted refresh token rejected — trying Railway RH_REFRESH_TOKEN");
+    } else if (fromFile.error === "missing_device_token") {
+      console.log("[AUTH] No device_token on file — set RH_DEVICE_TOKEN or reconnect via dashboard");
+    } else {
+      return fromFile;
+    }
+  }
+
+  var envRt = process.env.RH_REFRESH_TOKEN;
+  if (envRt && envRt !== fileRt) {
+    return refreshToken(envRt, { skipClear: true });
+  }
+  if (fileRt && !envRt) {
+    return { ok: false, error: '{"error":"invalid_grant"}', invalid_grant: true };
+  }
+  return { ok: false, error: "no_refresh_token", invalid_grant: false };
 }
 
 // Read-only option pricing for the paper feed (no order placement involved).
@@ -487,8 +575,8 @@ async function getOpenOptionPositions() {
 }
 
 module.exports = {
-  login, setToken, getToken, setDeviceToken, refreshToken,
-  getStoredRefreshToken, reauthorize, checkAuthStatus,
+  login, setToken, getToken, setDeviceToken, refreshToken, refreshWithStoredTokens,
+  getStoredRefreshToken, getStoredDeviceToken, clearAuthSession, reauthorize, checkAuthStatus,
   handleVerificationWorkflow, completeWorkflow,
   respondToSmsChallenge, waitForPushApproval,
   getQuote, placeOptionOrder, closeOptionPosition,

@@ -277,6 +277,18 @@ test("Sunday digest header and implied-move levels", function() {
   assert.ok(spyIdx === -1, "ticker header lives in the field name, not the body");
 });
 
+test("Robinhood refresh requires device_token", async function() {
+  var rh = require("../utils/robinhood");
+  var savedDevice = process.env.RH_DEVICE_TOKEN;
+  delete process.env.RH_DEVICE_TOKEN;
+  rh.clearAuthSession();
+  rh.setDeviceToken(null);
+  var r = await rh.refreshToken("fake-refresh-token");
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error, "missing_device_token");
+  if (savedDevice) process.env.RH_DEVICE_TOKEN = savedDevice;
+});
+
 test("Sunday premarket tickers scoped per Discord channel", function() {
   assert.deepStrictEqual(
     closeDigest.sundayTickersForChannel({ id: "main", tickers: ["SPXW"] }),

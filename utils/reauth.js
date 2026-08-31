@@ -4,16 +4,21 @@ var stateModule = require("./state");
 var pendingWorkflow = null;
 
 async function refreshAccessToken() {
-  var refreshToken = rh.getStoredRefreshToken();
-  if (!refreshToken) return false;
+  if (!rh.getStoredRefreshToken()) return false;
   try {
     stateModule.logEvent("AUTH", "Refreshing access token...");
-    var result = await rh.refreshToken(refreshToken);
+    var result = await rh.refreshWithStoredTokens();
     if (result.ok) {
       stateModule.logEvent("AUTH", "Token refreshed successfully");
       return true;
     }
-    stateModule.logEvent("AUTH_ERROR", "Token refresh failed: " + result.error);
+    if (result.invalid_grant) {
+      stateModule.logEvent("AUTH_ERROR", "Refresh token expired — reconnect or paste fresh RH_TOKEN + RH_REFRESH_TOKEN + RH_DEVICE_TOKEN from the same login");
+    } else if (result.error === "missing_device_token") {
+      stateModule.logEvent("AUTH_ERROR", "Refresh needs RH_DEVICE_TOKEN — reconnect via dashboard or add it in Railway");
+    } else {
+      stateModule.logEvent("AUTH_ERROR", "Token refresh failed: " + result.error);
+    }
     return false;
   } catch (err) {
     stateModule.logEvent("AUTH_ERROR", "Token refresh error: " + err.message);
@@ -31,20 +36,30 @@ async function verifyCurrentToken() {
 }
 
 async function ensureLoggedIn() {
-  if (rh.getToken()) {
+  rh.getStoredDeviceToken();
+
+  var storedToken = process.env.RH_TOKEN;
+  if (storedToken) {
+    rh.setToken(storedToken);
+    if (await verifyCurrentToken()) {
+      stateModule.logEvent("AUTH", "Using stored RH_TOKEN — verified");
+      return true;
+    }
+    stateModule.logEvent("AUTH_ERROR", "RH_TOKEN in Railway is expired — trying refresh");
+    rh.setToken(null);
+  } else if (rh.getToken()) {
     if (await verifyCurrentToken()) {
       stateModule.logEvent("AUTH", "Session verified");
       return true;
     }
+    rh.setToken(null);
   }
 
-  var refreshToken = rh.getStoredRefreshToken();
-  if (refreshToken) {
+  if (rh.getStoredRefreshToken()) {
     var refreshed = await refreshAccessToken();
     if (refreshed && await verifyCurrentToken()) return true;
   }
 
-  var storedToken = process.env.RH_TOKEN;
   if (storedToken) {
     rh.setToken(storedToken);
     if (await verifyCurrentToken()) {
@@ -142,8 +157,9 @@ function scheduleDailyReauth() {
     var delay = exitlogic.msUntilNextTradingTimeET(9, 0);
     stateModule.logEvent("AUTH", "Next reauth in " + Math.round(delay / 60000) + " min");
     setTimeout(async function() {
-      rh.setToken(null);
-      await ensureLoggedIn();
+      var refreshed = await refreshAccessToken();
+      if (!refreshed) await ensureLoggedIn();
+      else await verifyCurrentToken();
       scheduleNext();
     }, delay);
   }
@@ -152,12 +168,25 @@ function scheduleDailyReauth() {
 
 async function getAuthInfo() {
   var pending = !!pendingWorkflow;
+  var refreshReady = !!(rh.getStoredRefreshToken() && rh.getStoredDeviceToken());
   if (!rh.getToken()) {
-    return { logged_in: false, verified: false, pending: pending, status: pending ? "pending_verification" : "disconnected" };
+    return {
+      logged_in: false, verified: false, pending: pending,
+      status: pending ? "pending_verification" : "disconnected",
+      refresh_ready: refreshReady
+    };
   }
   var status = await rh.checkAuthStatus();
-  if (status.ok) return { logged_in: true, verified: true, pending: pending, status: "connected" };
-  return { logged_in: false, verified: false, pending: pending, status: "token_expired" };
+  if (status.ok) {
+    return {
+      logged_in: true, verified: true, pending: pending, status: "connected",
+      refresh_ready: refreshReady
+    };
+  }
+  return {
+    logged_in: false, verified: false, pending: pending, status: "token_expired",
+    refresh_ready: refreshReady
+  };
 }
 
 module.exports = {
