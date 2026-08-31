@@ -390,7 +390,7 @@ async function placeOptionOrder(ticker, side, contracts, expiry, strike, optionT
 function pickRhPosition(open, matchOpts) {
   matchOpts = matchOpts || {};
   if (matchOpts.instrumentUrl) {
-    var byUrl = open.find(function(p) { return p.option === matchOpts.instrumentUrl; });
+    var byUrl = open.find(function(p) { return sameOptionUrl(p.option, matchOpts.instrumentUrl); });
     if (byUrl) return byUrl;
   }
   if (matchOpts.side) {
@@ -408,8 +408,9 @@ function pickRhPosition(open, matchOpts) {
 }
 
 async function closeOptionPosition(ticker, contracts, reason, matchOpts) {
-  const positions = await authedRequest("GET", "/options/positions/?nonzero=true", null, "json");
-  const matching = (positions.results || []).filter(p => p.chain_symbol === ticker && parseFloat(p.quantity) > 0);
+  const fetched = await fetchOpenOptionPositions();
+  if (!fetched.ok) return { ok: false, error: "positions_fetch_failed: " + (fetched.error || "unknown") };
+  const matching = (fetched.positions || []).filter(p => p.chain_symbol === ticker && optionPositionQty(p) > 0);
   if (!matching.length) return { ok: false, error: "No open position found" };
 
   const pos = pickRhPosition(matching, matchOpts);
@@ -640,8 +641,65 @@ async function checkAuthStatus() {
 }
 
 async function getOpenOptionPositions() {
-  var res = await authedRequest("GET", "/options/positions/?nonzero=true", null, "json");
-  return (res && res.results) ? res.results : [];
+  var fetched = await fetchOpenOptionPositions();
+  return fetched.positions || [];
+}
+
+async function fetchOpenOptionPositions() {
+  var path = "/options/positions/?nonzero=true";
+  var acct = process.env.RH_ACCOUNT_NUMBER;
+  if (acct) path += "&account_numbers=" + encodeURIComponent(acct);
+  var all = [];
+  var guard = 0;
+  while (path && guard < 10) {
+    guard++;
+    var r = await rawRequest("GET", path, null, _token);
+    if (isAuthError(r)) {
+      console.log("[AUTH] Access token rejected on GET " + path + " — refreshing and retrying once");
+      var ok = await reauthorize();
+      if (!ok) return { ok: false, error: "auth_failed", positions: [] };
+      r = await rawRequest("GET", path, null, _token);
+      if (isAuthError(r)) return { ok: false, error: "auth_failed", positions: [] };
+    }
+    if (r.status < 200 || r.status >= 300) {
+      var detail = (r.body && (r.body.detail || r.body.error)) || ("http_" + r.status);
+      return { ok: false, error: String(detail), positions: [] };
+    }
+    var body = r.body || {};
+    if (!Array.isArray(body.results) && body.next == null && body.previous == null && Object.keys(body).length && !body.results) {
+      // Unexpected payload — don't pretend the account is flat
+      return { ok: false, error: "invalid_positions_payload", positions: [] };
+    }
+    var page = body.results || [];
+    for (var i = 0; i < page.length; i++) all.push(page[i]);
+    var next = body.next || null;
+    if (next) {
+      try {
+        var u = new URL(next);
+        path = u.pathname + u.search;
+      } catch (e) {
+        path = null;
+      }
+    } else {
+      path = null;
+    }
+  }
+  return { ok: true, positions: all, error: null };
+}
+
+function optionPositionQty(p) {
+  if (!p) return 0;
+  var q = parseFloat(p.quantity);
+  if (q > 0) return q;
+  var pending = parseFloat(p.pending_buy_quantity || 0);
+  return pending > 0 ? pending : 0;
+}
+
+function sameOptionUrl(a, b) {
+  if (!a || !b) return false;
+  var na = String(a).replace(/\/+$/, "");
+  var nb = String(b).replace(/\/+$/, "");
+  return na === nb;
 }
 
 module.exports = {
@@ -652,5 +710,6 @@ module.exports = {
   respondToSmsChallenge, waitForPushApproval,
   getQuote, placeOptionOrder, closeOptionPosition,
   getOptionOrder, waitForFillPrice, fillPriceFromOrder, perShareFromRhPosition,
-  getOptionMark, getOptionMarkByUrl, getOpenOptionPositions
+  getOptionMark, getOptionMarkByUrl, getOpenOptionPositions, fetchOpenOptionPositions,
+  optionPositionQty, sameOptionUrl
 };

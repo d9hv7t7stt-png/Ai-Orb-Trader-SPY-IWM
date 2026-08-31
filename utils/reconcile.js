@@ -3,19 +3,23 @@
 var rh = require("./robinhood");
 var stateModule = require("./state");
 
+var RH_FLAT_GRACE_MS = 10 * 60 * 1000;
+var FLAT_CONFIRM_NEEDED = 2;
+var _flatStreak = {};
+
 function normalizeSide(rhPos) {
-  var side = ((rhPos.option_type || rhPos.type || "") + "").toLowerCase();
+  var side = ((rhPos.option_type || "") + "").toLowerCase();
   return side === "call" || side === "put" ? side : null;
 }
 
 function findRhPosition(rhPositions, ticker, pos) {
-  var open = rhPositions.filter(function(p) {
-    return p.chain_symbol === ticker && parseFloat(p.quantity) > 0;
+  var open = (rhPositions || []).filter(function(p) {
+    return p.chain_symbol === ticker && rh.optionPositionQty(p) > 0;
   });
   if (!open.length) return null;
 
   if (pos && pos.instrumentUrl) {
-    var byUrl = open.find(function(p) { return p.option === pos.instrumentUrl; });
+    var byUrl = open.find(function(p) { return rh.sameOptionUrl(p.option, pos.instrumentUrl); });
     if (byUrl) return byUrl;
   }
   if (pos && pos.side) {
@@ -74,14 +78,24 @@ async function backfillEntryFromRh(ticker, pos, rhPositions) {
   return pos;
 }
 
-var RH_FLAT_GRACE_MS = 3 * 60 * 1000;
+function clearFlatStreak(ticker) {
+  delete _flatStreak[ticker];
+}
 
 async function reconcileRhPositions() {
   if (!rh.getToken()) return { ok: false, reason: "no_token" };
   var auth = await rh.checkAuthStatus();
   if (!auth.ok) return { ok: false, reason: "auth_failed" };
 
-  var rhPositions = await rh.getOpenOptionPositions();
+  var fetched = await rh.fetchOpenOptionPositions();
+  if (!fetched.ok) {
+    stateModule.logEvent("RECONCILE_WARN", "RH positions fetch failed (" + (fetched.error || "unknown")
+      + ") — not marking flat");
+    return { ok: false, reason: "positions_fetch_failed", error: fetched.error };
+  }
+
+  var rhPositions = fetched.positions || [];
+  stateModule.logEvent("RECONCILE", "RH open option positions: " + rhPositions.length);
   var tickers = ["SPY", "IWM"];
   var synced = [];
 
@@ -98,16 +112,40 @@ async function reconcileRhPositions() {
             + "s ago — keeping state (grace " + Math.round(RH_FLAT_GRACE_MS / 1000) + "s)");
           continue;
         }
+        // If we still have an instrument URL, verify the option mark is reachable —
+        // a temporary empty positions list should not kill live TP/SL tracking.
+        if (statePos.instrumentUrl) {
+          try {
+            var stillQuoted = await rh.getOptionMarkByUrl(statePos.instrumentUrl);
+            if (stillQuoted && stillQuoted > 0) {
+              _flatStreak[ticker] = (_flatStreak[ticker] || 0) + 1;
+              if (_flatStreak[ticker] < FLAT_CONFIRM_NEEDED) {
+                stateModule.logEvent("RECONCILE", ticker + " RH list miss but mark still quotes $"
+                  + stillQuoted.toFixed(2) + " — keeping state (confirm "
+                  + _flatStreak[ticker] + "/" + FLAT_CONFIRM_NEEDED + ")");
+                continue;
+              }
+            }
+          } catch (e) {}
+        }
+        _flatStreak[ticker] = (_flatStreak[ticker] || 0) + 1;
+        if (_flatStreak[ticker] < FLAT_CONFIRM_NEEDED) {
+          stateModule.logEvent("RECONCILE", ticker + " RH flat — waiting confirm "
+            + _flatStreak[ticker] + "/" + FLAT_CONFIRM_NEEDED);
+          continue;
+        }
         stateModule.logEvent("RECONCILE", ticker + " state open but RH flat — marking closed");
+        clearFlatStreak(ticker);
         stateModule.closePosition(ticker, "reconcile: RH flat");
       }
       continue;
     }
 
-    var side = normalizeSide(rhPos);
+    clearFlatStreak(ticker);
+    var side = normalizeSide(rhPos) || (statePos && statePos.side) || null;
     if (!side) continue;
 
-    var qty = Math.max(1, Math.floor(parseFloat(rhPos.quantity)));
+    var qty = Math.max(1, Math.floor(rh.optionPositionQty(rhPos)));
     var mark = await rh.getOptionMarkByUrl(rhPos.option);
     var fill = fillFromRhPosition(rhPos, mark);
 
@@ -151,15 +189,15 @@ async function reconcileRhPositions() {
     }
 
     stateModule.syncPositionQty(ticker, qty);
-    var meta = { instrumentUrl: fill.instrumentUrl, strike: fill.strike, expiry: fill.expiry };
+    var fillMeta = { instrumentUrl: fill.instrumentUrl, strike: fill.strike, expiry: fill.expiry };
     if (!(statePos.entryPrice > 0) || entryLooksInflated(statePos.entryPrice, fill.entryPrice, mark)) {
-      meta.entryPrice = fill.entryPrice;
+      fillMeta.entryPrice = fill.entryPrice;
       if (statePos.entryPrice > 0 && fill.entryPrice > 0) {
         stateModule.logEvent("RECONCILE", ticker + " corrected entry $" + statePos.entryPrice.toFixed(2)
           + " → $" + fill.entryPrice.toFixed(2));
       }
     }
-    stateModule.applyOrderFill(ticker, meta);
+    stateModule.applyOrderFill(ticker, fillMeta);
     synced.push(ticker);
   }
 
@@ -171,5 +209,7 @@ module.exports = {
   entryPriceFromRh: entryPriceFromRh,
   entryLooksInflated: entryLooksInflated,
   backfillEntryFromRh: backfillEntryFromRh,
-  reconcileRhPositions: reconcileRhPositions
+  reconcileRhPositions: reconcileRhPositions,
+  RH_FLAT_GRACE_MS: RH_FLAT_GRACE_MS,
+  FLAT_CONFIRM_NEEDED: FLAT_CONFIRM_NEEDED
 };

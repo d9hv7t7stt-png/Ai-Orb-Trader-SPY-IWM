@@ -9,6 +9,7 @@ var expiryUtil = require("../utils/expiry");
 var authguard = require("../utils/authguard");
 var yahoo = require("../utils/yahoo");
 var closeDigest = require("../utils/closeDigest");
+var rh = require("../utils/robinhood");
 
 var passed = 0;
 function test(name, fn) {
@@ -124,6 +125,28 @@ test("refuses ambiguous multi-position pick", function() {
   assert.strictEqual(reconcile.findRhPosition(one, "SPY", null).option, "a");
   var byUrl = reconcile.findRhPosition(many, "SPY", { instrumentUrl: "b" });
   assert.strictEqual(byUrl.option, "b");
+});
+
+test("findRhPosition matches pending qty and URL slash variants", function() {
+  var pending = [{
+    chain_symbol: "SPY", quantity: "0", pending_buy_quantity: "1",
+    option_type: "put", option: "https://api.robinhood.com/options/instruments/abc/"
+  }];
+  var hit = reconcile.findRhPosition(pending, "SPY", {
+    instrumentUrl: "https://api.robinhood.com/options/instruments/abc"
+  });
+  assert.ok(hit);
+  assert.strictEqual(hit.option_type, "put");
+  assert.strictEqual(rh.optionPositionQty(pending[0]), 1);
+  assert.ok(rh.sameOptionUrl(
+    "https://api.robinhood.com/options/instruments/abc/",
+    "https://api.robinhood.com/options/instruments/abc"
+  ));
+});
+
+test("reconcile grace is at least 10 minutes", function() {
+  assert.ok(reconcile.RH_FLAT_GRACE_MS >= 10 * 60 * 1000);
+  assert.ok(reconcile.FLAT_CONFIRM_NEEDED >= 2);
 });
 
 console.log("calendar / expiry");

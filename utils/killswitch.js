@@ -22,11 +22,11 @@ async function flattenTicker(ticker, reason) {
   try {
     var open = await rh.getOpenOptionPositions();
     var matching = (open || []).filter(function(p) {
-      return p.chain_symbol === ticker && parseFloat(p.quantity) > 0;
+      return p.chain_symbol === ticker && rh.optionPositionQty(p) > 0;
     });
     for (var i = 0; i < matching.length; i++) {
       var p = matching[i];
-      var q = Math.floor(parseFloat(p.quantity));
+      var q = Math.floor(rh.optionPositionQty(p));
       if (q < 1) continue;
       var already = closed.some(function(c) { return c.ticker === ticker && c.ok; });
       if (already && pos) continue;

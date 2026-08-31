@@ -37,11 +37,12 @@ async function checkCrossEntryStop(ticker, pos, s) {
   var rhPos = reconcile.findRhPosition(rhPositions, ticker, pos);
   var exitPrice = 0;
   if (rhPos) exitPrice = await rh.getOptionMarkByUrl(rhPos.option) || 0;
+  else if (pos.instrumentUrl) exitPrice = await rh.getOptionMarkByUrl(pos.instrumentUrl) || 0;
   var closed = await trayd.closeLiveOrLog(ticker, contracts, reason);
   if (!closed) return false;
   if (exitPrice > 0) {
     pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, exitPrice, contracts);
-  } else if (rhPos) {
+  } else if (rhPos || pos.instrumentUrl) {
     stateModule.logEvent("PNL_WARN", ticker + " cross-entry stop — no exit mark, P&L skipped");
   }
   stateModule.closePosition(ticker, reason);
@@ -69,7 +70,12 @@ async function checkProfitTiers() {
 
   var s = stateModule.getState();
   var tickers = ["SPY", "IWM"];
-  var rhPositions = await rh.getOpenOptionPositions();
+  var fetched = await rh.fetchOpenOptionPositions();
+  var rhPositions = fetched.ok ? (fetched.positions || []) : [];
+  if (!fetched.ok) {
+    console.log("[PROFIT_MGR] RH positions fetch failed (" + (fetched.error || "unknown")
+      + ") — continuing with instrumentUrl marks");
+  }
 
   for (var i = 0; i < tickers.length; i++) {
     var ticker = tickers[i];
@@ -85,21 +91,28 @@ async function checkProfitTiers() {
     }
 
     var rhPos = reconcile.findRhPosition(rhPositions, ticker, pos);
-    if (!rhPos) {
-      console.log("[PROFIT_MGR] No RH position found for " + ticker + " " + pos.side);
+    var instrumentUrl = (rhPos && rhPos.option) || pos.instrumentUrl || null;
+
+    if (!rhPos && !instrumentUrl) {
+      console.log("[PROFIT_MGR] No RH position or instrumentUrl for " + ticker + " " + pos.side);
       continue;
     }
 
-    if (Math.floor(parseFloat(rhPos.quantity)) !== pos.contracts) {
-      stateModule.syncPositionQty(ticker, Math.floor(parseFloat(rhPos.quantity)));
+    if (!rhPos && instrumentUrl) {
+      console.log("[PROFIT_MGR] " + ticker + " RH list miss — managing via instrumentUrl mark");
+    }
+
+    if (rhPos && Math.floor(rh.optionPositionQty(rhPos)) !== pos.contracts) {
+      stateModule.syncPositionQty(ticker, Math.floor(rh.optionPositionQty(rhPos)));
       stateModule.applyOrderFill(ticker, {
         instrumentUrl: rhPos.option,
         strike: rhPos.strike_price,
         expiry: rhPos.expiration_date
       });
+      pos = stateModule.getPosition(ticker) || pos;
     }
 
-    var optionPrice = await rh.getOptionMarkByUrl(rhPos.option);
+    var optionPrice = await rh.getOptionMarkByUrl(instrumentUrl);
     if (!optionPrice || optionPrice <= 0) {
       console.log("[PROFIT_MGR] Could not get option price for " + ticker);
       continue;
@@ -112,7 +125,7 @@ async function checkProfitTiers() {
 
     console.log("[PROFIT_MGR] " + ticker + " entry=$" + entryPrice.toFixed(2) +
       " current=$" + optionPrice.toFixed(2) + " gain=" + gainPct.toFixed(1) +
-      "% tier=" + (pos.lastProfitTier || 0));
+      "% tier=" + (pos.lastProfitTier || 0) + " stop=" + decision.newStopPct + "%");
 
     pos.stopPct = decision.newStopPct;
 
@@ -136,7 +149,8 @@ async function checkProfitTiers() {
       var reason = pos.breakEvenActivated
         ? "Trailing stop " + decision.newStopPct + "%"
         : "Initial stop -15%";
-      stateModule.logEvent("STOP_OUT", ticker + " " + reason + " @ $" + optionPrice.toFixed(2));
+      stateModule.logEvent("STOP_OUT", ticker + " " + reason + " @ $" + optionPrice.toFixed(2)
+        + " (gain " + gainPct.toFixed(1) + "%)");
       if (!await trayd.closeLiveOrLog(ticker, contracts, reason)) continue;
       pnlUtil.logTradePnL(ticker, pos.side, entryPrice, optionPrice, contracts);
       stateModule.closePosition(ticker, reason);
@@ -146,7 +160,8 @@ async function checkProfitTiers() {
     if (decision.scaleOut) {
       var sellQty = Math.max(1, Math.floor(contracts * decision.sellFraction));
       stateModule.logEvent("PROFIT_TIER", ticker + " +" + gainPct.toFixed(1) +
-        "% — selling 10% (" + sellQty + "c) @ $" + optionPrice.toFixed(2));
+        "% — selling " + Math.round(decision.sellFraction * 100) + "% (" + sellQty + "c) @ $"
+        + optionPrice.toFixed(2));
       if (!await trayd.closeLiveOrLog(ticker, sellQty, "+" + Math.floor(gainPct) + "% scale-out")) continue;
       pnlUtil.logTradePnL(ticker, pos.side, entryPrice, optionPrice, sellQty);
       stateModule.markProfitTier(ticker, decision.newTier);
