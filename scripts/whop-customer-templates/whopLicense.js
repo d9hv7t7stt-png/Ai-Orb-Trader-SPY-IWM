@@ -183,9 +183,16 @@ function verifyIntegrity() {
 
 function parseMembershipStatus(body) {
   if (!body) return null;
+  if (body.valid === false && body.status) return String(body.status).toLowerCase();
   if (body.status) return String(body.status).toLowerCase();
   if (body.membership && body.membership.status) return String(body.membership.status).toLowerCase();
   return null;
+}
+
+function parseProductId(body) {
+  if (!body) return null;
+  return body.product_id || body.product || body.access_pass ||
+    (body.membership && (body.membership.product_id || body.membership.product)) || null;
 }
 
 function statusIsActive(st) {
@@ -213,6 +220,24 @@ async function validateNow() {
     return false;
   }
   try {
+    var pre = await getMembership(key, token);
+    if (pre.status === 200 && pre.body) {
+      var preSt = parseMembershipStatus(pre.body);
+      if (!statusIsActive(preSt)) {
+        _ok = false;
+        _lastError = "membership_status_" + (preSt || "unknown");
+        _lastCheck = Date.now();
+        return false;
+      }
+      var preProduct = parseProductId(pre.body);
+      if (preProduct && !isAllowedProductId(preProduct)) {
+        _ok = false;
+        _lastError = "product_not_allowed_" + preProduct;
+        _lastCheck = Date.now();
+        return false;
+      }
+    }
+
     var res = await postValidate(key, token, {
       hwid: machineId(),
       app: "orb-live-trader",
@@ -226,11 +251,11 @@ async function validateNow() {
         _lastCheck = Date.now();
         return false;
       }
-      var productId = res.body && (res.body.product_id || (res.body.membership && res.body.membership.product_id));
+      var productId = parseProductId(res.body);
       if (!productId && allowedProductIds().length) {
-        var mem = await getMembership(key, token);
+        var mem = pre.status === 200 ? pre : await getMembership(key, token);
         if (mem.status === 200 && mem.body) {
-          productId = mem.body.product_id;
+          productId = parseProductId(mem.body);
           st = parseMembershipStatus(mem.body) || st;
           if (!statusIsActive(st)) {
             _ok = false;
@@ -252,7 +277,8 @@ async function validateNow() {
       return true;
     }
     _ok = false;
-    var errMsg = (res.body && (res.body.error || res.body.message)) || "";
+    var errRaw = (res.body && (res.body.error || res.body.message)) || "";
+    var errMsg = typeof errRaw === "object" ? (errRaw.message || JSON.stringify(errRaw)) : String(errRaw);
     _lastError = "whop_http_" + res.status + (errMsg ? (":" + errMsg) : "");
     _lastCheck = Date.now();
     return false;

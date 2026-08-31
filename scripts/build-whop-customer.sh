@@ -170,7 +170,7 @@ PY
 cat > "$DEST/.env.example" <<'EOF'
 # === Whop (required) ===
 # Paste the license key from your Whop purchase (Software Licensing).
-# Format: uppercase letters/numbers with dashes, e.g. ABCD12-EF3456-GH7890
+# Format: uppercase letters/numbers with dashes, e.g. T-D9825F-713A53FD-DD2E4CW
 WHOP_LICENSE_KEY=
 
 # === Robinhood ===

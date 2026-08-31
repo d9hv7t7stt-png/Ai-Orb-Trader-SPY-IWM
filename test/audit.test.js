@@ -374,6 +374,7 @@ test("cross_entry_enabled defaults true and persists", function() {
 test("Whop license key format accepts dash-separated uppercase", function() {
   var whop = require("../scripts/whop-customer-templates/whopLicense");
   assert.strictEqual(whop.isLicenseKeyFormat("ABCD12-EF3456-GH7890"), true);
+  assert.strictEqual(whop.isLicenseKeyFormat("T-D9825F-713A53FD-DD2E4CW"), true);
   assert.strictEqual(whop.isLicenseKeyFormat("abcd12-ef3456-gh7890"), false);
   assert.strictEqual(whop.isLicenseKeyFormat("NODASHES"), false);
   assert.strictEqual(whop.isLicenseKeyFormat(""), false);
