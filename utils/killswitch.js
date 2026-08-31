@@ -57,9 +57,9 @@ async function flattenAll(reason) {
   settings.setTradingEnabled(false);
   stateModule.logEvent("KILL_SWITCH", "Flatten all — live entries disabled");
   var out = [];
-  for (var i = 0; i < 2; i++) {
-    var t = i === 0 ? "SPY" : "IWM";
-    var rows = await flattenTicker(t, reason);
+  var tickers = require("./liveTickers").liveTickers();
+  for (var i = 0; i < tickers.length; i++) {
+    var rows = await flattenTicker(tickers[i], reason);
     out = out.concat(rows);
   }
   return { ok: true, trading_enabled: false, closed: out };

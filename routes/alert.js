@@ -88,7 +88,7 @@ function recentlySeen(ticker, event) {
 }
 
 function isLiveTicker(ticker) {
-  return ticker === "SPY" || ticker === "IWM";
+  return require("../utils/liveTickers").isLiveTicker(ticker);
 }
 
 async function handleAlert(payload) {

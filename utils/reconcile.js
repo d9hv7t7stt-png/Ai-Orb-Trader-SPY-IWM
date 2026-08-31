@@ -96,7 +96,7 @@ async function reconcileRhPositions() {
 
   var rhPositions = fetched.positions || [];
   stateModule.logEvent("RECONCILE", "RH open option positions: " + rhPositions.length);
-  var tickers = ["SPY", "IWM"];
+  var tickers = require("./liveTickers").liveTickers();
   var synced = [];
 
   for (var i = 0; i < tickers.length; i++) {

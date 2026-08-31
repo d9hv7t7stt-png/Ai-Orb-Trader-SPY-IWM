@@ -8,6 +8,7 @@ var rh = require("./robinhood");
 var yahoo = require("./yahoo");
 var pnlUtil = require("./pnl");
 var reconcile = require("./reconcile");
+var liveTickers = require("./liveTickers");
 
 var lastReconcileMs = 0;
 var RECONCILE_INTERVAL_MS = 5 * 60 * 1000;
@@ -69,7 +70,7 @@ async function checkProfitTiers() {
   }
 
   var s = stateModule.getState();
-  var tickers = ["SPY", "IWM"];
+  var tickers = liveTickers.liveTickers();
   var fetched = await rh.fetchOpenOptionPositions();
   var rhPositions = fetched.ok ? (fetched.positions || []) : [];
   if (!fetched.ok) {
