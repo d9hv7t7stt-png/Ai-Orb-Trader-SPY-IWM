@@ -145,6 +145,41 @@ async function reconcileRhPositions() {
     var side = normalizeSide(rhPos) || (statePos && statePos.side) || null;
     if (!side) continue;
 
+    // Dual-leg live positions: sync each leg to its RH option independently.
+    if (statePos && statePos.legs && statePos.legs.length && !statePos.stopped) {
+      var legSynced = false;
+      for (var li = 0; li < statePos.legs.length; li++) {
+        var leg = statePos.legs[li];
+        if (!leg || leg.contracts < 1) continue;
+        var legMatch = {
+          side: leg.side || statePos.side,
+          strike: leg.strike,
+          expiry: leg.expiry,
+          instrumentUrl: leg.instrumentUrl
+        };
+        var rhLeg = findRhPosition(rhPositions, ticker, legMatch);
+        if (!rhLeg) continue;
+        var legQty = Math.max(0, Math.floor(rh.optionPositionQty(rhLeg)));
+        var legMark = await rh.getOptionMarkByUrl(rhLeg.option);
+        var legFill = fillFromRhPosition(rhLeg, legMark);
+        leg.contracts = legQty;
+        if (rhLeg.option) leg.instrumentUrl = rhLeg.option;
+        if (legFill.strike) leg.strike = legFill.strike;
+        if (legFill.expiry) leg.expiry = legFill.expiry;
+        if (legFill.entryPrice > 0) {
+          if (!(leg.entryPrice > 0) || entryLooksInflated(leg.entryPrice, legFill.entryPrice, legMark)) {
+            leg.entryPrice = legFill.entryPrice;
+          }
+        }
+        legSynced = true;
+      }
+      if (legSynced) {
+        stateModule.setPositionLegs(ticker, statePos.legs);
+        synced.push(ticker);
+      }
+      continue;
+    }
+
     var qty = Math.max(1, Math.floor(rh.optionPositionQty(rhPos)));
     var mark = await rh.getOptionMarkByUrl(rhPos.option);
     var fill = fillFromRhPosition(rhPos, mark);

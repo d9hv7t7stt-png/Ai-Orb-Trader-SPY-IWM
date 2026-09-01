@@ -415,22 +415,21 @@ async function closeOptionPosition(ticker, contracts, reason, matchOpts) {
 
   const pos = pickRhPosition(matching, matchOpts);
   if (!pos) return { ok: false, error: "No matching open position found" };
-  const quoteRes = await authedRequest("GET", `/marketdata/options/?instruments=${encodeURIComponent(pos.option)}`, null, "json");
+
+  // Use the open position's instrument URL directly — re-resolving via expiry/strike
+  // can fail on 0DTE same-day contracts even though RH still holds the position.
+  const instrumentUrl = pos.option || matchOpts.instrumentUrl || null;
+  if (!instrumentUrl) return { ok: false, error: "No instrument URL on open position" };
+
+  const quoteRes = await authedRequest("GET", `/marketdata/options/?instruments=${encodeURIComponent(instrumentUrl)}`, null, "json");
   const bidPrice = quoteRes.results?.[0]?.bid_price || "0.10";
   const limitPrice = (parseFloat(bidPrice) * 0.95).toFixed(2);
-
-  const expiry = pos.expiration_date || pos.option.split("/").slice(-2)[0];
-  const strike = pos.strike_price;
-  const optionType = pos.option_type;
-
-  const instrument = await getOptionInstrument(ticker, expiry, strike, optionType);
-  if (!instrument) return { ok: false, error: "Could not find instrument to close" };
 
   const order = {
     account: `https://api.robinhood.com/accounts/${process.env.RH_ACCOUNT_NUMBER}/`,
     direction: "credit",
     legs: [{
-      option: instrument.url,
+      option: instrumentUrl,
       position_effect: "close",
       ratio_quantity: 1,
       side: "sell"

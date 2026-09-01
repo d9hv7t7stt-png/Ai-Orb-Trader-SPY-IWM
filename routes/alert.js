@@ -48,8 +48,11 @@ async function notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close, 
 
 async function closeLiveOrLog(ticker, contracts, reason) {
   var pos = stateModule.getPosition(ticker);
-  if (pos && pos.legs && pos.legs.length && contracts >= pos.contracts) {
-    return trayd.closeAllLegs(ticker, reason);
+  if (pos && pos.legs && pos.legs.length) {
+    var openLegs = pos.legs.filter(function(l) { return l && l.contracts > 0; });
+    if (openLegs.length > 1 || (pos.dualLeg && openLegs.length >= 1 && contracts >= pos.contracts)) {
+      return trayd.closeAllLegs(ticker, reason);
+    }
   }
   return trayd.closeLiveOrLog(ticker, contracts, reason);
 }
