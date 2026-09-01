@@ -265,6 +265,40 @@ app.get("/api/grok/tiktok/daily", authguard.requireSecret, (req, res) => {
   res.json(feed);
 });
 
+// Build (or rebuild) today's packages from live paper account state — works in production.
+app.get("/api/grok/tiktok/build", authguard.requireSecret, (req, res) => {
+  try {
+    var chans = (typeof discord.getChannels === "function") ? discord.getChannels() : [];
+    if (!chans.length) {
+      return res.status(503).json({
+        error: "No Discord paper channels active — set DISCORD_WEBHOOK_URL / _FREE / _SPY0DTE / _QQQ"
+      });
+    }
+    var built = [];
+    for (var i = 0; i < chans.length; i++) {
+      var snap = chans[i].grokSnapshot();
+      var out = grokContent.buildAndSave(snap);
+      built.push({
+        channel: snap.channel.id,
+        name: snap.channel.name,
+        date: snap.date,
+        headline: out.package.headline,
+        trades: out.package.stats.totalTrades
+      });
+    }
+    var date = built[0] && built[0].date;
+    var feed = date ? (grokContent.loadDailyFeed(date) || grokContent.refreshDailyFeed(date)) : null;
+    res.json({
+      ok: true,
+      built: built,
+      dailyUrl: "/api/grok/tiktok/daily?secret=…",
+      feed: feed
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/api/reauth", authguard.requireSecret, async (req, res) => {
   try {
     rh.setToken(null);
