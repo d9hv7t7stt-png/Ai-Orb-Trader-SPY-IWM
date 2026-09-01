@@ -358,6 +358,31 @@ app.get("/api/discord/orb", authguard.requireSecret, async (req, res) => {
   }
 });
 
+// Replay paper entry Discord alerts (e.g. after a missed TV webhook). Does not place live orders.
+app.get("/api/discord/entry", authguard.requireSecret, async (req, res) => {
+  try {
+    var ticker = ((req.query.ticker) || "SPY").toUpperCase();
+    var side = ((req.query.side) || "call").toLowerCase();
+    if (side !== "call" && side !== "put") return res.status(400).json({ error: "side must be call or put" });
+    if (ticker !== "SPY" && ticker !== "IWM" && ticker !== "QQQ") return res.status(400).json({ error: "invalid ticker" });
+    await orbUtil.ensureOrbForTicker(ticker);
+    if (ticker === "IWM") await orbUtil.ensureOrbForTicker("SPY");
+    var s = getState();
+    var orb = (s.orb && s.orb[ticker]) || {};
+    var force = String(req.query.force || "1") !== "0";
+    var posted = await discord.onEntry(ticker, side, null, orb.high, orb.low, null, { force: force });
+    res.json({
+      ok: true,
+      posted: posted,
+      ticker: ticker,
+      side: side,
+      orb: { high: orb.high, low: orb.low, mid: orb.mid }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get("/api/queue", authguard.requireSecret, (req, res) => {
   res.json(webhookQueue.summary());
 });
