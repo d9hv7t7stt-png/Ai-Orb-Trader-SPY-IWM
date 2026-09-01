@@ -447,6 +447,122 @@ test("Sunday premarket tickers scoped per Discord channel", function() {
   );
 });
 
+console.log("grokContent");
+var grokContent = require("../utils/grokContent");
+
+test("builds green-day TikTok package with grok prompt", function() {
+  var snap = {
+    date: "2026-08-31",
+    channel: { id: "spy0dte", name: "SPY ORB Trader", theme: "spy", tradeTicker: "SPY", signalTickers: ["SPY"] },
+    trades: [
+      { ticker: "SPY 0DTE", side: "call", entry: 2.5, maxPrice: 3.2, maxGainPct: 28, totalProfit: 350, leg: "SPY:0" },
+      { ticker: "SPY 1DTE", side: "call", entry: 3.0, maxPrice: 3.1, maxGainPct: 3.3, totalProfit: -80, leg: "SPY:1" }
+    ],
+    wins: 1,
+    losses: 1,
+    balance: 10270,
+    startingBalance: 10000,
+    pnl: { daily: 270, weekly: 500, monthly: 1200, allTime: 270 },
+    unrealized: 0
+  };
+  var pkg = grokContent.buildPackage(snap);
+  assert.strictEqual(pkg.headline.label, "GREEN DAY");
+  assert.strictEqual(pkg.stats.totalTrades, 2);
+  assert.strictEqual(pkg.stats.winRate, 50);
+  assert.strictEqual(pkg.highlights.best.totalProfit, 350);
+  assert.ok(pkg.tiktok.hook.indexOf("GREEN DAY") >= 0);
+  assert.ok(pkg.tiktok.hashtags.indexOf("#SPY") >= 0);
+  assert.ok(pkg.grokPrompt.indexOf("SPY ORB Trader") >= 0);
+  assert.ok(pkg.grokPrompt.indexOf("Not financial advice") >= 0);
+});
+
+test("builds red-day package with no trades", function() {
+  var snap = {
+    date: "2026-08-30",
+    channel: { id: "qqq", name: "QQQ ORB Trader", theme: "qqq", tradeTicker: "QQQ", signalTickers: ["QQQ"] },
+    trades: [],
+    wins: 0,
+    losses: 0,
+    balance: 10000,
+    startingBalance: 10000,
+    pnl: { daily: -120, weekly: -120, monthly: -120, allTime: -120 },
+    unrealized: 0
+  };
+  var pkg = grokContent.buildPackage(snap);
+  assert.strictEqual(pkg.headline.label, "RED DAY");
+  assert.strictEqual(pkg.stats.totalTrades, 0);
+  assert.strictEqual(pkg.highlights.best, null);
+  assert.ok(pkg.tiktok.beats.some(function(b) { return b.indexOf("No closed trades") >= 0; }));
+});
+
+test("save and load package round-trip", function() {
+  var snap = {
+    date: "2099-01-15",
+    channel: { id: "test-grok", name: "Test Channel", theme: "default", tradeTicker: "SPXW", signalTickers: ["SPY"] },
+    trades: [{ ticker: "SPXW 0DTE", side: "put", entry: 4, maxPrice: 5, maxGainPct: 25, totalProfit: 100, leg: "SPXW:0" }],
+    wins: 1,
+    losses: 0,
+    balance: 50100,
+    startingBalance: 50000,
+    pnl: { daily: 100, weekly: 100, monthly: 100, allTime: 100 },
+    unrealized: 0
+  };
+  var saved = grokContent.buildAndSave(snap);
+  assert.ok(saved.paths.jsonPath);
+  var loaded = grokContent.loadPackage("2099-01-15", "test-grok");
+  assert.strictEqual(loaded.channel.id, "test-grok");
+  assert.strictEqual(loaded.trades.length, 1);
+  var prompt = grokContent.loadPrompt("2099-01-15", "test-grok");
+  assert.ok(prompt && prompt.indexOf("Test Channel") >= 0);
+  var all = grokContent.loadAllForDate("2099-01-15");
+  assert.ok(all.channels["test-grok"]);
+  try {
+    require("fs").unlinkSync(saved.paths.jsonPath);
+    require("fs").unlinkSync(saved.paths.promptPath);
+    require("fs").unlinkSync(saved.paths.allPath);
+    if (saved.paths.dailyFeedPath && require("fs").existsSync(saved.paths.dailyFeedPath)) {
+      require("fs").unlinkSync(saved.paths.dailyFeedPath);
+    }
+    require("fs").rmdirSync(require("path").join(grokContent.contentRoot(), "2099-01-15"));
+  } catch (e) { /* cleanup best-effort */ }
+});
+
+test("daily feed bundles channel packages for Grok Bot pull", function() {
+  var date = "2099-02-01";
+  var snaps = [
+    {
+      date: date,
+      channel: { id: "main", name: "Argus ORB Trader 50K", theme: "default", tradeTicker: "SPXW", signalTickers: ["SPY"] },
+      trades: [], wins: 0, losses: 0, balance: 50000, startingBalance: 50000,
+      pnl: { daily: 200, weekly: 200, monthly: 200, allTime: 200 }, unrealized: 0
+    },
+    {
+      date: date,
+      channel: { id: "spy0dte", name: "SPY ORB Trader", theme: "spy", tradeTicker: "SPY", signalTickers: ["SPY"] },
+      trades: [], wins: 0, losses: 0, balance: 10000, startingBalance: 10000,
+      pnl: { daily: -50, weekly: -50, monthly: -50, allTime: -50 }, unrealized: 0
+    }
+  ];
+  grokContent.buildAndSave(snaps[0]);
+  var second = grokContent.buildAndSave(snaps[1]);
+  var feed = grokContent.loadDailyFeed(date);
+  assert.strictEqual(feed.videoCount, 2);
+  assert.strictEqual(feed.tiktokAccounts, 1);
+  assert.strictEqual(feed.channels.length, 2);
+  assert.ok(feed.grokBotPrompt.indexOf("VIDEO 1/2") >= 0);
+  assert.ok(feed.grokBotPrompt.indexOf("VIDEO 2/2") >= 0);
+  assert.ok(feed.grokBotPrompt.indexOf("connected TikTok account") >= 0);
+  try {
+    require("fs").unlinkSync(second.paths.jsonPath);
+    require("fs").unlinkSync(require("path").join(grokContent.contentRoot(), date, "main.json"));
+    require("fs").unlinkSync(require("path").join(grokContent.contentRoot(), date, "main-grok-prompt.txt"));
+    require("fs").unlinkSync(require("path").join(grokContent.contentRoot(), date, "spy0dte-grok-prompt.txt"));
+    require("fs").unlinkSync(second.paths.allPath);
+    require("fs").unlinkSync(second.paths.dailyFeedPath);
+    require("fs").rmdirSync(require("path").join(grokContent.contentRoot(), date));
+  } catch (e) { /* cleanup best-effort */ }
+});
+
 if (process.exitCode) {
   console.error("\nAUDIT TESTS FAILED");
   process.exit(1);
