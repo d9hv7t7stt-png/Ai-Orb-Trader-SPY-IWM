@@ -599,6 +599,39 @@ test("daily feed bundles channel packages for Grok Bot pull", function() {
   } catch (e) { /* cleanup best-effort */ }
 });
 
+console.log("qqqYahooSignals");
+var qqqYahoo = require("../utils/qqqYahooSignals");
+test("QQQ Yahoo picks breakout long above ORB high", function() {
+  assert.strictEqual(qqqYahoo.pickSignalEvent(708.5, 707.69, 706.21, null), "breakout_long");
+});
+test("QQQ Yahoo picks breakout short below ORB low", function() {
+  assert.strictEqual(qqqYahoo.pickSignalEvent(705.5, 707.69, 706.21, null), "breakout_short");
+});
+test("QQQ Yahoo stop long at ORB mid when in call", function() {
+  assert.strictEqual(qqqYahoo.pickSignalEvent(706.5, 707.69, 706.21, "call"), "stop_long");
+});
+test("QQQ Yahoo stop short at ORB mid when in put", function() {
+  assert.strictEqual(qqqYahoo.pickSignalEvent(707.5, 707.69, 706.21, "put"), "stop_short");
+});
+test("QQQ Yahoo no signal inside range when flat", function() {
+  assert.strictEqual(qqqYahoo.pickSignalEvent(707.0, 707.69, 706.21, null), null);
+});
+test("QQQ Yahoo uses last fully closed 5m bar", function() {
+  var now = 1000000;
+  var chart = {
+    chart: {
+      result: [{
+        timestamp: [now - 600, now - 300, now - 60],
+        indicators: { quote: [{ close: [706, 707, 708], high: [706, 707, 708], low: [705, 706, 707] }] },
+        meta: { currentTradingPeriod: { regular: { start: now - 10000 } } }
+      }]
+    }
+  };
+  var bar = qqqYahoo.getLatestClosedBar(chart, now);
+  assert.strictEqual(bar.ts, now - 300);
+  assert.strictEqual(bar.close, 707);
+});
+
 if (process.exitCode) {
   console.error("\nAUDIT TESTS FAILED");
   process.exit(1);
