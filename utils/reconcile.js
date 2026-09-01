@@ -158,7 +158,14 @@ async function reconcileRhPositions() {
           instrumentUrl: leg.instrumentUrl
         };
         var rhLeg = findRhPosition(rhPositions, ticker, legMatch);
-        if (!rhLeg) continue;
+        if (!rhLeg) {
+          if (leg.contracts > 0) {
+            stateModule.logEvent("RECONCILE", ticker + " DTE" + leg.dteTag + " RH flat — zeroing leg in state");
+            leg.contracts = 0;
+            legSynced = true;
+          }
+          continue;
+        }
         var legQty = Math.max(0, Math.floor(rh.optionPositionQty(rhLeg)));
         var legMark = await rh.getOptionMarkByUrl(rhLeg.option);
         var legFill = fillFromRhPosition(rhLeg, legMark);
@@ -175,6 +182,10 @@ async function reconcileRhPositions() {
       }
       if (legSynced) {
         stateModule.setPositionLegs(ticker, statePos.legs);
+        var refreshed = stateModule.getPosition(ticker);
+        if (refreshed && refreshed.contracts <= 0 && !refreshed.stopped) {
+          stateModule.closePosition(ticker, "reconcile: all legs flat");
+        }
         synced.push(ticker);
       }
       continue;
