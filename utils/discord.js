@@ -115,27 +115,39 @@ function etISODate() { return new Date().toLocaleDateString("en-CA", { timeZone:
 var DISCORD_FIELD_MAX = 1024;
 var DISCORD_FIELD_SAFE = 980;
 
-function formatTradeLines(trades) {
-  if (!trades || !trades.length) return "No closed trades today";
-  var lines = "";
-  var shown = 0;
+function formatTradeLine(t) {
+  var e = t.totalProfit >= 0 ? "✅" : "🔴";
+  return e + " **" + t.ticker + " " + t.side.toUpperCase() + ":** "
+    + formatMoney(t.totalProfit) + " · entry $" + (t.entry || 0).toFixed(2)
+    + " · max " + formatPct(t.maxGainPct || 0);
+}
+
+function chunkTradeLines(trades) {
+  if (!trades || !trades.length) return ["No closed trades today"];
+  var chunks = [];
+  var current = "";
   for (var i = 0; i < trades.length; i++) {
-    var t = trades[i];
-    var e = t.totalProfit >= 0 ? "✅" : "🔴";
-    var block = e + " **" + t.ticker + " " + t.side.toUpperCase() + ":** "
-      + formatMoney(t.totalProfit) + " · entry $" + (t.entry || 0).toFixed(2)
-      + " · max " + formatPct(t.maxGainPct || 0) + "\n";
-    if ((lines + block).length > DISCORD_FIELD_SAFE) {
-      var remaining = trades.length - shown;
-      if (remaining > 0) {
-        lines += "_…and " + remaining + " more trade(s) — totals below reflect full session._";
-      }
-      break;
+    var block = formatTradeLine(trades[i]) + "\n";
+    if (block.length > DISCORD_FIELD_SAFE) {
+      if (current) chunks.push(current.trim());
+      chunks.push(block.trim());
+      current = "";
+      continue;
     }
-    lines += block;
-    shown++;
+    if (current.length + block.length > DISCORD_FIELD_SAFE) {
+      chunks.push(current.trim());
+      current = block;
+    } else {
+      current += block;
+    }
   }
-  return lines;
+  if (current) chunks.push(current.trim());
+  return chunks.length ? chunks : ["No closed trades today"];
+}
+
+// Back-compat helper — first chunk only (tests / callers).
+function formatTradeLines(trades) {
+  return chunkTradeLines(trades)[0];
 }
 
 function formatOrbSource(source) {
@@ -663,20 +675,20 @@ function createChannel(cfg) {
     var color = w.daily >= 0 ? 0x00e5a0 : 0xff4d6a;
     var emoji = w.daily >= 0 ? "📈" : "📉";
     var dailyPct = account.startingBalance > 0 ? (w.daily / account.startingBalance) * 100 : 0;
-    var tradeLines = formatTradeLines(trades);
+    var tradeChunks = chunkTradeLines(trades);
     var dayLabel = w.daily >= 0 ? "GREEN DAY" : "RED DAY";
     var posted = await send({
       color: color,
       title: emoji + " " + dayLabel + " " + formatMoney(w.daily) + " — Daily Summary",
       fields: [
-        { name: "Trades (" + trades.length + ")", value: tradeLines.slice(0, DISCORD_FIELD_MAX), inline: false },
         { name: "Net Profit (Today)", value: formatMoney(w.daily) + " (" + formatPct(dailyPct) + ")", inline: false },
         { name: "Unrealized (Open Positions)", value: formatMoney(unreal), inline: false },
         { name: "Weekly", value: formatMoney(w.weekly), inline: true },
         { name: "Monthly", value: formatMoney(w.monthly), inline: true },
         { name: "All-Time", value: formatMoney(w.allTime), inline: true },
         { name: "Wins / Losses", value: account.wins + " / " + account.losses, inline: true },
-        { name: "Account Balance", value: formatMoney(account.balance), inline: true }
+        { name: "Account Balance", value: formatMoney(account.balance), inline: true },
+        { name: "Closed Trades", value: String(trades.length) + (tradeChunks.length > 1 ? " (split across " + tradeChunks.length + " messages)" : ""), inline: true }
       ],
       footer: { text: cfg.name + " | Starting Balance: " + formatMoney(account.startingBalance) },
       timestamp: new Date().toISOString()
@@ -685,6 +697,23 @@ function createChannel(cfg) {
     if (!posted) {
       console.log("[DISCORD][" + cfg.id + "] daily summary post failed — keeping closedToday for retry");
       return false;
+    }
+
+    for (var ci = 0; ci < tradeChunks.length; ci++) {
+      var partLabel = tradeChunks.length === 1
+        ? "Trades (" + trades.length + ")"
+        : "Trades " + (ci + 1) + "/" + tradeChunks.length + " (" + trades.length + " total)";
+      var partOk = await send({
+        color: color,
+        title: "📋 " + partLabel,
+        description: tradeChunks[ci].slice(0, DISCORD_FIELD_MAX),
+        footer: { text: cfg.name + " · Daily trade log" },
+        timestamp: new Date().toISOString()
+      }, false);
+      if (!partOk) {
+        console.log("[DISCORD][" + cfg.id + "] daily trade log part " + (ci + 1) + " failed");
+        return false;
+      }
     }
 
     try {
@@ -1333,6 +1362,7 @@ module.exports = {
   postExistingOrbs: postExistingOrbs,
   getChannels: function() { return channels; },
   formatTradeLines: formatTradeLines,
+  chunkTradeLines: chunkTradeLines,
   postDailySummaryForChannels: postDailySummaryForChannels,
   // test-route compatibility
   postGoodMorning: function(m) { return first().morning(m); },
