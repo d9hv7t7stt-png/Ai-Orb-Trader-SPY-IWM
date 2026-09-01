@@ -343,31 +343,7 @@ function createChannel(cfg) {
     return { key: key, pos: pos, label: posLabelFromPos(pos), contracts: contracts, price: price };
   }
 
-  async function entry(tradeTicker, side, optionPrice, orbHigh, orbLow, underlying, signalTicker) {
-    var existing = paperLegs.listLegsForTrade(account.positions, tradeTicker);
-    if (existing.length) {
-      var first = account.positions[existing[0]];
-      if (first && first.side === side) {
-        console.log("[PAPER][" + cfg.id + "] entry skipped — " + existing.length + " leg(s) already open for " + tradeTicker);
-        return false;
-      }
-      console.log("[PAPER][" + cfg.id + "] flipping " + tradeTicker + " " + first.side + " → " + side);
-      await fullClose(signalTicker || tradeTicker, optionPrice || 0);
-    }
-    var moveTargets = await paperLegs.getEntryMoveTargets(tradeTicker);
-    var opened = [];
-    var open1DTE = cfg.dualLeg !== false;
-    var leg0 = await openLeg(tradeTicker, side, 0, orbHigh, orbLow, underlying, moveTargets, optionPrice, signalTicker);
-    if (leg0) opened.push(leg0);
-    if (open1DTE) {
-      var leg1 = await openLeg(tradeTicker, side, 1, orbHigh, orbLow, underlying, moveTargets, null, signalTicker);
-      if (leg1) opened.push(leg1);
-    }
-    if (!opened.length) {
-      console.log("[PAPER][" + cfg.id + "] no legs opened for " + tradeTicker);
-      return false;
-    }
-
+  async function sendEntryEmbed(tradeTicker, side, orbHigh, orbLow, opened, signalTicker) {
     var dirLabel = side === "call" ? "LONG" : "SHORT";
     var color = side === "call" ? 0x00e5a0 : 0xff4d6a;
     var stop = (((parseFloat(orbHigh) || 0) + (parseFloat(orbLow) || 0)) / 2).toFixed(2);
@@ -397,6 +373,49 @@ function createChannel(cfg) {
       ]),
       footer: { text: footer() }, timestamp: new Date().toISOString()
     }, true);
+  }
+
+  async function entry(tradeTicker, side, optionPrice, orbHigh, orbLow, underlying, signalTicker, opts) {
+    opts = opts || {};
+    var force = !!opts.force;
+    var existing = paperLegs.listLegsForTrade(account.positions, tradeTicker);
+    if (existing.length) {
+      var firstPos = account.positions[existing[0]];
+      if (firstPos && firstPos.side === side) {
+        if (!force) {
+          console.log("[PAPER][" + cfg.id + "] entry skipped — " + existing.length + " leg(s) already open for " + tradeTicker);
+          return false;
+        }
+        var replayed = existing.map(function(key) {
+          var pos = account.positions[key];
+          return {
+            key: key,
+            pos: pos,
+            label: posLabelFromPos(pos),
+            contracts: pos.contracts,
+            price: pos.entryPrice || pos.lastKnownPrice || 0
+          };
+        });
+        await sendEntryEmbed(tradeTicker, side, orbHigh, orbLow, replayed, signalTicker);
+        return true;
+      }
+      console.log("[PAPER][" + cfg.id + "] flipping " + tradeTicker + " " + firstPos.side + " → " + side);
+      await fullClose(signalTicker || tradeTicker, optionPrice || 0);
+    }
+    var moveTargets = await paperLegs.getEntryMoveTargets(tradeTicker);
+    var opened = [];
+    var open1DTE = cfg.dualLeg !== false;
+    var leg0 = await openLeg(tradeTicker, side, 0, orbHigh, orbLow, underlying, moveTargets, optionPrice, signalTicker);
+    if (leg0) opened.push(leg0);
+    if (open1DTE) {
+      var leg1 = await openLeg(tradeTicker, side, 1, orbHigh, orbLow, underlying, moveTargets, null, signalTicker);
+      if (leg1) opened.push(leg1);
+    }
+    if (!opened.length) {
+      console.log("[PAPER][" + cfg.id + "] no legs opened for " + tradeTicker);
+      return false;
+    }
+    await sendEntryEmbed(tradeTicker, side, orbHigh, orbLow, opened, signalTicker);
     return true;
   }
 
@@ -1014,7 +1033,7 @@ async function onEntry(ticker, side, optionPrice, orbHigh, orbLow, underlying, o
   var channelIds = opts && opts.channelIds ? opts.channelIds : null;
   var results = await forSignal(ticker, function(c) {
     var trade = c.tradeTickerForSignal(ticker);
-    return c.entry(trade, side, optionPrice, orbHigh, orbLow, underlying, ticker);
+    return c.entry(trade, side, optionPrice, orbHigh, orbLow, underlying, ticker, opts);
   }, channelIds);
   return (results || []).some(Boolean);
 }
