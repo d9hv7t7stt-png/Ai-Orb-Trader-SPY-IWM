@@ -86,11 +86,16 @@ function resetDay() {
 function setORB(ticker, high, low, source) {
   var h = parseFloat(high);
   var l = parseFloat(low);
+  if (!isFinite(h) || !isFinite(l) || h <= 0 || l <= 0 || h <= l) {
+    logEvent("ORB_REJECT", ticker + " flat/invalid range High=" + high + " Low=" + low + " (" + (source || "webhook") + ")");
+    return false;
+  }
   var mid = parseFloat(((h + l) / 2).toFixed(4));
   var etDate = etDateKey();
   state.orb[ticker] = { high: h, low: l, mid: mid, set: true, date: etDate, source: source || "webhook" };
   logEvent("ORB_SET", ticker + " High=" + h + " Low=" + l + " Mid=" + mid + " (" + (source || "webhook") + ")");
   savePersistedState();
+  return true;
 }
 
 function getPosition(ticker) { return state.positions[ticker]; }
