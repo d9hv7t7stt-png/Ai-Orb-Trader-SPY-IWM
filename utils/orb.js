@@ -4,17 +4,45 @@
 
 var yahoo = require("./yahoo");
 var stateModule = require("./state");
+var exitlogic = require("./exitlogic");
 
 var discord = null;
 try { discord = require("./discord"); } catch (e) { discord = null; }
 
 var ORB_INTERVAL = process.env.ORB_INTERVAL || "5m";
+var ORB_OPEN_MIN = 9 * 60 + 30;   // 9:30 AM ET bar start
+var ORB_READY_MIN = 9 * 60 + 35;  // wait for 5m bar to close
 
 function etDate() {
   return new Date().toLocaleDateString("en-US", { timeZone: "America/New_York" });
 }
 
+function barStartMinutesET(unixSec) {
+  var parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", hour12: false, hour: "2-digit", minute: "2-digit"
+  }).formatToParts(new Date(unixSec * 1000));
+  var hour = 0;
+  var minute = 0;
+  for (var i = 0; i < parts.length; i++) {
+    if (parts[i].type === "hour") hour = parseInt(parts[i].value, 10);
+    if (parts[i].type === "minute") minute = parseInt(parts[i].value, 10);
+  }
+  if (hour === 24) hour = 0;
+  return hour * 60 + minute;
+}
+
+function isValidRange(high, low) {
+  var h = parseFloat(high);
+  var l = parseFloat(low);
+  if (!isFinite(h) || !isFinite(l) || h <= 0 || l <= 0) return false;
+  return h > l;
+}
+
 function fetchOpeningRange(ticker) {
+  if (!exitlogic.isTradingDayET()) return Promise.resolve(null);
+  if (exitlogic.etMinutesOfDay() < ORB_READY_MIN) {
+    return Promise.resolve(null);
+  }
   return yahoo.getChart(ticker, ORB_INTERVAL, "1d").then(function(parsed) {
     try {
       if (!parsed) return null;
@@ -26,10 +54,21 @@ function fetchOpeningRange(ticker) {
       var regStart = result.meta && result.meta.currentTradingPeriod &&
                      result.meta.currentTradingPeriod.regular &&
                      result.meta.currentTradingPeriod.regular.start;
+
+      // Prefer the 9:30–9:35 ET opening bar once it has a real range.
       for (var i = 0; i < ts.length; i++) {
         if (regStart && ts[i] < regStart) continue;
-        if (q.high[i] != null && q.low[i] != null) {
+        if (barStartMinutesET(ts[i]) !== ORB_OPEN_MIN) continue;
+        if (isValidRange(q.high[i], q.low[i])) {
           return { high: q.high[i], low: q.low[i] };
+        }
+      }
+
+      // Fallback: first regular-session bar with high > low (still rejects flat bars).
+      for (var j = 0; j < ts.length; j++) {
+        if (regStart && ts[j] < regStart) continue;
+        if (isValidRange(q.high[j], q.low[j])) {
+          return { high: q.high[j], low: q.low[j] };
         }
       }
       return null;
@@ -55,7 +94,7 @@ async function populateTicker(ticker, force) {
     return { ticker: ticker, set: true, skipped: true };
   }
   var range = await fetchOpeningRange(ticker);
-  if (range && range.high && range.low) {
+  if (range && isValidRange(range.high, range.low)) {
     stateModule.setORB(ticker, range.high, range.low, "yahoo");
     await announceOrb(ticker, range.high, range.low, "yahoo");
     return { ticker: ticker, set: true, high: range.high, low: range.low, source: "yahoo" };
@@ -110,5 +149,7 @@ module.exports = {
   fetchOpeningRange: fetchOpeningRange,
   populateIfNeeded: populateIfNeeded,
   scheduleORBCapture: scheduleORBCapture,
-  ensureOrbForTicker: ensureOrbForTicker
+  ensureOrbForTicker: ensureOrbForTicker,
+  isValidRange: isValidRange,
+  barStartMinutesET: barStartMinutesET
 };

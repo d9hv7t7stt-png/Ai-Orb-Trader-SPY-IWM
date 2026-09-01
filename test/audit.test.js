@@ -447,6 +447,21 @@ test("Sunday premarket tickers scoped per Discord channel", function() {
   );
 });
 
+console.log("orb");
+var orbUtil = require("../utils/orb");
+
+test("rejects flat ORB range (high <= low)", function() {
+  assert.strictEqual(orbUtil.isValidRange(291.93, 291.93), false);
+  assert.strictEqual(orbUtil.isValidRange(292.5, 291.2), true);
+  assert.strictEqual(orbUtil.isValidRange(0, 0), false);
+});
+
+test("opening bar timestamp resolves to 9:30 ET", function() {
+  // Mon Aug 31 2026 9:30 AM ET = 1756647000 unix (verify)
+  var mins = orbUtil.barStartMinutesET(1756647000);
+  assert.strictEqual(mins, 9 * 60 + 30);
+});
+
 console.log("grokContent");
 var grokContent = require("../utils/grokContent");
 

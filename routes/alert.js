@@ -278,6 +278,10 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
   if (event === "orb_set") {
     if (orbHigh && orbLow) {
+      if (parseFloat(orbHigh) <= parseFloat(orbLow)) {
+        stateModule.logEvent("ORB_REJECT", ticker + " webhook flat range High=" + orbHigh + " Low=" + orbLow);
+        return { ok: false, error: ticker + " ORB rejected — high must be above low" };
+      }
       stateModule.setORB(ticker, orbHigh, orbLow, "webhook");
       var midWh = (parseFloat(orbHigh) + parseFloat(orbLow)) / 2;
       await notify("onOrbSet", [ticker, orbHigh, orbLow, midWh, "webhook"]);
@@ -296,7 +300,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
     stateModule.logEvent("ORB_WARN", ticker + " orb_set without levels — auto-fetching from Yahoo");
     var range = await orbUtil.fetchOpeningRange(ticker);
-    if (range && range.high && range.low) {
+    if (range && range.high > range.low) {
       stateModule.setORB(ticker, range.high, range.low, "yahoo");
       var midY = (range.high + range.low) / 2;
       await notify("onOrbSet", [ticker, range.high, range.low, midY, "yahoo"]);
