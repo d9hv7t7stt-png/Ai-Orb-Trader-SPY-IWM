@@ -632,6 +632,25 @@ test("QQQ Yahoo uses last fully closed 5m bar", function() {
   assert.strictEqual(bar.close, 707);
 });
 
+console.log("discord");
+test("daily summary trade field stays within Discord 1024 char limit", function() {
+  var discord = require("../utils/discord");
+  var trades = [];
+  for (var i = 0; i < 16; i++) {
+    trades.push({
+      ticker: "SPXW " + (i % 2 === 0 ? "0DTE" : "1DTE"),
+      side: i % 3 === 0 ? "call" : "put",
+      entry: 10 + i,
+      maxPrice: 12 + i,
+      maxGainPct: 20 + i,
+      totalProfit: i % 2 === 0 ? 250 : -120
+    });
+  }
+  var lines = discord.formatTradeLines(trades);
+  assert.ok(lines.length <= 1024, "trade field length " + lines.length);
+  assert.ok(lines.indexOf("SPXW") >= 0);
+});
+
 if (process.exitCode) {
   console.error("\nAUDIT TESTS FAILED");
   process.exit(1);

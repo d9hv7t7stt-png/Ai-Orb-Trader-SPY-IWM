@@ -95,7 +95,11 @@ async function httpPost(url, data) {
       method: "POST",
       headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) }
     };
-    const req = https.request(options, (res) => { let raw=""; res.on("data",c=>raw+=c); res.on("end",()=>resolve(raw)); });
+    const req = https.request(options, (res) => {
+      let raw = "";
+      res.on("data", function(c) { raw += c; });
+      res.on("end", function() { resolve({ status: res.statusCode, body: raw }); });
+    });
     req.on("error", reject);
     req.write(body); req.end();
   });
@@ -107,6 +111,32 @@ function formatMoney(n) {
 }
 function formatPct(n) { return (n >= 0 ? "+" : "") + n.toFixed(1) + "%"; }
 function etISODate() { return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }); }
+
+var DISCORD_FIELD_MAX = 1024;
+var DISCORD_FIELD_SAFE = 980;
+
+function formatTradeLines(trades) {
+  if (!trades || !trades.length) return "No closed trades today";
+  var lines = "";
+  var shown = 0;
+  for (var i = 0; i < trades.length; i++) {
+    var t = trades[i];
+    var e = t.totalProfit >= 0 ? "✅" : "🔴";
+    var block = e + " **" + t.ticker + " " + t.side.toUpperCase() + ":** "
+      + formatMoney(t.totalProfit) + " · entry $" + (t.entry || 0).toFixed(2)
+      + " · max " + formatPct(t.maxGainPct || 0) + "\n";
+    if ((lines + block).length > DISCORD_FIELD_SAFE) {
+      var remaining = trades.length - shown;
+      if (remaining > 0) {
+        lines += "_…and " + remaining + " more trade(s) — totals below reflect full session._";
+      }
+      break;
+    }
+    lines += block;
+    shown++;
+  }
+  return lines;
+}
 
 function formatOrbSource(source) {
   var s = String(source || "").toLowerCase();
@@ -281,19 +311,35 @@ function createChannel(cfg) {
   }
 
   async function send(embed, pingEveryone) {
-    if (!cfg.webhook) return;
+    if (!cfg.webhook) return false;
     var content = pingEveryone ? "@everyone" : null;
     var mentions = pingEveryone ? { parse: ["everyone"] } : { parse: [] };
     try {
-      await httpPost(cfg.webhook, { content: content, allowed_mentions: mentions, embeds: [embed] });
-    } catch (err) { console.log("[DISCORD_ERROR][" + cfg.id + "] " + err.message); }
+      var res = await httpPost(cfg.webhook, { content: content, allowed_mentions: mentions, embeds: [embed] });
+      if (!res || res.status < 200 || res.status >= 300) {
+        console.log("[DISCORD_ERROR][" + cfg.id + "] HTTP " + (res && res.status) + " " + ((res && res.body) || "").slice(0, 200));
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.log("[DISCORD_ERROR][" + cfg.id + "] " + err.message);
+      return false;
+    }
   }
   async function sendRaw(content, embed, pingEveryone) {
-    if (!cfg.webhook) return;
+    if (!cfg.webhook) return false;
     var mentions = pingEveryone ? { parse: ["everyone"] } : { parse: [] };
     try {
-      await httpPost(cfg.webhook, { content: content, allowed_mentions: mentions, embeds: [embed] });
-    } catch (err) { console.log("[DISCORD_ERROR][" + cfg.id + "] " + err.message); }
+      var res = await httpPost(cfg.webhook, { content: content, allowed_mentions: mentions, embeds: [embed] });
+      if (!res || res.status < 200 || res.status >= 300) {
+        console.log("[DISCORD_ERROR][" + cfg.id + "] HTTP " + (res && res.status) + " " + ((res && res.body) || "").slice(0, 200));
+        return false;
+      }
+      return true;
+    } catch (err) {
+      console.log("[DISCORD_ERROR][" + cfg.id + "] " + err.message);
+      return false;
+    }
   }
 
   function recordClose(pos, finalSalePnl, legKey) {
@@ -609,30 +655,21 @@ function createChannel(cfg) {
     return { daily: daily, weekly: weekly, monthly: monthly, allTime: pnlStore.allTime || 0 };
   }
 
-  async function dailySummary() {
+  async function dailySummary(opts) {
+    opts = opts || {};
+    var trades = opts.trades || account.closedToday;
     var w = pnlWindow();
     var unreal = unrealized();
     var color = w.daily >= 0 ? 0x00e5a0 : 0xff4d6a;
     var emoji = w.daily >= 0 ? "📈" : "📉";
     var dailyPct = account.startingBalance > 0 ? (w.daily / account.startingBalance) * 100 : 0;
-
-    var tradeLines = "";
-    account.closedToday.forEach(function(t) {
-      var e = t.totalProfit >= 0 ? "✅" : "🔴";
-      tradeLines += e + " **" + t.ticker + " " + t.side.toUpperCase() + ":**\n";
-      tradeLines += "   • Total Profit: " + formatMoney(t.totalProfit) + "\n";
-      tradeLines += "   • Entry: $" + (t.entry || 0).toFixed(2) + "\n";
-      tradeLines += "   • Max Price: $" + (t.maxPrice || 0).toFixed(2) + "\n";
-      tradeLines += "   • Max Gain: " + formatPct(t.maxGainPct || 0) + " (if sold at max)\n\n";
-    });
-    if (!tradeLines) tradeLines = "No closed trades today";
-
+    var tradeLines = formatTradeLines(trades);
     var dayLabel = w.daily >= 0 ? "GREEN DAY" : "RED DAY";
-    await send({
+    var posted = await send({
       color: color,
       title: emoji + " " + dayLabel + " " + formatMoney(w.daily) + " — Daily Summary",
       fields: [
-        { name: "Trades", value: tradeLines, inline: false },
+        { name: "Trades (" + trades.length + ")", value: tradeLines.slice(0, DISCORD_FIELD_MAX), inline: false },
         { name: "Net Profit (Today)", value: formatMoney(w.daily) + " (" + formatPct(dailyPct) + ")", inline: false },
         { name: "Unrealized (Open Positions)", value: formatMoney(unreal), inline: false },
         { name: "Weekly", value: formatMoney(w.weekly), inline: true },
@@ -645,11 +682,16 @@ function createChannel(cfg) {
       timestamp: new Date().toISOString()
     }, true);
 
+    if (!posted) {
+      console.log("[DISCORD][" + cfg.id + "] daily summary post failed — keeping closedToday for retry");
+      return false;
+    }
+
     try {
       var grokResult = grokContent.buildAndSave({
         date: etISODate(),
         channel: cfg,
-        trades: account.closedToday.slice(),
+        trades: trades.slice(),
         wins: account.wins,
         losses: account.losses,
         balance: account.balance,
@@ -662,7 +704,8 @@ function createChannel(cfg) {
       console.log("[GROK][" + cfg.id + "] package save failed: " + grokErr.message);
     }
 
-    account.closedToday = [];
+    if (!opts.preserveTrades) account.closedToday = [];
+    return true;
   }
 
   async function closeDigest() {
@@ -1158,7 +1201,11 @@ function scheduleUpdates(channel) {
 function scheduleDaily(channel) {
   (function next() {
     setTimeout(async function() {
-      if (exitlogic.isTradingDayET()) await channel.dailySummary();
+      try {
+        if (exitlogic.isTradingDayET()) await channel.dailySummary();
+      } catch (e) {
+        console.log("[DISCORD][" + channel.cfg.id + "] daily summary error: " + e.message);
+      }
       next();
     }, exitlogic.msUntilNextTradingTimeET(16, 0));
   })();
@@ -1248,6 +1295,36 @@ function resolveChannelTargets(channelSpec) {
   return chans.filter(function(c) { return ids.indexOf(c.cfg.id) >= 0; });
 }
 
+async function postDailySummaryForChannels(channelSpec, opts) {
+  opts = opts || {};
+  var grokContent = require("./grokContent");
+  var list = resolveChannelTargets(channelSpec);
+  var results = [];
+  for (var i = 0; i < list.length; i++) {
+    var c = list[i];
+    var trades = null;
+    if (opts.restoreFromGrok) {
+      var pkg = grokContent.loadPackage(opts.date || etISODate(), c.cfg.id);
+      if (pkg && pkg.trades && pkg.trades.length) {
+        trades = pkg.trades.map(function(t) {
+          return {
+            ticker: t.ticker,
+            side: t.side,
+            entry: t.entry,
+            maxPrice: t.maxPrice,
+            maxGainPct: t.maxGainPct,
+            totalProfit: t.totalProfit,
+            leg: t.leg || null
+          };
+        });
+      }
+    }
+    var ok = await c.dailySummary({ trades: trades, preserveTrades: true });
+    results.push({ channel: c.cfg.id, posted: !!ok, trades: trades ? trades.length : null });
+  }
+  return results;
+}
+
 module.exports = {
   initChannels: initChannels,
   onEntry: onEntry, onAdd: onAdd, onStop: onStop, onFullClose: onFullClose,
@@ -1255,6 +1332,8 @@ module.exports = {
   onOrbSet: onOrbSet,
   postExistingOrbs: postExistingOrbs,
   getChannels: function() { return channels; },
+  formatTradeLines: formatTradeLines,
+  postDailySummaryForChannels: postDailySummaryForChannels,
   // test-route compatibility
   postGoodMorning: function(m) { return first().morning(m); },
   postDailySummary: function() { return first().dailySummary(); },

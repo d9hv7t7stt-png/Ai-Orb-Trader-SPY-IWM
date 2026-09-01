@@ -359,6 +359,21 @@ app.get("/api/discord/orb", authguard.requireSecret, async (req, res) => {
   }
 });
 
+app.get("/api/discord/summary", authguard.requireSecret, async (req, res) => {
+  try {
+    var ch = req.query.channels || req.query.channel || "all";
+    var restore = String(req.query.restore || "1") !== "0";
+    var date = req.query.date || null;
+    var posted = await discord.postDailySummaryForChannels(ch, {
+      restoreFromGrok: restore,
+      date: date
+    });
+    res.json({ ok: true, posted: posted || [] });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Replay paper entry Discord alerts (e.g. after a missed TV webhook). Does not place live orders.
 app.get("/api/discord/entry", authguard.requireSecret, async (req, res) => {
   try {
