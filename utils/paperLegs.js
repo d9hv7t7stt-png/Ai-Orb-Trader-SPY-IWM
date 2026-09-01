@@ -4,7 +4,7 @@ var expectedMoveUtil = require("./expectedMove");
 
 var MOVE_HOT_ZONE_PCT = 0.0025;
 var MONITOR_INTERVAL_MS = 15000;
-var MARK_INTERVAL_MS = 30000;
+var MARK_INTERVAL_MS = 10000;
 var ONE_DTE_EXIT_FRAC = 0.75;
 var ZERO_DTE_EXIT_FRAC = 1.0;
 
