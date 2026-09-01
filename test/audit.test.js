@@ -633,10 +633,10 @@ test("QQQ Yahoo uses last fully closed 5m bar", function() {
 });
 
 console.log("discord");
-test("daily summary trade field stays within Discord 1024 char limit", function() {
+test("daily summary splits busy sessions across multiple Discord messages", function() {
   var discord = require("../utils/discord");
   var trades = [];
-  for (var i = 0; i < 16; i++) {
+  for (var i = 0; i < 30; i++) {
     trades.push({
       ticker: "SPXW " + (i % 2 === 0 ? "0DTE" : "1DTE"),
       side: i % 3 === 0 ? "call" : "put",
@@ -646,9 +646,14 @@ test("daily summary trade field stays within Discord 1024 char limit", function(
       totalProfit: i % 2 === 0 ? 250 : -120
     });
   }
-  var lines = discord.formatTradeLines(trades);
-  assert.ok(lines.length <= 1024, "trade field length " + lines.length);
-  assert.ok(lines.indexOf("SPXW") >= 0);
+  var chunks = discord.chunkTradeLines(trades);
+  assert.ok(chunks.length >= 2, "expected multiple chunks, got " + chunks.length);
+  chunks.forEach(function(ch, idx) {
+    assert.ok(ch.length <= 1024, "chunk " + idx + " length " + ch.length);
+  });
+  var joined = chunks.join("\n");
+  assert.ok(joined.indexOf("…and") < 0);
+  assert.strictEqual((joined.match(/SPXW/g) || []).length, 30);
 });
 
 if (process.exitCode) {
