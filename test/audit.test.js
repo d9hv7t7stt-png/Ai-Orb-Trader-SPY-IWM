@@ -196,6 +196,27 @@ test("authguard is off without WEBHOOK_SECRET", function() {
   assert.strictEqual(!!authguard.getSecret(), !!(process.env.WEBHOOK_SECRET || process.env.API_SECRET));
 });
 
+test("grok secret falls back to WEBHOOK_SECRET", function() {
+  var origGrok = process.env.GROK_API_SECRET;
+  var origWh = process.env.WEBHOOK_SECRET;
+  var origApi = process.env.API_SECRET;
+  delete process.env.GROK_API_SECRET;
+  delete process.env.WEBHOOK_SECRET;
+  delete process.env.API_SECRET;
+  assert.strictEqual(authguard.getGrokSecret(), null);
+  process.env.WEBHOOK_SECRET = "grok-only";
+  assert.strictEqual(authguard.getGrokSecret(), "grok-only");
+  delete process.env.WEBHOOK_SECRET;
+  process.env.GROK_API_SECRET = "grok-dedicated";
+  assert.strictEqual(authguard.getGrokSecret(), "grok-dedicated");
+  if (origGrok !== undefined) process.env.GROK_API_SECRET = origGrok;
+  else delete process.env.GROK_API_SECRET;
+  if (origWh !== undefined) process.env.WEBHOOK_SECRET = origWh;
+  else delete process.env.WEBHOOK_SECRET;
+  if (origApi !== undefined) process.env.API_SECRET = origApi;
+  else delete process.env.API_SECRET;
+});
+
 test("trade sizing preview matches live half+half", function() {
   var state = require("../utils/state");
   var sz = state.getTradeSizingFromTotal(7);

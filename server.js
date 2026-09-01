@@ -229,11 +229,11 @@ app.get("/api/pnl", authguard.requireSecret, (req, res) => {
   res.json(pnlUtil.aggregatePnL());
 });
 
-app.get("/api/grok/tiktok/dates", authguard.requireSecret, (req, res) => {
+app.get("/api/grok/tiktok/dates", authguard.requireGrokSecret, (req, res) => {
   res.json({ dates: grokContent.listDates() });
 });
 
-app.get("/api/grok/tiktok", authguard.requireSecret, (req, res) => {
+app.get("/api/grok/tiktok", authguard.requireGrokSecret, (req, res) => {
   var date = req.query.date;
   var channel = req.query.channel;
   if (!date) {
@@ -253,7 +253,7 @@ app.get("/api/grok/tiktok", authguard.requireSecret, (req, res) => {
   res.json(all);
 });
 
-app.get("/api/grok/tiktok/daily", authguard.requireSecret, (req, res) => {
+app.get("/api/grok/tiktok/daily", authguard.requireGrokSecret, (req, res) => {
   var date = req.query.date;
   if (!date) {
     var dates = grokContent.listDates();
@@ -266,7 +266,7 @@ app.get("/api/grok/tiktok/daily", authguard.requireSecret, (req, res) => {
 });
 
 // Build (or rebuild) today's packages from live paper account state — works in production.
-app.get("/api/grok/tiktok/build", authguard.requireSecret, (req, res) => {
+app.get("/api/grok/tiktok/build", authguard.requireGrokSecret, (req, res) => {
   try {
     var chans = (typeof discord.getChannels === "function") ? discord.getChannels() : [];
     if (!chans.length) {
@@ -458,7 +458,7 @@ if (authguard.allowTestRoutes()) {
     }
   });
 
-  app.get("/test/grok/tiktok/:channel", authguard.requireSecret, async (req, res) => {
+  app.get("/test/grok/tiktok/:channel", authguard.requireGrokSecret, async (req, res) => {
     try {
       var ch = req.params.channel;
       var chans = (typeof discord.getChannels === "function") ? discord.getChannels() : [];
@@ -486,7 +486,7 @@ if (authguard.allowTestRoutes()) {
   });
 }
 
-app.post("/webhook", authguard.requireSecret, (req, res) => {
+app.post("/webhook", (req, res) => {
   console.log("[WEBHOOK]", JSON.stringify(req.body));
   var item = webhookQueue.enqueue(req.body);
   res.status(200).json({ ok: true, accepted: true, queue_id: item.id });
@@ -499,7 +499,8 @@ app.get("*", (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, async () => {
   console.log("ORB server listening on port " + PORT);
-  if (authguard.getSecret()) console.log("[AUTH] Webhook/API secret enabled");
+  if (authguard.getSecret()) console.log("[AUTH] API secret enabled");
+  if (authguard.getGrokSecret()) console.log("[AUTH] Grok API secret enabled");
   await ensureLoggedIn();
   try {
     var recon = await reconcile.reconcileRhPositions();
