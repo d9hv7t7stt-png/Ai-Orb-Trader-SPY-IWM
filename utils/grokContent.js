@@ -197,6 +197,32 @@ function buildGrokPrompt(pkg) {
   return lines.join("\n");
 }
 
+function buildVideoPrompt(pkg) {
+  var h = pkg.headline;
+  var ticker = pkg.channel.tradeTicker || "ORB";
+  var tone = h.label === "GREEN DAY" ? "green neon profit" : "red loss recap with disciplined risk-management tone";
+  var parts = [
+    "Vertical 9:16 TikTok finance recap, cinematic fast cuts, modern trading desk aesthetic, " + tone + ".",
+    "Hero text: \"" + h.label + " " + h.dailyPnlFormatted + "\" (" + h.dailyPctFormatted + ").",
+    pkg.channel.name + " paper ORB session on " + ticker + ", " + pkg.date + ".",
+    pkg.stats.totalTrades + " closed legs, " + pkg.stats.wins + " wins / " + pkg.stats.losses + " losses.",
+    "Animate option trade cards showing " + ticker + " calls and puts with dollar P&L overlays."
+  ];
+  if (pkg.highlights.best) {
+    parts.push("Spotlight winning trade " + pkg.highlights.best.ticker + " "
+      + pkg.highlights.best.side.toUpperCase() + " " + pkg.highlights.best.totalProfitFormatted + ".");
+  }
+  if (pkg.highlights.worst && pkg.highlights.worst.totalProfit < 0) {
+    parts.push("Brief cut to toughest loss " + pkg.highlights.worst.totalProfitFormatted + " with stop-loss discipline message.");
+  }
+  parts.push("Closing frame: \"Not financial advice · Paper sim only\".");
+  return parts.join(" ");
+}
+
+function videoJobFile(date, channelId) {
+  return path.join(dayDir(date), channelId + "-video.json");
+}
+
 function buildPackage(snapshot) {
   var cfg = snapshot.channel;
   var w = snapshot.pnl;
@@ -279,6 +305,25 @@ function savePackage(pkg) {
   return { jsonPath: jsonPath, promptPath: promptPath, allPath: allPath };
 }
 
+function attachVideoToPackage(date, channelId, videoMeta) {
+  var pkg = loadPackage(date, channelId);
+  if (!pkg) return null;
+  pkg.video = videoMeta;
+  savePackage(pkg);
+  var allPath = allFile(date);
+  var all = readJsonSafe(allPath);
+  if (all && all.channels && all.channels[channelId]) {
+    all.channels[channelId].video = {
+      status: videoMeta.status,
+      url: videoMeta.videoUrl || null,
+      file: channelId + "-video.json"
+    };
+    all.updatedAt = new Date().toISOString();
+    fs.writeFileSync(allPath, JSON.stringify(all, null, 2));
+  }
+  return pkg;
+}
+
 function buildAndSave(snapshot) {
   var pkg = buildPackage(snapshot);
   var paths = savePackage(pkg);
@@ -326,12 +371,15 @@ module.exports = {
   contentRoot: contentRoot,
   buildPackage: buildPackage,
   buildGrokPrompt: buildGrokPrompt,
+  buildVideoPrompt: buildVideoPrompt,
   buildAndSave: buildAndSave,
   savePackage: savePackage,
+  attachVideoToPackage: attachVideoToPackage,
   listDates: listDates,
   loadPackage: loadPackage,
   loadAllForDate: loadAllForDate,
   loadPrompt: loadPrompt,
+  videoJobFile: videoJobFile,
   formatMoney: formatMoney,
   formatPct: formatPct
 };

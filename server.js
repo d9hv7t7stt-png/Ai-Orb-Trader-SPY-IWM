@@ -22,6 +22,7 @@ const expiryUtil = require("./utils/expiry");
 const webhookQueue = require("./utils/webhookQueue");
 const killswitch = require("./utils/killswitch");
 const grokContent = require("./utils/grokContent");
+const grokVideo = require("./utils/grokVideo");
 
 process.on("unhandledRejection", (err) => {
   console.error("[UNHANDLED_REJECTION]", err && err.message ? err.message : err);
@@ -253,6 +254,46 @@ app.get("/api/grok/tiktok", authguard.requireSecret, (req, res) => {
   res.json(all);
 });
 
+app.get("/api/grok/video", authguard.requireSecret, (req, res) => {
+  var date = req.query.date;
+  var channel = req.query.channel;
+  if (!date || !channel) return res.status(400).json({ error: "date and channel required" });
+  var job = grokVideo.loadJob(date, channel);
+  if (!job) return res.status(404).json({ error: "No video job for " + date + " / " + channel });
+  res.json(job);
+});
+
+app.post("/api/grok/video/generate", authguard.requireSecret, async (req, res) => {
+  try {
+    var date = req.query.date || req.body.date;
+    var channel = req.query.channel || req.body.channel;
+    if (!date || !channel) return res.status(400).json({ error: "date and channel required" });
+    if (!grokVideo.config().apiKey) return res.status(503).json({ error: "XAI_API_KEY not configured" });
+    var pkg = grokContent.loadPackage(date, channel);
+    if (!pkg) return res.status(404).json({ error: "No content package for " + date + " / " + channel });
+    var force = req.query.force === "1" || req.body.force === true;
+    grokVideo.queueGeneration(date, channel, pkg, { force: force, webhook: grokVideo.config().webhook });
+    res.json({ ok: true, queued: true, date: date, channel: channel, force: force });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.get("/api/grok/video/config", authguard.requireSecret, (req, res) => {
+  var c = grokVideo.config();
+  res.json({
+    enabled: c.enabled,
+    configured: grokVideo.isConfigured(),
+    channels: c.channels,
+    model: c.model,
+    duration: c.duration,
+    aspectRatio: c.aspectRatio,
+    resolution: c.resolution,
+    hasWebhook: !!c.webhook,
+    postToChannel: c.postToChannel
+  });
+});
+
 app.post("/api/reauth", authguard.requireSecret, async (req, res) => {
   try {
     rh.setToken(null);
@@ -438,6 +479,29 @@ if (authguard.allowTestRoutes()) {
       res.status(500).json({ error: e.message });
     }
   });
+
+  app.get("/test/grok/video/:channel", authguard.requireSecret, async (req, res) => {
+    try {
+      if (!grokVideo.config().apiKey) return res.status(503).json({ error: "Set XAI_API_KEY to test video generation" });
+      var ch = req.params.channel;
+      var chans = (typeof discord.getChannels === "function") ? discord.getChannels() : [];
+      var targets = ch === "all" ? chans : chans.filter(function(c) { return c.cfg.id === ch; });
+      if (!targets.length) return res.status(404).json({ error: "No channel: " + ch });
+      var results = [];
+      for (var i = 0; i < targets.length; i++) {
+        var snap = targets[i].grokSnapshot();
+        var saved = grokContent.buildAndSave(snap);
+        grokVideo.queueGeneration(saved.package.date, saved.package.channel.id, saved.package, {
+          force: req.query.force === "1",
+          webhook: grokVideo.config().webhook || targets[i].cfg.webhook
+        });
+        results.push({ channel: saved.package.channel.id, queued: true, date: saved.package.date });
+      }
+      res.json({ ok: true, results: results });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
 }
 
 app.post("/webhook", authguard.requireSecret, (req, res) => {
@@ -466,6 +530,12 @@ app.listen(PORT, async () => {
   scheduleProactiveRefresh();
   webhookQueue.startWorker(processWebhookPayload, 2000);
   discord.initChannels(rh.getToken.bind(rh));
+  if (grokVideo.isConfigured()) {
+    console.log("[GROK-VIDEO] auto-generation enabled for: " + grokVideo.config().channels.join(", "));
+    grokVideo.resumePendingJobs();
+  } else if (grokVideo.config().enabled) {
+    console.log("[GROK-VIDEO] GROK_VIDEO_AUTO=1 but XAI_API_KEY missing — video automation disabled");
+  }
   profitManager.startProfitManager();
   orbUtil.scheduleORBCapture();
 });

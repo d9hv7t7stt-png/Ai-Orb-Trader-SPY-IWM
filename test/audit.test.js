@@ -524,6 +524,40 @@ test("save and load package round-trip", function() {
   } catch (e) { /* cleanup best-effort */ }
 });
 
+test("buildVideoPrompt is cinematic and under 2k chars", function() {
+  var snap = {
+    date: "2026-08-31",
+    channel: { id: "main", name: "Argus ORB Trader 50K", theme: "default", tradeTicker: "SPXW", signalTickers: ["SPY"] },
+    trades: [{ ticker: "SPXW 0DTE", side: "call", entry: 4, maxPrice: 5, maxGainPct: 25, totalProfit: 500, leg: "SPXW:0" }],
+    wins: 1, losses: 0, balance: 50500, startingBalance: 50000,
+    pnl: { daily: 500, weekly: 500, monthly: 500, allTime: 500 }, unrealized: 0
+  };
+  var pkg = grokContent.buildPackage(snap);
+  var prompt = grokContent.buildVideoPrompt(pkg);
+  assert.ok(prompt.indexOf("9:16") >= 0);
+  assert.ok(prompt.indexOf("GREEN DAY") >= 0);
+  assert.ok(prompt.indexOf("SPXW") >= 0);
+  assert.ok(prompt.length < 2000);
+});
+
+test("grokVideo channel filter respects GROK_VIDEO_CHANNELS", function() {
+  var prevAuto = process.env.GROK_VIDEO_AUTO;
+  var prevKey = process.env.XAI_API_KEY;
+  var prevChannels = process.env.GROK_VIDEO_CHANNELS;
+  process.env.GROK_VIDEO_AUTO = "1";
+  process.env.XAI_API_KEY = "test-key";
+  process.env.GROK_VIDEO_CHANNELS = "spy0dte,qqq";
+  delete require.cache[require.resolve("../utils/grokVideo")];
+  var gv = require("../utils/grokVideo");
+  assert.strictEqual(gv.isEnabledForChannel("spy0dte"), true);
+  assert.strictEqual(gv.isEnabledForChannel("main"), false);
+  process.env.GROK_VIDEO_AUTO = prevAuto;
+  process.env.XAI_API_KEY = prevKey;
+  if (prevChannels == null) delete process.env.GROK_VIDEO_CHANNELS;
+  else process.env.GROK_VIDEO_CHANNELS = prevChannels;
+  delete require.cache[require.resolve("../utils/grokVideo")];
+});
+
 if (process.exitCode) {
   console.error("\nAUDIT TESTS FAILED");
   process.exit(1);
