@@ -22,6 +22,7 @@ const expiryUtil = require("./utils/expiry");
 const webhookQueue = require("./utils/webhookQueue");
 const killswitch = require("./utils/killswitch");
 const grokContent = require("./utils/grokContent");
+const qqqYahooSignals = require("./utils/qqqYahooSignals");
 
 process.on("unhandledRejection", (err) => {
   console.error("[UNHANDLED_REJECTION]", err && err.message ? err.message : err);
@@ -540,4 +541,5 @@ app.listen(PORT, async () => {
   discord.initChannels(rh.getToken.bind(rh));
   profitManager.startProfitManager();
   orbUtil.scheduleORBCapture();
+  qqqYahooSignals.startQqqYahooSignals();
 });
