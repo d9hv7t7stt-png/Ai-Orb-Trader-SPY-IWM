@@ -15,6 +15,7 @@ const expiryUtil = require("./expiry");
 const exitlogic = require("./exitlogic");
 const persist = require("./persist");
 const closeDigestUtil = require("./closeDigest");
+const grokContent = require("./grokContent");
 const technicalsUtil = require("./technicals");
 const paperLegs = require("./paperLegs");
 
@@ -625,6 +626,23 @@ function createChannel(cfg) {
       timestamp: new Date().toISOString()
     }, true);
 
+    try {
+      var grokResult = grokContent.buildAndSave({
+        date: etISODate(),
+        channel: cfg,
+        trades: account.closedToday.slice(),
+        wins: account.wins,
+        losses: account.losses,
+        balance: account.balance,
+        startingBalance: account.startingBalance,
+        pnl: w,
+        unrealized: unreal
+      });
+      console.log("[GROK][" + cfg.id + "] TikTok package → " + grokResult.paths.jsonPath);
+    } catch (grokErr) {
+      console.log("[GROK][" + cfg.id + "] package save failed: " + grokErr.message);
+    }
+
     account.closedToday = [];
   }
 
@@ -934,7 +952,20 @@ function createChannel(cfg) {
     closeDigest: closeDigest, sundayPremarket: sundayPremarket, expectedMoves: expectedMoves,
     orbSet: orbSet,
     pollMoveTargets: pollMoveTargets, pollOptionMarks: pollOptionMarks,
-    getAccount: function() { return account; }
+    getAccount: function() { return account; },
+    grokSnapshot: function() {
+      return {
+        date: etISODate(),
+        channel: cfg,
+        trades: account.closedToday.slice(),
+        wins: account.wins,
+        losses: account.losses,
+        balance: account.balance,
+        startingBalance: account.startingBalance,
+        pnl: pnlWindow(),
+        unrealized: unrealized()
+      };
+    }
   };
 }
 

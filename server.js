@@ -21,6 +21,7 @@ const reconcile = require("./utils/reconcile");
 const expiryUtil = require("./utils/expiry");
 const webhookQueue = require("./utils/webhookQueue");
 const killswitch = require("./utils/killswitch");
+const grokContent = require("./utils/grokContent");
 
 process.on("unhandledRejection", (err) => {
   console.error("[UNHANDLED_REJECTION]", err && err.message ? err.message : err);
@@ -228,6 +229,30 @@ app.get("/api/pnl", authguard.requireSecret, (req, res) => {
   res.json(pnlUtil.aggregatePnL());
 });
 
+app.get("/api/grok/tiktok/dates", authguard.requireSecret, (req, res) => {
+  res.json({ dates: grokContent.listDates() });
+});
+
+app.get("/api/grok/tiktok", authguard.requireSecret, (req, res) => {
+  var date = req.query.date;
+  var channel = req.query.channel;
+  if (!date) {
+    var dates = grokContent.listDates();
+    date = dates[0] || null;
+  }
+  if (!date) return res.status(404).json({ error: "No Grok content packages found" });
+  if (channel) {
+    var pkg = grokContent.loadPackage(date, channel);
+    if (!pkg) return res.status(404).json({ error: "No package for " + date + " / " + channel });
+    var includePrompt = req.query.prompt === "1" || req.query.prompt === "true";
+    if (includePrompt) pkg = Object.assign({}, pkg, { grokPromptFile: grokContent.loadPrompt(date, channel) });
+    return res.json(pkg);
+  }
+  var all = grokContent.loadAllForDate(date);
+  if (!all) return res.status(404).json({ error: "No packages for " + date });
+  res.json(all);
+});
+
 app.post("/api/reauth", authguard.requireSecret, async (req, res) => {
   try {
     rh.setToken(null);
@@ -382,6 +407,33 @@ if (authguard.allowTestRoutes()) {
       else targets = chans.filter(function(c){ return c.cfg.id === ch; });
       for (var i = 0; i < targets.length; i++) await targets[i].sundayPremarket();
       res.json({ ok: true, tested: targets.map(function(c){ return c.cfg.id; }), active: chans.map(function(c){ return c.cfg.id; }) });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get("/test/grok/tiktok/:channel", authguard.requireSecret, async (req, res) => {
+    try {
+      var ch = req.params.channel;
+      var chans = (typeof discord.getChannels === "function") ? discord.getChannels() : [];
+      var targets;
+      if (ch === "all") targets = chans;
+      else targets = chans.filter(function(c) { return c.cfg.id === ch; });
+      if (!targets.length) return res.status(404).json({ error: "No channel: " + ch, active: chans.map(function(c) { return c.cfg.id; }) });
+      var save = req.query.save !== "0" && req.query.save !== "false";
+      var results = [];
+      for (var i = 0; i < targets.length; i++) {
+        var snap = targets[i].grokSnapshot();
+        var out = save ? grokContent.buildAndSave(snap) : { package: grokContent.buildPackage(snap), paths: null };
+        results.push({
+          channel: snap.channel.id,
+          saved: !!save,
+          paths: out.paths,
+          headline: out.package.headline,
+          grokPrompt: out.package.grokPrompt
+        });
+      }
+      res.json({ ok: true, results: results });
     } catch (e) {
       res.status(500).json({ error: e.message });
     }
