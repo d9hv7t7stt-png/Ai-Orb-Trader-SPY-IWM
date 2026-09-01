@@ -1,4 +1,4 @@
-// Profit Manager — polls open option positions every 30 seconds during market hours.
+// Profit Manager — polls open option positions every 10 seconds during market hours.
 // Handles: cross-entry ORB level stops, breakeven, +20% scale-outs, EOD 50%, trailing stops.
 // Dual-leg (0DTE+1DTE) positions are managed per leg via instrument URL.
 
@@ -316,7 +316,7 @@ async function checkProfitTiers() {
 var profitBusy = false;
 
 function startProfitManager() {
-  console.log("[PROFIT_MGR] Starting — checks every 30s during market hours (ET)");
+  console.log("[PROFIT_MGR] Starting — checks every 10s during market hours (ET)");
   setInterval(async function() {
     if (profitBusy) return;
     profitBusy = true;
@@ -327,7 +327,7 @@ function startProfitManager() {
     } finally {
       profitBusy = false;
     }
-  }, 30 * 1000);
+  }, 10 * 1000);
 }
 
 module.exports = { startProfitManager: startProfitManager, checkProfitTiers: checkProfitTiers };

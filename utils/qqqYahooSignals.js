@@ -12,7 +12,7 @@ var paperLegs = require("./paperLegs");
 
 var TICKER = "QQQ";
 var BAR_SEC = 5 * 60;
-var POLL_MS = 30000;
+var POLL_MS = 10000;
 var ORB_READY_MIN = 9 * 60 + 35;
 var STATE_FILE = persist.filePath("qqq-yahoo-signals.json");
 

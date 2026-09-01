@@ -1362,8 +1362,8 @@ loadPnL();
 checkAuth();
 setInterval(loadState, 10000);
 setInterval(loadLivePrices, 5000);
-setInterval(loadPnL, 30000);
-setInterval(checkAuth, 30000);
+setInterval(loadPnL, 10000);
+setInterval(checkAuth, 10000);
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
