@@ -16,7 +16,6 @@ const exitlogic = require("./exitlogic");
 const persist = require("./persist");
 const closeDigestUtil = require("./closeDigest");
 const grokContent = require("./grokContent");
-const grokVideo = require("./grokVideo");
 const technicalsUtil = require("./technicals");
 const paperLegs = require("./paperLegs");
 
@@ -640,7 +639,6 @@ function createChannel(cfg) {
         unrealized: unreal
       });
       console.log("[GROK][" + cfg.id + "] TikTok package → " + grokResult.paths.jsonPath);
-      grokVideo.maybeAutoGenerate(grokResult.package, cfg.webhook);
     } catch (grokErr) {
       console.log("[GROK][" + cfg.id + "] package save failed: " + grokErr.message);
     }

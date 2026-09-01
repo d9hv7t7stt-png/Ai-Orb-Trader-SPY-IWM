@@ -520,42 +520,47 @@ test("save and load package round-trip", function() {
     require("fs").unlinkSync(saved.paths.jsonPath);
     require("fs").unlinkSync(saved.paths.promptPath);
     require("fs").unlinkSync(saved.paths.allPath);
+    if (saved.paths.dailyFeedPath && require("fs").existsSync(saved.paths.dailyFeedPath)) {
+      require("fs").unlinkSync(saved.paths.dailyFeedPath);
+    }
     require("fs").rmdirSync(require("path").join(grokContent.contentRoot(), "2099-01-15"));
   } catch (e) { /* cleanup best-effort */ }
 });
 
-test("buildVideoPrompt is cinematic and under 2k chars", function() {
-  var snap = {
-    date: "2026-08-31",
-    channel: { id: "main", name: "Argus ORB Trader 50K", theme: "default", tradeTicker: "SPXW", signalTickers: ["SPY"] },
-    trades: [{ ticker: "SPXW 0DTE", side: "call", entry: 4, maxPrice: 5, maxGainPct: 25, totalProfit: 500, leg: "SPXW:0" }],
-    wins: 1, losses: 0, balance: 50500, startingBalance: 50000,
-    pnl: { daily: 500, weekly: 500, monthly: 500, allTime: 500 }, unrealized: 0
-  };
-  var pkg = grokContent.buildPackage(snap);
-  var prompt = grokContent.buildVideoPrompt(pkg);
-  assert.ok(prompt.indexOf("9:16") >= 0);
-  assert.ok(prompt.indexOf("GREEN DAY") >= 0);
-  assert.ok(prompt.indexOf("SPXW") >= 0);
-  assert.ok(prompt.length < 2000);
-});
-
-test("grokVideo channel filter respects GROK_VIDEO_CHANNELS", function() {
-  var prevAuto = process.env.GROK_VIDEO_AUTO;
-  var prevKey = process.env.XAI_API_KEY;
-  var prevChannels = process.env.GROK_VIDEO_CHANNELS;
-  process.env.GROK_VIDEO_AUTO = "1";
-  process.env.XAI_API_KEY = "test-key";
-  process.env.GROK_VIDEO_CHANNELS = "spy0dte,qqq";
-  delete require.cache[require.resolve("../utils/grokVideo")];
-  var gv = require("../utils/grokVideo");
-  assert.strictEqual(gv.isEnabledForChannel("spy0dte"), true);
-  assert.strictEqual(gv.isEnabledForChannel("main"), false);
-  process.env.GROK_VIDEO_AUTO = prevAuto;
-  process.env.XAI_API_KEY = prevKey;
-  if (prevChannels == null) delete process.env.GROK_VIDEO_CHANNELS;
-  else process.env.GROK_VIDEO_CHANNELS = prevChannels;
-  delete require.cache[require.resolve("../utils/grokVideo")];
+test("daily feed bundles channel packages for Grok Bot pull", function() {
+  var date = "2099-02-01";
+  var snaps = [
+    {
+      date: date,
+      channel: { id: "main", name: "Argus ORB Trader 50K", theme: "default", tradeTicker: "SPXW", signalTickers: ["SPY"] },
+      trades: [], wins: 0, losses: 0, balance: 50000, startingBalance: 50000,
+      pnl: { daily: 200, weekly: 200, monthly: 200, allTime: 200 }, unrealized: 0
+    },
+    {
+      date: date,
+      channel: { id: "spy0dte", name: "SPY ORB Trader", theme: "spy", tradeTicker: "SPY", signalTickers: ["SPY"] },
+      trades: [], wins: 0, losses: 0, balance: 10000, startingBalance: 10000,
+      pnl: { daily: -50, weekly: -50, monthly: -50, allTime: -50 }, unrealized: 0
+    }
+  ];
+  grokContent.buildAndSave(snaps[0]);
+  var second = grokContent.buildAndSave(snaps[1]);
+  var feed = grokContent.loadDailyFeed(date);
+  assert.strictEqual(feed.videoCount, 2);
+  assert.strictEqual(feed.tiktokAccounts, 1);
+  assert.strictEqual(feed.channels.length, 2);
+  assert.ok(feed.grokBotPrompt.indexOf("VIDEO 1/2") >= 0);
+  assert.ok(feed.grokBotPrompt.indexOf("VIDEO 2/2") >= 0);
+  assert.ok(feed.grokBotPrompt.indexOf("connected TikTok account") >= 0);
+  try {
+    require("fs").unlinkSync(second.paths.jsonPath);
+    require("fs").unlinkSync(require("path").join(grokContent.contentRoot(), date, "main.json"));
+    require("fs").unlinkSync(require("path").join(grokContent.contentRoot(), date, "main-grok-prompt.txt"));
+    require("fs").unlinkSync(require("path").join(grokContent.contentRoot(), date, "spy0dte-grok-prompt.txt"));
+    require("fs").unlinkSync(second.paths.allPath);
+    require("fs").unlinkSync(second.paths.dailyFeedPath);
+    require("fs").rmdirSync(require("path").join(grokContent.contentRoot(), date));
+  } catch (e) { /* cleanup best-effort */ }
 });
 
 if (process.exitCode) {

@@ -7,6 +7,7 @@ var persist = require("./persist");
 
 var VERSION = 1;
 var CONTENT_SUBDIR = "grok-content";
+var CHANNEL_ORDER = ["main", "free", "spy0dte", "qqq"];
 
 function formatMoney(n) {
   var abs = Math.abs(n);
@@ -32,6 +33,10 @@ function channelFile(date, channelId) {
 
 function allFile(date) {
   return path.join(dayDir(date), "all.json");
+}
+
+function dailyFeedFile(date) {
+  return path.join(dayDir(date), "daily-grok-bot.json");
 }
 
 function promptFile(date, channelId) {
@@ -197,30 +202,52 @@ function buildGrokPrompt(pkg) {
   return lines.join("\n");
 }
 
-function buildVideoPrompt(pkg) {
-  var h = pkg.headline;
-  var ticker = pkg.channel.tradeTicker || "ORB";
-  var tone = h.label === "GREEN DAY" ? "green neon profit" : "red loss recap with disciplined risk-management tone";
-  var parts = [
-    "Vertical 9:16 TikTok finance recap, cinematic fast cuts, modern trading desk aesthetic, " + tone + ".",
-    "Hero text: \"" + h.label + " " + h.dailyPnlFormatted + "\" (" + h.dailyPctFormatted + ").",
-    pkg.channel.name + " paper ORB session on " + ticker + ", " + pkg.date + ".",
-    pkg.stats.totalTrades + " closed legs, " + pkg.stats.wins + " wins / " + pkg.stats.losses + " losses.",
-    "Animate option trade cards showing " + ticker + " calls and puts with dollar P&L overlays."
-  ];
-  if (pkg.highlights.best) {
-    parts.push("Spotlight winning trade " + pkg.highlights.best.ticker + " "
-      + pkg.highlights.best.side.toUpperCase() + " " + pkg.highlights.best.totalProfitFormatted + ".");
-  }
-  if (pkg.highlights.worst && pkg.highlights.worst.totalProfit < 0) {
-    parts.push("Brief cut to toughest loss " + pkg.highlights.worst.totalProfitFormatted + " with stop-loss discipline message.");
-  }
-  parts.push("Closing frame: \"Not financial advice · Paper sim only\".");
-  return parts.join(" ");
+function buildDailyGrokBotPrompt(date, packages) {
+  var lines = [];
+  lines.push("Today's ORB paper trading recaps (" + date + ").");
+  lines.push("Create and publish " + packages.length + " separate vertical TikTok recap videos (9:16) to the connected TikTok account — one video per paper channel below.");
+  lines.push("Use each channel's caption and hashtags when posting. End every video with \"Not financial advice · Paper sim only\".");
+  lines.push("");
+  packages.forEach(function(pkg, i) {
+    lines.push("=== VIDEO " + (i + 1) + "/" + packages.length + ": " + pkg.channel.name + " (" + pkg.channel.id + ") ===");
+    lines.push(pkg.grokPrompt);
+    lines.push("");
+  });
+  return lines.join("\n");
 }
 
-function videoJobFile(date, channelId) {
-  return path.join(dayDir(date), channelId + "-video.json");
+function buildDailyFeed(date) {
+  var packages = [];
+  for (var i = 0; i < CHANNEL_ORDER.length; i++) {
+    var pkg = loadPackage(date, CHANNEL_ORDER[i]);
+    if (pkg) packages.push(pkg);
+  }
+  if (!packages.length) return null;
+
+  var feed = {
+    version: VERSION,
+    date: date,
+    generatedAt: new Date().toISOString(),
+    tiktokAccounts: 1,
+    videoCount: packages.length,
+    instruction: "Create and publish " + packages.length + " separate vertical TikTok recap videos (9:16) to the connected TikTok account — one per channel below.",
+    channels: packages,
+    grokBotPrompt: buildDailyGrokBotPrompt(date, packages)
+  };
+  return feed;
+}
+
+function refreshDailyFeed(date) {
+  var feed = buildDailyFeed(date);
+  if (!feed) return null;
+  var file = dailyFeedFile(date);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(feed, null, 2));
+  return feed;
+}
+
+function loadDailyFeed(date) {
+  return readJsonSafe(dailyFeedFile(date));
 }
 
 function buildPackage(snapshot) {
@@ -302,26 +329,14 @@ function savePackage(pkg) {
   };
   fs.writeFileSync(allPath, JSON.stringify(all, null, 2));
 
-  return { jsonPath: jsonPath, promptPath: promptPath, allPath: allPath };
-}
+  var dailyFeed = refreshDailyFeed(pkg.date);
 
-function attachVideoToPackage(date, channelId, videoMeta) {
-  var pkg = loadPackage(date, channelId);
-  if (!pkg) return null;
-  pkg.video = videoMeta;
-  savePackage(pkg);
-  var allPath = allFile(date);
-  var all = readJsonSafe(allPath);
-  if (all && all.channels && all.channels[channelId]) {
-    all.channels[channelId].video = {
-      status: videoMeta.status,
-      url: videoMeta.videoUrl || null,
-      file: channelId + "-video.json"
-    };
-    all.updatedAt = new Date().toISOString();
-    fs.writeFileSync(allPath, JSON.stringify(all, null, 2));
-  }
-  return pkg;
+  return {
+    jsonPath: jsonPath,
+    promptPath: promptPath,
+    allPath: allPath,
+    dailyFeedPath: dailyFeed ? dailyFeedFile(pkg.date) : null
+  };
 }
 
 function buildAndSave(snapshot) {
@@ -368,18 +383,20 @@ function loadPrompt(date, channelId) {
 
 module.exports = {
   VERSION: VERSION,
+  CHANNEL_ORDER: CHANNEL_ORDER,
   contentRoot: contentRoot,
   buildPackage: buildPackage,
   buildGrokPrompt: buildGrokPrompt,
-  buildVideoPrompt: buildVideoPrompt,
+  buildDailyFeed: buildDailyFeed,
+  refreshDailyFeed: refreshDailyFeed,
   buildAndSave: buildAndSave,
   savePackage: savePackage,
-  attachVideoToPackage: attachVideoToPackage,
   listDates: listDates,
   loadPackage: loadPackage,
   loadAllForDate: loadAllForDate,
+  loadDailyFeed: loadDailyFeed,
   loadPrompt: loadPrompt,
-  videoJobFile: videoJobFile,
+  dailyFeedFile: dailyFeedFile,
   formatMoney: formatMoney,
   formatPct: formatPct
 };
