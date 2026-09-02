@@ -10,6 +10,7 @@ var discord = null;
 try { discord = require("./discord"); } catch (e) { discord = null; }
 
 var ORB_INTERVAL = process.env.ORB_INTERVAL || "5m";
+var ORB_POLL_MS = 60000;
 var ORB_OPEN_MIN = 9 * 60 + 30;   // 9:30 AM ET bar start
 var ORB_READY_MIN = 9 * 60 + 35;  // wait for 5m bar to close
 
@@ -123,7 +124,7 @@ function scheduleORBCapture() {
     }).catch(function(e) {
       stateModule.logEvent("ORB_ERROR", "Capture poll failed: " + e.message);
     }).finally(function() {
-      setTimeout(run, 120000);
+      setTimeout(run, ORB_POLL_MS);
     });
   }
   setTimeout(run, 10000);
