@@ -402,11 +402,14 @@ function createChannel(cfg) {
   }
 
   async function sendEntryEmbed(tradeTicker, side, orbHigh, orbLow, opened, signalTicker) {
-    var dirLabel = side === "call" ? "LONG" : "SHORT";
-    var color = side === "call" ? 0x00e5a0 : 0xff4d6a;
+    var isLong = side === "call";
+    var dirLabel = isLong ? "LONG" : "SHORT";
+    // Brighter than morning/daily teal so entries pop on Discord mobile dark theme.
+    var color = isLong ? 0x57f287 : 0xed4245;
+    var display = yahoo.displaySymbol(tradeTicker);
     var stop = (((parseFloat(orbHigh) || 0) + (parseFloat(orbLow) || 0)) / 2).toFixed(2);
     var fields = opened.map(function(o) {
-      var tgt = side === "call"
+      var tgt = isLong
         ? (o.pos.targetUpper ? "$" + o.pos.targetUpper.toFixed(2) : "—")
         : (o.pos.targetLower ? "$" + o.pos.targetLower.toFixed(2) : "—");
       return {
@@ -418,11 +421,14 @@ function createChannel(cfg) {
       };
     });
     var sigNote = signalTicker && signalTicker !== tradeTicker
-      ? "Signal: **" + signalTicker + "** ORB → **" + yahoo.displaySymbol(tradeTicker) + "**\n" : "";
+      ? "Signal: **" + signalTicker + "** ORB → **" + display + "**\n" : "";
+    var pingLine = isLong
+      ? "🟢 **LONG ENTRY — " + display + "**"
+      : "🔴 **SHORT ENTRY — " + display + "**";
 
-    await send({
+    await sendRaw("@everyone\n" + pingLine, {
       color: color,
-      title: (side === "call" ? "🟢" : "🔴") + " " + dirLabel + " ENTRY — " + yahoo.displaySymbol(tradeTicker) + " (0DTE + 1DTE)",
+      title: (isLong ? "🟢" : "🔴") + " " + dirLabel + " ENTRY — " + display + " (0DTE + 1DTE)",
       description: sigNote + "Signal at " + etTimeLabel() + " · 5m bar close · **" + riskPct() + "%** total (2.5% per leg)",
       fields: fields.concat([
         { name: "ORB High", value: "$" + (parseFloat(orbHigh) || 0).toFixed(2), inline: true },
