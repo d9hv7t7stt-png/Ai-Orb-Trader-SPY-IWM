@@ -717,7 +717,7 @@ function createChannel(cfg) {
     }
 
     try {
-      var grokResult = grokContent.buildAndSave({
+      var grokResult = await grokContent.buildAndSaveAsync({
         date: etISODate(),
         channel: cfg,
         trades: trades.slice(),

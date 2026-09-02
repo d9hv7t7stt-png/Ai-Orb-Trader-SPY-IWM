@@ -4,10 +4,13 @@
 var fs = require("fs");
 var path = require("path");
 var persist = require("./persist");
+var expectedMove = require("./expectedMove");
 
 var VERSION = 1;
 var CONTENT_SUBDIR = "grok-content";
 var CHANNEL_ORDER = ["main", "free", "spy0dte", "qqq"];
+var INDEX_MOVE_TICKERS = ["SPY", "IWM", "QQQ", "SPXW"];
+var INDEX_DISPLAY_TICKER = { SPXW: "SPX" };
 
 function formatMoney(n) {
   var abs = Math.abs(n);
@@ -37,6 +40,87 @@ function allFile(date) {
 
 function dailyFeedFile(date) {
   return path.join(dayDir(date), "daily-grok-bot.json");
+}
+
+function indexMovesFile(date) {
+  return path.join(dayDir(date), "index-expected-moves.json");
+}
+
+function displayTicker(ticker) {
+  return INDEX_DISPLAY_TICKER[ticker] || ticker;
+}
+
+function serializeIndexEntry(tickerMoves) {
+  if (!tickerMoves) return null;
+  var nextSession = (tickerMoves.sessions && tickerMoves.sessions[0]) || null;
+  if (!nextSession) return null;
+  return {
+    ticker: tickerMoves.ticker,
+    displayTicker: displayTicker(tickerMoves.ticker),
+    price: tickerMoves.price,
+    refPrice: tickerMoves.refPrice || null,
+    proxySource: tickerMoves.proxySource || null,
+    nextSession: nextSession
+  };
+}
+
+function serializeIndexExpectedMoves(data) {
+  if (!data || !data.tickers) return null;
+  var indexes = data.tickers.map(serializeIndexEntry).filter(Boolean);
+  if (!indexes.length) return null;
+  return {
+    sessionLabel: data.sessionLabel,
+    computedAt: data.computedAt,
+    indexes: indexes
+  };
+}
+
+function formatExpectedMovesForPrompt(expectedMoves) {
+  if (!expectedMoves || !expectedMoves.indexes || !expectedMoves.indexes.length) return [];
+  var lines = [];
+  lines.push("INDEX EXPECTED MOVES (next session — " + expectedMoves.sessionLabel + "):");
+  expectedMoves.indexes.forEach(function(idx) {
+    var h = idx.nextSession;
+    var name = idx.displayTicker;
+    var pct = (h.movePct >= 0 ? "+" : "") + h.movePct.toFixed(2) + "%";
+    lines.push("- " + name + " @ $" + (idx.price || 0).toFixed(2)
+      + " · expected ±$" + h.moveDollars.toFixed(2) + " (" + pct + ")"
+      + " · range $" + h.lower.toFixed(2) + " — $" + h.upper.toFixed(2));
+    if (h.oneSdDollars) {
+      lines.push("  1σ ±$" + h.oneSdDollars.toFixed(2) + " · $" + h.oneSdLower.toFixed(2) + " — $" + h.oneSdUpper.toFixed(2));
+    }
+  });
+  lines.push("Use these levels as optional context when framing tomorrow's session — not price targets.");
+  return lines;
+}
+
+function loadCachedIndexExpectedMoves(date) {
+  return readJsonSafe(indexMovesFile(date));
+}
+
+function fetchAndCacheIndexExpectedMoves(date) {
+  return expectedMove.computePlannedMoves(INDEX_MOVE_TICKERS, {
+    nextSession: true,
+    session2: false,
+    weekly: false,
+    monthly: false,
+    quarterly: false
+  }).then(function(data) {
+    var block = serializeIndexExpectedMoves(data);
+    if (!block) return null;
+    var file = indexMovesFile(date);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(block, null, 2));
+    return block;
+  });
+}
+
+function ensureIndexExpectedMoves(date) {
+  var cached = loadCachedIndexExpectedMoves(date);
+  if (cached && cached.indexes && cached.indexes.length) {
+    return Promise.resolve(cached);
+  }
+  return fetchAndCacheIndexExpectedMoves(date);
 }
 
 function promptFile(date, channelId) {
@@ -202,11 +286,16 @@ function buildGrokPrompt(pkg) {
   return lines.join("\n");
 }
 
-function buildDailyGrokBotPrompt(date, packages) {
+function buildDailyGrokBotPrompt(date, packages, expectedMoves) {
   var lines = [];
   lines.push("Today's ORB paper trading recaps (" + date + ").");
   lines.push("Create and publish " + packages.length + " separate vertical TikTok recap videos (9:16) to the connected TikTok account — one video per paper channel below.");
   lines.push("Use each channel's caption and hashtags when posting. End every video with \"Not financial advice · Paper sim only\".");
+  var moveLines = formatExpectedMovesForPrompt(expectedMoves);
+  if (moveLines.length) {
+    lines.push("");
+    moveLines.forEach(function(line) { lines.push(line); });
+  }
   lines.push("");
   packages.forEach(function(pkg, i) {
     lines.push("=== VIDEO " + (i + 1) + "/" + packages.length + ": " + pkg.channel.name + " (" + pkg.channel.id + ") ===");
@@ -216,13 +305,15 @@ function buildDailyGrokBotPrompt(date, packages) {
   return lines.join("\n");
 }
 
-function buildDailyFeed(date) {
+function buildDailyFeed(date, expectedMoves) {
   var packages = [];
   for (var i = 0; i < CHANNEL_ORDER.length; i++) {
     var pkg = loadPackage(date, CHANNEL_ORDER[i]);
     if (pkg) packages.push(pkg);
   }
   if (!packages.length) return null;
+
+  var moves = expectedMoves || loadCachedIndexExpectedMoves(date);
 
   var feed = {
     version: VERSION,
@@ -232,18 +323,28 @@ function buildDailyFeed(date) {
     videoCount: packages.length,
     instruction: "Create and publish " + packages.length + " separate vertical TikTok recap videos (9:16) to the connected TikTok account — one per channel below.",
     channels: packages,
-    grokBotPrompt: buildDailyGrokBotPrompt(date, packages)
+    grokBotPrompt: buildDailyGrokBotPrompt(date, packages, moves)
   };
+  if (moves) feed.expectedMoves = moves;
   return feed;
 }
 
-function refreshDailyFeed(date) {
-  var feed = buildDailyFeed(date);
+function refreshDailyFeed(date, expectedMoves) {
+  var feed = buildDailyFeed(date, expectedMoves);
   if (!feed) return null;
   var file = dailyFeedFile(date);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(feed, null, 2));
   return feed;
+}
+
+function refreshDailyFeedAsync(date) {
+  return ensureIndexExpectedMoves(date).then(function(moves) {
+    return refreshDailyFeed(date, moves);
+  }).catch(function(err) {
+    console.log("[GROK] index expected moves fetch failed: " + err.message);
+    return refreshDailyFeed(date, null);
+  });
 }
 
 function loadDailyFeed(date) {
@@ -304,7 +405,7 @@ function buildPackage(snapshot) {
   return pkg;
 }
 
-function savePackage(pkg) {
+function savePackage(pkg, expectedMoves) {
   var dir = dayDir(pkg.date);
   fs.mkdirSync(dir, { recursive: true });
   var jsonPath = channelFile(pkg.date, pkg.channel.id);
@@ -329,7 +430,8 @@ function savePackage(pkg) {
   };
   fs.writeFileSync(allPath, JSON.stringify(all, null, 2));
 
-  var dailyFeed = refreshDailyFeed(pkg.date);
+  var moves = expectedMoves || loadCachedIndexExpectedMoves(pkg.date);
+  var dailyFeed = refreshDailyFeed(pkg.date, moves);
 
   return {
     jsonPath: jsonPath,
@@ -343,6 +445,14 @@ function buildAndSave(snapshot) {
   var pkg = buildPackage(snapshot);
   var paths = savePackage(pkg);
   return { package: pkg, paths: paths };
+}
+
+function buildAndSaveAsync(snapshot) {
+  var pkg = buildPackage(snapshot);
+  return ensureIndexExpectedMoves(pkg.date).then(function(moves) {
+    var paths = savePackage(pkg, moves);
+    return { package: pkg, paths: paths, expectedMoves: moves };
+  });
 }
 
 function readJsonSafe(file) {
@@ -384,12 +494,15 @@ function loadPrompt(date, channelId) {
 module.exports = {
   VERSION: VERSION,
   CHANNEL_ORDER: CHANNEL_ORDER,
+  INDEX_MOVE_TICKERS: INDEX_MOVE_TICKERS,
   contentRoot: contentRoot,
   buildPackage: buildPackage,
   buildGrokPrompt: buildGrokPrompt,
   buildDailyFeed: buildDailyFeed,
   refreshDailyFeed: refreshDailyFeed,
+  refreshDailyFeedAsync: refreshDailyFeedAsync,
   buildAndSave: buildAndSave,
+  buildAndSaveAsync: buildAndSaveAsync,
   savePackage: savePackage,
   listDates: listDates,
   loadPackage: loadPackage,
@@ -397,6 +510,12 @@ module.exports = {
   loadDailyFeed: loadDailyFeed,
   loadPrompt: loadPrompt,
   dailyFeedFile: dailyFeedFile,
+  indexMovesFile: indexMovesFile,
+  serializeIndexExpectedMoves: serializeIndexExpectedMoves,
+  formatExpectedMovesForPrompt: formatExpectedMovesForPrompt,
+  loadCachedIndexExpectedMoves: loadCachedIndexExpectedMoves,
+  fetchAndCacheIndexExpectedMoves: fetchAndCacheIndexExpectedMoves,
+  ensureIndexExpectedMoves: ensureIndexExpectedMoves,
   formatMoney: formatMoney,
   formatPct: formatPct
 };

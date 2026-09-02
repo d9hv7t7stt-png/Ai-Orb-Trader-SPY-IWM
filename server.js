@@ -254,20 +254,31 @@ app.get("/api/grok/tiktok", authguard.requireGrokSecret, (req, res) => {
   res.json(all);
 });
 
-app.get("/api/grok/tiktok/daily", authguard.requireGrokSecret, (req, res) => {
+app.get("/api/grok/tiktok/daily", authguard.requireGrokSecret, async (req, res) => {
   var date = req.query.date;
   if (!date) {
     var dates = grokContent.listDates();
     date = dates[0] || null;
   }
   if (!date) return res.status(404).json({ error: "No Grok content packages found" });
-  var feed = grokContent.loadDailyFeed(date) || grokContent.refreshDailyFeed(date);
+  var feed = grokContent.loadDailyFeed(date);
+  if (!feed) {
+    try {
+      feed = await grokContent.refreshDailyFeedAsync(date);
+    } catch (e) {
+      feed = grokContent.refreshDailyFeed(date);
+    }
+  } else if (!feed.expectedMoves) {
+    try {
+      feed = await grokContent.refreshDailyFeedAsync(date);
+    } catch (e) { /* keep existing feed */ }
+  }
   if (!feed) return res.status(404).json({ error: "No daily feed for " + date });
   res.json(feed);
 });
 
 // Build (or rebuild) today's packages from live paper account state — works in production.
-app.get("/api/grok/tiktok/build", authguard.requireGrokSecret, (req, res) => {
+app.get("/api/grok/tiktok/build", authguard.requireGrokSecret, async (req, res) => {
   try {
     var chans = (typeof discord.getChannels === "function") ? discord.getChannels() : [];
     if (!chans.length) {
@@ -278,7 +289,7 @@ app.get("/api/grok/tiktok/build", authguard.requireGrokSecret, (req, res) => {
     var built = [];
     for (var i = 0; i < chans.length; i++) {
       var snap = chans[i].grokSnapshot();
-      var out = grokContent.buildAndSave(snap);
+      var out = await grokContent.buildAndSaveAsync(snap);
       built.push({
         channel: snap.channel.id,
         name: snap.channel.name,
@@ -288,7 +299,7 @@ app.get("/api/grok/tiktok/build", authguard.requireGrokSecret, (req, res) => {
       });
     }
     var date = built[0] && built[0].date;
-    var feed = date ? (grokContent.loadDailyFeed(date) || grokContent.refreshDailyFeed(date)) : null;
+    var feed = date ? await grokContent.refreshDailyFeedAsync(date) : null;
     res.json({
       ok: true,
       built: built,
@@ -511,7 +522,9 @@ if (authguard.allowTestRoutes()) {
       var results = [];
       for (var i = 0; i < targets.length; i++) {
         var snap = targets[i].grokSnapshot();
-        var out = save ? grokContent.buildAndSave(snap) : { package: grokContent.buildPackage(snap), paths: null };
+        var out = save
+          ? await grokContent.buildAndSaveAsync(snap)
+          : { package: grokContent.buildPackage(snap), paths: null };
         results.push({
           channel: snap.channel.id,
           saved: !!save,
