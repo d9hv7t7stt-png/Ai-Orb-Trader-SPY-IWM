@@ -36,8 +36,8 @@ cp -R "$ROOT/dashboard/." "$DEST/dashboard/"
 # Whop license module
 cp "$ROOT/scripts/whop-customer-templates/whopLicense.js" "$DEST/utils/whopLicense.js"
 
-# Strip Discord paper trading from customer build
-rm -f "$DEST/utils/discord.js" "$DEST/utils/paperLegs.js" "$DEST/utils/closeDigest.js"
+# Strip seller-only / Discord modules (keep paperLegs — live dual-leg strikes need it)
+rm -f "$DEST/utils/discord.js" "$DEST/utils/closeDigest.js" "$DEST/utils/grokContent.js" "$DEST/utils/qqqYahooSignals.js"
 
 # Neutralize Discord requires in alert.js / server.js without breaking live path
 python3 - "$DEST" <<'PY'
@@ -103,6 +103,52 @@ if "await whopLicense.startLicenseGate()" not in s:
     )
 server.write_text(s)
 print("server discord stub ready")
+PY
+
+python3 - "$DEST" <<'PY'
+import re, pathlib, sys
+server = pathlib.Path(sys.argv[1]) / "server.js"
+s = server.read_text()
+s = re.sub(r'const grokContent = require\("\./utils/grokContent"\);\n', "", s)
+s = re.sub(r'const qqqYahooSignals = require\("\./utils/qqqYahooSignals"\);\n', "", s)
+s = re.sub(
+    r'app\.get\("/api/grok/tiktok/dates"[\s\S]*?^\}\);\n\n',
+    "",
+    s,
+    count=1,
+    flags=re.M,
+)
+s = re.sub(
+    r'app\.get\("/api/grok/tiktok"[\s\S]*?^\}\);\n\n',
+    "",
+    s,
+    count=1,
+    flags=re.M,
+)
+s = re.sub(
+    r'app\.get\("/api/grok/tiktok/daily"[\s\S]*?^\}\);\n\n',
+    "",
+    s,
+    count=1,
+    flags=re.M,
+)
+s = re.sub(
+    r'// Build \(or rebuild\)[^\n]*\napp\.get\("/api/grok/tiktok/build"[\s\S]*?^\}\);\n\n',
+    "",
+    s,
+    count=1,
+    flags=re.M,
+)
+s = s.replace("  qqqYahooSignals.startQqqYahooSignals();\n", "  // QQQ Yahoo paper signals removed in Whop customer build\n")
+s = re.sub(
+    r'\n  app\.get\("/test/grok/tiktok/:channel"[\s\S]*?^\  \}\);\n',
+    "\n",
+    s,
+    count=1,
+    flags=re.M,
+)
+server.write_text(s)
+print("server grok/qqq stripped")
 PY
 
 python3 - "$DEST" <<'PY'
@@ -238,8 +284,49 @@ See **WHOP-SETUP.md** for keys and deploy steps.
 Before selling: open `config/whop.baked.json` and replace `REPLACE_ME_SELLER_API_KEY` with your Whop seller API key (`apik_…`), or run `bash inject-whop-api-key.sh` from this folder.
 EOF
 
-cp "$ROOT/scripts/inject-whop-api-key.sh" "$DEST/inject-whop-api-key.sh"
-chmod +x "$DEST/inject-whop-api-key.sh"
+cp -f "$ROOT/scripts/inject-whop-api-key.sh" "$DEST/inject-whop-api-key.sh"
+chmod +x "$DEST/inject-whop-api-key.sh" 2>/dev/null || true
+
+cat > "$DEST/CHANGELOG.md" <<'EOF'
+# Customer build changelog
+
+## 2026-09-02 — Live sell / close reliability (current export)
+
+This export includes Robinhood sell fixes that were missing or broken in earlier customer zips.
+
+### Robinhood closes (stops, tiers, EOD, flips)
+
+- **Close uses the open position's instrument URL** — no re-resolving strike/expiry on 0DTE (fixes "RH won't sell" when the chain lookup fails but RH still holds the contract)
+- **Per-leg matching** on dual-leg (0DTE + 1DTE): strike, expiry, side, and instrument URL when closing
+- **`closeAllLegs`** for cross-entry stops and dual-leg flatten — both legs get sell orders
+- **Profit manager dual-leg path** — each leg managed independently with its own RH mark and close match
+- **Reconcile improvements** — backfills entry from RH `average_price`, refuses ambiguous multi-position picks, 10-minute grace before marking flat
+- **Fill price normalization** — per-share vs total premium stored correctly so stops/tiers fire at the right levels
+- **`syncPositionQty`** — trims no longer re-arm "half in" state after partial sells
+
+### Other live fixes in this build
+
+- Proactive RH token refresh + daily 9:00 AM ET reauth
+- Durable webhook queue with retry backoff
+- TradingView `/webhook` open (no secret required on webhook itself)
+- Dual-leg live toggle + cross-entry toggle on dashboard
+- Kill switch (flatten / halt entries)
+
+### Not included (seller production only)
+
+- Discord paper-trading channels
+- Grok TikTok content API
+- QQQ Yahoo paper signal fallback
+
+### Customer deploy reminder
+
+1. Attach a Railway volume at `/data` (device id + state persist)
+2. Set `WHOP_LICENSE_KEY` + Robinhood tokens from `.env.example`
+3. Run `bash inject-whop-api-key.sh` if `config/whop.baked.json` still has `REPLACE_ME_SELLER_API_KEY`
+EOF
+
+# Sanity check: live dual-leg module graph loads
+node -e "process.chdir('$DEST'); require('./utils/trayd'); require('./utils/profitmanager'); require('./utils/robinhood'); console.log('customer module check ok')" 
 
 # Zip
 rm -f "$ZIP"
