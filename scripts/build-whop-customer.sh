@@ -237,41 +237,38 @@ cat > "$DEST/WHOP-SETUP.md" <<'EOF'
 
 Live Robinhood ORB trader only. **No Discord paper trading.**
 
-## Keys you need (seller / Whop dashboard)
+## What you need (buyer)
 
-1. **API key** (Bearer) — Dashboard → **Developer → API keys**  
-   Used at zip **build** time (`WHOP_API_KEY`). Baked into `config/whop.baked.json`.
-2. **Software Licensing** — add the Software app on your Whop product and enable license keys.  
-   Each buyer gets a **license key** after purchase.
-3. **Product IDs** `prod_…` — baked at build from `scripts/whop-customer-templates/whop-products.json` (all AI Orb Trader Pro tiers).
+After purchase, Whop gives you a **license key**. In Railway (or `.env`), set:
 
-Buyers only paste **`WHOP_LICENSE_KEY`** into Railway / `.env`.
+| Variable | Where it comes from |
+|----------|---------------------|
+| `WHOP_LICENSE_KEY` | Your Whop purchase (Software Licensing) |
+| `RH_TOKEN` / `RH_REFRESH_TOKEN` / `RH_DEVICE_TOKEN` / `RH_ACCOUNT_NUMBER` | Your Robinhood login flow |
+| Volume mount **`/data`** | Railway → attach a persistent volume |
 
-> If your dashboard labels look like a “Token” and another credential, use the **API key** as `WHOP_API_KEY` when you rebuild the zip, and give customers their **license key**.
+You do **not** configure Whop API keys or run any seller scripts.
 
-## Buyer install
+## Install
 
-1. Unzip and deploy (Railway recommended) with a volume at `/data`.
-2. Set env from `.env.example` (especially `WHOP_LICENSE_KEY` + Robinhood tokens).
+1. Deploy this package (Railway recommended) with a volume at `/data`.
+2. Paste env vars from `.env.example`.
 3. Start: `npm install && npm start`
-4. On boot the app validates the license with Whop (binds a stable device id stored on your `/data` volume).
-5. **Every trading day** at **8:30 AM ET** and **9:29 AM ET** the app re-validates with Whop.
-6. If license fails or is revoked, the process **exits** and live orders are blocked.
+4. On boot the app validates your license with Whop (binds a device id on `/data`).
+5. **Every trading day** at **8:30 AM ET** and **9:29 AM ET** the app re-validates.
+6. If the license fails or is revoked, the process exits and live orders are blocked.
 
 ## Anti-tamper (practical)
 
 - License check on startup (process exits if invalid)
-- Re-check **8:30 ET** and **9:29 ET** every trading day (process exits if invalid)
-- Device id persisted at `/data/whop-device-id` (survives Railway redeploys on the same volume)
-- Live place/close orders call `requireLicense`
-- Profit manager no-ops if unlicensed
-- `config/whop.baked.json` stores a SHA-256 of `utils/whopLicense.js` — if that file is edited/deleted, integrity fails and the app refuses to run
+- Re-check **8:30 ET** and **9:29 ET** every trading day
+- Device id at `/data/whop-device-id` (survives redeploys on the same volume)
+- Live place/close blocked if unlicensed
 
-This is Node software: determined reverse-engineering can still bypass client checks. For stronger control, add a small license relay you host that holds the API key.
+## Optional
 
-## Next phase (live QQQ / SPX)
-
-Set `LIVE_TICKERS=QQQ,SPX` only after confirming Robinhood option chains and sizing for those symbols on the buyer account. SPX index options availability varies by RH account.
+- `WEBHOOK_SECRET` — protect dashboard/API routes (TradingView `/webhook` stays open)
+- `LIVE_TICKERS=QQQ,SPX` — only after confirming RH option chains on your account
 EOF
 
 cat > "$DEST/README.md" <<'EOF'
@@ -279,13 +276,18 @@ cat > "$DEST/README.md" <<'EOF'
 
 Live-only ORB auto-trader for Robinhood. Requires an active Whop license key.
 
-See **WHOP-SETUP.md** for keys and deploy steps.
+## What you set in Railway
 
-Before selling: open `config/whop.baked.json` and replace `REPLACE_ME_SELLER_API_KEY` with your Whop seller API key (`apik_…`), or run `bash inject-whop-api-key.sh` from this folder.
+1. **`WHOP_LICENSE_KEY`** — from your Whop purchase (Software Licensing)
+2. **Robinhood tokens** — see `.env.example` (`RH_TOKEN`, `RH_REFRESH_TOKEN`, `RH_DEVICE_TOKEN`, `RH_ACCOUNT_NUMBER`)
+3. Attach a **volume at `/data`** (license device id + bot state persist)
+
+That is it. You do **not** need a Whop seller API key — licensing is already configured in this build.
+
+See **WHOP-SETUP.md** for full deploy steps.
 EOF
 
-cp -f "$ROOT/scripts/inject-whop-api-key.sh" "$DEST/inject-whop-api-key.sh"
-chmod +x "$DEST/inject-whop-api-key.sh" 2>/dev/null || true
+# Seller-only helper stays in the repo; do not ship to buyers (avoids confusion).
 
 cat > "$DEST/CHANGELOG.md" <<'EOF'
 # Customer build changelog
@@ -318,11 +320,11 @@ This export includes Robinhood sell fixes that were missing or broken in earlier
 - Grok TikTok content API
 - QQQ Yahoo paper signal fallback
 
-### Customer deploy reminder
+### Customer deploy (buyers)
 
-1. Attach a Railway volume at `/data` (device id + state persist)
+1. Attach a Railway volume at `/data`
 2. Set `WHOP_LICENSE_KEY` + Robinhood tokens from `.env.example`
-3. Run `bash inject-whop-api-key.sh` if `config/whop.baked.json` still has `REPLACE_ME_SELLER_API_KEY`
+3. Deploy — no seller API key or extra setup required
 EOF
 
 # Sanity check: live dual-leg module graph loads

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Run once after unzipping the customer package — paste your seller Whop API key.
-# Usage: bash inject-whop-api-key.sh
+# SELLER ONLY — bake your Whop API key before uploading the zip to Whop.
+# Customers never run this. Prefer: WHOP_API_KEY=apik_… bash scripts/build-whop-customer.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CFG="$ROOT/config/whop.baked.json"
