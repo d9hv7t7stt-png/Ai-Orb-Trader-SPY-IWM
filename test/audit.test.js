@@ -599,6 +599,98 @@ test("daily feed bundles channel packages for Grok Bot pull", function() {
   } catch (e) { /* cleanup best-effort */ }
 });
 
+test("serializes index expected moves for Grok daily feed", function() {
+  var raw = {
+    sessionLabel: "Wednesday, Sep 3, 2026",
+    computedAt: "2026-09-02T12:00:00.000Z",
+    tickers: [
+      {
+        ticker: "SPY",
+        price: 562.34,
+        refPrice: 561,
+        sessions: [{
+          horizon: "Next session",
+          expiry: "2026-09-03",
+          label: "Wednesday, Sep 3, 2026",
+          shortLabel: "Wed Sep 3",
+          moveDollars: 5.23,
+          movePct: 0.93,
+          upper: 567.57,
+          lower: 557.11,
+          oneSdDollars: 6.15,
+          oneSdPct: 1.09,
+          oneSdUpper: 568.49,
+          oneSdLower: 556.19
+        }]
+      },
+      {
+        ticker: "SPXW",
+        price: 6234.5,
+        refPrice: 6220,
+        proxySource: "SPY",
+        sessions: [{
+          horizon: "Next session",
+          expiry: "2026-09-03",
+          moveDollars: 58.1,
+          movePct: 0.93,
+          upper: 6292.6,
+          lower: 6176.4
+        }]
+      }
+    ]
+  };
+  var block = grokContent.serializeIndexExpectedMoves(raw);
+  assert.strictEqual(block.indexes.length, 2);
+  assert.strictEqual(block.indexes[0].ticker, "SPY");
+  assert.strictEqual(block.indexes[1].displayTicker, "SPX");
+  assert.strictEqual(block.indexes[1].proxySource, "SPY");
+  var promptLines = grokContent.formatExpectedMovesForPrompt(block);
+  assert.ok(promptLines.some(function(l) { return l.indexOf("INDEX EXPECTED MOVES") >= 0; }));
+  assert.ok(promptLines.some(function(l) { return l.indexOf("SPX @") >= 0; }));
+});
+
+test("daily feed includes expected moves when provided", function() {
+  var date = "2099-03-01";
+  var snap = {
+    date: date,
+    channel: { id: "qqq", name: "QQQ ORB Trader", theme: "qqq", tradeTicker: "QQQ", signalTickers: ["QQQ"] },
+    trades: [], wins: 0, losses: 0, balance: 10000, startingBalance: 10000,
+    pnl: { daily: 0, weekly: 0, monthly: 0, allTime: 0 }, unrealized: 0
+  };
+  grokContent.buildAndSave(snap);
+  var moves = {
+    sessionLabel: "Thursday, Mar 2, 2099",
+    computedAt: "2099-03-01T21:00:00.000Z",
+    indexes: [
+      {
+        ticker: "QQQ",
+        displayTicker: "QQQ",
+        price: 500,
+        refPrice: 498,
+        nextSession: {
+          horizon: "Next session",
+          moveDollars: 4.5,
+          movePct: 0.9,
+          upper: 504.5,
+          lower: 495.5
+        }
+      }
+    ]
+  };
+  var feed = grokContent.refreshDailyFeed(date, moves);
+  assert.ok(feed.expectedMoves);
+  assert.strictEqual(feed.expectedMoves.indexes.length, 1);
+  assert.ok(feed.grokBotPrompt.indexOf("INDEX EXPECTED MOVES") >= 0);
+  assert.ok(feed.grokBotPrompt.indexOf("QQQ @") >= 0);
+  try {
+    require("fs").unlinkSync(require("path").join(grokContent.contentRoot(), date, "qqq.json"));
+    require("fs").unlinkSync(require("path").join(grokContent.contentRoot(), date, "qqq-grok-prompt.txt"));
+    require("fs").unlinkSync(require("path").join(grokContent.contentRoot(), date, "all.json"));
+    require("fs").unlinkSync(grokContent.dailyFeedFile(date));
+    require("fs").rmdirSync(require("path").join(grokContent.contentRoot(), date));
+  } catch (e) { /* cleanup best-effort */ }
+});
+
 console.log("qqqYahooSignals");
 var qqqYahoo = require("../utils/qqqYahooSignals");
 test("QQQ Yahoo picks breakout long above ORB high", function() {
