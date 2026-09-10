@@ -137,12 +137,29 @@ async function closeLiveOrLog(ticker, contracts, reason, matchOverride) {
       match: matchOverride || null
     });
     if (result && result.ok === false) {
+      // RH already flat — treat as success so callers clear ghost state instead of
+      // looping STOP_OUT / ORDER_ERROR every poll until the 10m reconcile grace ends.
+      if (result.alreadyFlat || rh.isAlreadyFlatError(result.error)) {
+        stateModule.logEvent("RECONCILE", ticker + " RH already flat on close (" + reason
+          + ") — clearing ghost state");
+        try { require("./reconcile").forceFlatNext(ticker); } catch (e) {}
+        return true;
+      }
       stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + (result.error || "no matching position"));
+      // Failed close while RH may still hold — reconcile sooner than the 5m cadence.
+      try { require("./profitmanager").requestReconcileSoon(); } catch (e) {}
       return false;
     }
     return true;
   } catch (e) {
+    if (rh.isAlreadyFlatError(e.message)) {
+      stateModule.logEvent("RECONCILE", ticker + " RH already flat on close (" + reason
+        + ") — clearing ghost state");
+      try { require("./reconcile").forceFlatNext(ticker); } catch (e2) {}
+      return true;
+    }
     stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + e.message);
+    try { require("./profitmanager").requestReconcileSoon(); } catch (e2) {}
     return false;
   }
 }

@@ -149,6 +149,19 @@ test("reconcile grace is at least 10 minutes", function() {
   assert.ok(reconcile.FLAT_CONFIRM_NEEDED >= 2);
 });
 
+test("already-flat close errors are detected", function() {
+  assert.ok(rh.isAlreadyFlatError("No open position found"));
+  assert.ok(rh.isAlreadyFlatError("No matching open position found"));
+  assert.ok(rh.isAlreadyFlatError("Error: No open position found"));
+  assert.strictEqual(rh.isAlreadyFlatError("positions_fetch_failed: timeout"), false);
+  assert.strictEqual(rh.isAlreadyFlatError("close_not_confirmed (cancelled)"), false);
+});
+
+test("forceFlatNext is exported for ghost close path", function() {
+  assert.strictEqual(typeof reconcile.forceFlatNext, "function");
+  reconcile.forceFlatNext("SPY");
+});
+
 console.log("calendar / expiry");
 test("2026 holidays include Good Friday and Independence Day", function() {
   var h = marketCal.getYearHolidays(2026);
@@ -748,8 +761,58 @@ test("daily summary splits busy sessions across multiple Discord messages", func
   assert.strictEqual((joined.match(/SPXW/g) || []).length, 30);
 });
 
-if (process.exitCode) {
-  console.error("\nAUDIT TESTS FAILED");
-  process.exit(1);
-}
-console.log("\n" + passed + " tests passed");
+console.log("ghost close");
+var ghostClosePromise = (async function() {
+  var trayd = require("../utils/trayd");
+  var stateModule = require("../utils/state");
+  var origClose = rh.closeOptionPosition;
+
+  function run(name, fn) {
+    return Promise.resolve()
+      .then(fn)
+      .then(function() {
+        passed++;
+        console.log("  ok  " + name);
+      })
+      .catch(function(e) {
+        console.error("  FAIL  " + name + " — " + e.message);
+        process.exitCode = 1;
+      });
+  }
+
+  await run("closeLiveOrLog returns true when RH already flat", async function() {
+    rh.closeOptionPosition = async function() {
+      return { ok: false, alreadyFlat: true, error: "No open position found" };
+    };
+    var ok = await trayd.closeLiveOrLog("IWM", 1, "Initial stop -15%");
+    assert.strictEqual(ok, true);
+  });
+
+  await run("closeLiveOrLog returns false when close is not confirmed", async function() {
+    rh.closeOptionPosition = async function() {
+      return { ok: false, error: "close_not_confirmed (cancelled)", order_id: "abc" };
+    };
+    var ok = await trayd.closeLiveOrLog("IWM", 1, "Trailing stop -5%");
+    assert.strictEqual(ok, false);
+  });
+
+  await run("closeLiveOrLog returns true only after confirmed fill", async function() {
+    rh.closeOptionPosition = async function() {
+      return { ok: true, order_id: "xyz", contracts: 1, confirmed: true, fillPrice: 0.42 };
+    };
+    var ok = await trayd.closeLiveOrLog("SPY", 1, "scale-out");
+    assert.strictEqual(ok, true);
+  });
+
+  rh.closeOptionPosition = origClose;
+  // silence unused in case state import is tree-shaken mentally
+  void stateModule;
+})();
+
+ghostClosePromise.then(function() {
+  if (process.exitCode) {
+    console.error("\nAUDIT TESTS FAILED");
+    process.exit(1);
+  }
+  console.log("\n" + passed + " tests passed");
+});

@@ -82,6 +82,16 @@ function clearFlatStreak(ticker) {
   delete _flatStreak[ticker];
 }
 
+// After a close attempt proves RH is already flat, skip the open-age grace and
+// confirm immediately on the next reconcile so ghost state does not linger.
+function forceFlatNext(ticker) {
+  if (!ticker) return;
+  _flatStreak[ticker] = FLAT_CONFIRM_NEEDED;
+  _skipFlatGrace[ticker] = true;
+}
+
+var _skipFlatGrace = {};
+
 async function reconcileRhPositions() {
   if (!rh.getToken()) return { ok: false, reason: "no_token" };
   var auth = await rh.checkAuthStatus();
@@ -106,15 +116,17 @@ async function reconcileRhPositions() {
 
     if (!rhPos) {
       if (statePos && !statePos.stopped) {
+        var forceFlat = !!_skipFlatGrace[ticker];
         var ageMs = statePos.openedAtMs ? (Date.now() - statePos.openedAtMs) : null;
-        if (ageMs != null && ageMs < RH_FLAT_GRACE_MS) {
+        if (!forceFlat && ageMs != null && ageMs < RH_FLAT_GRACE_MS) {
           stateModule.logEvent("RECONCILE", ticker + " RH flat but opened " + Math.round(ageMs / 1000)
             + "s ago — keeping state (grace " + Math.round(RH_FLAT_GRACE_MS / 1000) + "s)");
           continue;
         }
         // If we still have an instrument URL, verify the option mark is reachable —
         // a temporary empty positions list should not kill live TP/SL tracking.
-        if (statePos.instrumentUrl) {
+        // Skip this soft-keep when a close already proved RH flat (forceFlat).
+        if (!forceFlat && statePos.instrumentUrl) {
           try {
             var stillQuoted = await rh.getOptionMarkByUrl(statePos.instrumentUrl);
             if (stillQuoted && stillQuoted > 0) {
@@ -136,12 +148,14 @@ async function reconcileRhPositions() {
         }
         stateModule.logEvent("RECONCILE", ticker + " state open but RH flat — marking closed");
         clearFlatStreak(ticker);
+        delete _skipFlatGrace[ticker];
         stateModule.closePosition(ticker, "reconcile: RH flat");
       }
       continue;
     }
 
     clearFlatStreak(ticker);
+    delete _skipFlatGrace[ticker];
     var side = normalizeSide(rhPos) || (statePos && statePos.side) || null;
     if (!side) continue;
 
@@ -256,6 +270,7 @@ module.exports = {
   entryLooksInflated: entryLooksInflated,
   backfillEntryFromRh: backfillEntryFromRh,
   reconcileRhPositions: reconcileRhPositions,
+  forceFlatNext: forceFlatNext,
   RH_FLAT_GRACE_MS: RH_FLAT_GRACE_MS,
   FLAT_CONFIRM_NEEDED: FLAT_CONFIRM_NEEDED
 };
