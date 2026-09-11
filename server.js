@@ -351,14 +351,19 @@ app.post("/api/contracts", authguard.requireSecret, (req, res) => {
   }
 });
 
-// Full-port: size contracts from all available buying power for SPY or IWM.
-// Also mirrors SPY size onto SPX (same params).
+// Full-port: max whole contracts from available buying power (SPY / IWM / SPX).
+// Optional crossEntry flag toggles IWM→SPY cross and reserves BP when full-porting IWM.
 app.post("/api/full-port", authguard.requireSecret, async (req, res) => {
   try {
     var ticker = String((req.body && req.body.ticker) || "").toUpperCase();
-    if (ticker !== "SPY" && ticker !== "IWM") {
-      return res.status(400).json({ ok: false, error: "ticker must be SPY or IWM" });
+    if (ticker !== "SPY" && ticker !== "IWM" && ticker !== "SPX") {
+      return res.status(400).json({ ok: false, error: "ticker must be SPY, IWM, or SPX" });
     }
+
+    if (req.body && req.body.crossEntry !== undefined) {
+      settings.setCrossEntryEnabled(!!req.body.crossEntry);
+    }
+    var crossEntry = settings.isCrossEntryEnabled();
 
     var bp = null;
     var token = rh.getToken();
@@ -392,13 +397,27 @@ app.post("/api/full-port", authguard.requireSecret, async (req, res) => {
     }
 
     var fullPort = require("./utils/fullPort");
-    var result = await fullPort.computeFullPort(ticker, bp);
+    var result = await fullPort.computeFullPort(ticker, bp, {
+      crossEntry: crossEntry,
+      mirrorSpx: req.body && req.body.mirrorSpx !== false
+    });
     if (!result.ok) return res.status(400).json(result);
 
     var s = getState();
-    var spyC = ticker === "SPY" ? result.contracts : s.contracts.SPY;
-    var iwmC = ticker === "IWM" ? result.contracts : s.contracts.IWM;
-    var spxC = ticker === "SPY" ? result.contracts : (s.contracts.SPX || s.contracts.SPY);
+    var spyC = s.contracts.SPY;
+    var iwmC = s.contracts.IWM;
+    var spxC = s.contracts.SPX || s.contracts.SPY;
+
+    if (ticker === "SPY") {
+      spyC = result.contracts;
+      if (result.mirrorSpx !== false) spxC = result.contracts;
+    } else if (ticker === "IWM") {
+      iwmC = result.contracts;
+      if (result.companion && result.companion.SPY) spyC = result.companion.SPY;
+    } else if (ticker === "SPX") {
+      spxC = result.contracts;
+    }
+
     setContractSize(spyC, iwmC, spxC);
 
     var cfg = buildTradeConfigPreview(spyC, iwmC, settings.getDTE("SPY"), settings.getDTE("IWM"));
@@ -407,6 +426,7 @@ app.post("/api/full-port", authguard.requireSecret, async (req, res) => {
       ticker: ticker,
       contracts: getState().contracts,
       fullPort: result,
+      cross_entry_enabled: crossEntry,
       config: cfg
     });
   } catch (e) {

@@ -339,12 +339,15 @@ function setContractSize(spy, iwm, spx) {
 
 function getTradeSizingFromTotal(total) {
   total = Math.min(100, Math.max(1, parseInt(total, 10) || 1));
-  var half = Math.ceil(total / 2);
+  // Floor half so half + retest == total in whole contracts (never overshoot / fractional).
+  var half = Math.max(1, Math.floor(total / 2));
+  var retest = Math.max(0, total - half);
+  if (retest < 1) retest = half; // 1-lot: retest path still uses whole 1c
   return {
     total: total,
     halfEntry: half,
-    retestAdd: half,
-    fullPosition: half * 2
+    retestAdd: retest,
+    fullPosition: half + (total === 1 ? 0 : Math.max(0, total - half))
   };
 }
 
