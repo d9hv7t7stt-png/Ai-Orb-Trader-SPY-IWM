@@ -367,7 +367,6 @@ app.post("/api/full-port", authguard.requireSecret, async (req, res) => {
       if (status.ok) {
         var funds = await rh.getBuyingPowerFunds({ force: true });
         bp = funds && funds.buying_power != null ? parseFloat(funds.buying_power) : null;
-        if (!(bp > 0) && funds && funds.cash != null) bp = parseFloat(funds.cash) || null;
       }
     }
     if (!(bp > 0)) {

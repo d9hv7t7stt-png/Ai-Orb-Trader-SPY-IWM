@@ -718,17 +718,12 @@ function parseMoney(v) {
   return isNaN(n) ? null : n;
 }
 
-function accountFunds(acct) {
-  if (!acct) return 0;
-  var bp = parseMoney(acct.buying_power);
-  var cash = parseMoney(acct.cash);
-  if (bp != null && bp > 0) return bp;
-  if (cash != null && cash > 0) return cash;
-  return bp != null ? bp : (cash != null ? cash : 0);
+function accountBuyingPower(acct) {
+  if (!acct) return null;
+  return parseMoney(acct.buying_power);
 }
 
-// List every RH brokerage account on this login. Wrong RH_ACCOUNT_NUMBER is the
-// usual reason BP shows a tiny/wrong number while auth still works.
+// List every RH brokerage account on this login.
 async function listAccounts() {
   if (!_token) return { ok: false, error: "no_token", accounts: [] };
   var r = await rawRequest("GET", "/accounts/", null, _token);
@@ -747,57 +742,43 @@ async function listAccounts() {
   return { ok: true, error: null, accounts: results };
 }
 
-// Pick the account that actually holds the money.
-// - If RH_ACCOUNT_NUMBER matches a listed account, use it UNLESS another account
-//   clearly has far more buying power (common when the env var was copied wrong).
-// - Otherwise use the richest account on this login.
+// Trust RH_ACCOUNT_NUMBER when set. Only auto-pick if missing/invalid.
 async function resolveAccountNumber(opts) {
   opts = opts || {};
   var force = !!opts.force;
   var now = Date.now();
   if (!force && _acctCache.accountNumber && (now - _acctCache.at) < 60000) {
-    return { ok: true, accountNumber: _acctCache.accountNumber, accounts: _acctCache.accounts || [] };
+    return { ok: true, accountNumber: _acctCache.accountNumber, accounts: _acctCache.accounts || [], reason: _acctCache.reason || "cache" };
   }
   var listed = await listAccounts();
+  var envAcct = process.env.RH_ACCOUNT_NUMBER ? String(process.env.RH_ACCOUNT_NUMBER).trim() : "";
   if (!listed.ok) {
-    var fallback = process.env.RH_ACCOUNT_NUMBER || null;
-    return { ok: !!fallback, accountNumber: fallback, accounts: [], error: listed.error };
+    return { ok: !!envAcct, accountNumber: envAcct || null, accounts: [], error: listed.error, reason: "env_fallback" };
   }
   var accounts = listed.accounts || [];
-  var envAcct = process.env.RH_ACCOUNT_NUMBER ? String(process.env.RH_ACCOUNT_NUMBER).trim() : "";
   var envMatch = null;
   var best = null;
   for (var i = 0; i < accounts.length; i++) {
     var a = accounts[i];
     if (!a || !a.account_number) continue;
-    var funds = accountFunds(a);
-    if (!best || funds > accountFunds(best)) best = a;
+    var bp = accountBuyingPower(a);
+    if (bp != null && (!best || bp > (accountBuyingPower(best) || -Infinity))) best = a;
     if (envAcct && String(a.account_number) === envAcct) envMatch = a;
   }
 
   var chosen = null;
-  var reason = "richest";
+  var reason = "none";
   if (envMatch) {
-    var envFunds = accountFunds(envMatch);
-    var bestFunds = best ? accountFunds(best) : 0;
-    // Env account exists but is basically empty while another has real money → wrong number.
-    if (best && best.account_number !== envMatch.account_number && bestFunds > Math.max(envFunds * 5, envFunds + 100)) {
-      chosen = best;
-      reason = "env_too_low_using_richest";
-      console.log("[ACCOUNT] RH_ACCOUNT_NUMBER=" + envAcct + " has $" + envFunds.toFixed(2) +
-        " but account " + best.account_number + " has $" + bestFunds.toFixed(2) + " — using the funded account");
-    } else {
-      chosen = envMatch;
-      reason = "env";
-    }
+    chosen = envMatch;
+    reason = "env";
   } else if (best) {
     chosen = best;
-    reason = envAcct ? "env_not_in_list" : "no_env_richest";
-    if (envAcct) {
-      console.log("[ACCOUNT] RH_ACCOUNT_NUMBER=" + envAcct + " not on this login — using " + best.account_number);
-    } else {
-      console.log("[ACCOUNT] RH_ACCOUNT_NUMBER missing — using " + best.account_number);
-    }
+    reason = envAcct ? "env_not_in_list" : "no_env_highest_bp";
+    console.log("[ACCOUNT] " + (envAcct
+      ? ("RH_ACCOUNT_NUMBER=" + envAcct + " not on this login — using " + best.account_number)
+      : ("RH_ACCOUNT_NUMBER missing — using " + best.account_number)));
+  } else if (envAcct) {
+    reason = "env_unverified";
   }
 
   var num = chosen ? String(chosen.account_number) : (envAcct || null);
@@ -830,25 +811,33 @@ async function getBuyingPowerFunds(opts) {
     }
     body = (r && r.body) || {};
   }
-  var bp = body.buying_power || body.cash || null;
+  // STRICT: dashboard "Buying Power" = Robinhood buying_power only.
+  // Never fall back to cash — cash is what made wrong numbers (e.g. ~$1700) show up.
+  var bp = body.buying_power != null && body.buying_power !== "" ? body.buying_power : null;
   var cash = body.cash != null ? body.cash : null;
   var summary = (resolved.accounts || []).map(function(a) {
     return {
       account_number: a.account_number,
       buying_power: a.buying_power,
       cash: a.cash,
+      portfolio_cash: a.portfolio_cash,
       type: a.type || a.brokerage_account_type || null
     };
   });
-  console.log("[BUYING_POWER] account=" + acctNum + " bp=" + bp + " cash=" + cash +
-    " reason=" + (resolved.reason || "?") + " accounts=" + summary.length);
+  console.log("[BUYING_POWER] account=" + acctNum +
+    " buying_power=" + bp +
+    " cash=" + cash +
+    " portfolio_cash=" + (body.portfolio_cash != null ? body.portfolio_cash : null) +
+    " reason=" + (resolved.reason || "?") +
+    " accounts=" + summary.length);
   return {
     ok: bp != null,
     buying_power: bp,
     cash: cash,
+    portfolio_cash: body.portfolio_cash != null ? body.portfolio_cash : null,
     account_number: acctNum,
     accounts: summary,
-    error: null
+    error: bp == null ? "no_buying_power_field" : null
   };
 }
 
