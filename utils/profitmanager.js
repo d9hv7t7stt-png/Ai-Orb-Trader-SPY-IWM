@@ -291,7 +291,7 @@ async function checkProfitTiers() {
 
     if (decision.activateBreakeven) {
       stateModule.setBreakEven(ticker);
-      stateModule.logEvent("BREAKEVEN", ticker + " +30% — stop moved to breakeven $" + entryPrice.toFixed(2));
+      stateModule.logEvent("BREAKEVEN", ticker + " +20% — stop moved to breakeven $" + entryPrice.toFixed(2));
     }
 
     if (decision.stopOut && !pos.stopped) {

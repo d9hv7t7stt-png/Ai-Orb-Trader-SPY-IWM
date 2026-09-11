@@ -92,12 +92,14 @@ test("scale-out at +20%, not at +19%", function() {
   assert.strictEqual(b.scaleOut, false);
 });
 
-test("breakeven at +30% then trail +10% per +20%", function() {
-  var be = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 1, breakEvenActivated: false }, 2.60);
+test("breakeven at +20% then trail +10% per +20%", function() {
+  var early = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 0, breakEvenActivated: false }, 2.38);
+  assert.strictEqual(early.activateBreakeven, false);
+  var be = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 1, breakEvenActivated: false }, 2.40);
   assert.ok(be.activateBreakeven);
   assert.strictEqual(be.newStopPct, 0);
-  var trail = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 2, breakEvenActivated: true, stopPct: 0 }, 3.00);
-  // +50% → one 20% step above +30% → trail stop 10%
+  var trail = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 2, breakEvenActivated: true, stopPct: 0 }, 2.80);
+  // +40% → one 20% step above +20% → trail stop 10%
   assert.strictEqual(trail.newStopPct, 10);
 });
 
