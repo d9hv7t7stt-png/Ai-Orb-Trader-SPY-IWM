@@ -470,7 +470,8 @@ async function waitForCloseConfirmation(orderId, instrumentUrl, soldQty, opts) {
 async function closeOptionPosition(ticker, contracts, reason, matchOpts) {
   const fetched = await fetchOpenOptionPositions();
   if (!fetched.ok) return { ok: false, error: "positions_fetch_failed: " + (fetched.error || "unknown") };
-  const matching = (fetched.positions || []).filter(p => p.chain_symbol === ticker && optionPositionQty(p) > 0);
+  const liveTickers = require("./liveTickers");
+  const matching = (fetched.positions || []).filter(p => liveTickers.matchesChainSymbol(p.chain_symbol, ticker) && optionPositionQty(p) > 0);
   if (!matching.length) return { ok: false, alreadyFlat: true, error: "No open position found" };
 
   const pos = pickRhPosition(matching, matchOpts);

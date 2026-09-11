@@ -475,6 +475,8 @@
             </div>
             <div class="trade-preview" id="spy-trade-preview">—</div>
             <button class="set-btn" onclick="saveTradeConfig('SPY')">Save SPY</button>
+            <button class="set-btn" style="margin-top:8px;background:var(--surface2);color:var(--amber);border:1px solid var(--amber)" onclick="fullPortTicker('SPY')">Full Port SPY</button>
+            <div style="font-size:9px;color:var(--text-dim);margin-top:6px;line-height:1.4">SPX live mirrors SPY size + SPY ORB signals (no SPX webhook).</div>
           </div>
           <div class="trade-config-card">
             <h3>IWM</h3>
@@ -496,6 +498,7 @@
             </div>
             <div class="trade-preview" id="iwm-trade-preview">—</div>
             <button class="set-btn" onclick="saveTradeConfig('IWM')">Save IWM</button>
+            <button class="set-btn" style="margin-top:8px;background:var(--surface2);color:var(--amber);border:1px solid var(--amber)" onclick="fullPortTicker('IWM')">Full Port IWM</button>
           </div>
         </div>
         <div class="preset-row">
@@ -926,7 +929,7 @@ async function toggleFlag(key) {
 }
 
 async function killSwitch(action) {
-  var labels = { flatten: 'Flatten ALL live SPY/IWM positions and halt entries?', halt: 'Halt new live entries (stops still run)?', resume: 'Resume live entries?' };
+  var labels = { flatten: 'Flatten ALL live SPY/IWM/SPX positions and halt entries?', halt: 'Halt new live entries (stops still run)?', resume: 'Resume live entries?' };
   if (!confirm(labels[action] || 'Continue?')) return;
   try {
     var res = await apiFetch('/api/kill', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: action }) });
@@ -1131,6 +1134,42 @@ async function saveTradeConfig(ticker) {
 
 async function saveAllTradeConfig() {
   await saveTradeConfig(null);
+}
+
+async function fullPortTicker(ticker) {
+  if (!ticker || (ticker !== 'SPY' && ticker !== 'IWM')) return;
+  if (!confirm('Full port ' + ticker + ' using all available buying power? This updates live contract size' +
+    (ticker === 'SPY' ? ' (and mirrors SPX).' : '.'))) return;
+  try {
+    toast('Sizing full port for ' + ticker + '…');
+    var res = await apiFetch('/api/full-port', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker: ticker })
+    });
+    var data = await res.json();
+    if (!data.ok) {
+      toast(data.error || 'Full port failed', 'red');
+      return;
+    }
+    if (data.config) applyTradeConfigUI(data.config, true);
+    else if (data.contracts) {
+      var si = document.getElementById('input-spy-c');
+      var ii = document.getElementById('input-iwm-c');
+      if (si && data.contracts.SPY) si.value = data.contracts.SPY;
+      if (ii && data.contracts.IWM) ii.value = data.contracts.IWM;
+      previewTradeConfig();
+    }
+    var fp = data.fullPort || {};
+    var msg = ticker + ' full port → ' + (fp.contracts || data.contracts && data.contracts[ticker]) + 'c';
+    if (fp.premium) msg += ' @ ~$' + Number(fp.premium).toFixed(2);
+    if (fp.estimatedCost) msg += ' (est $' + Number(fp.estimatedCost).toLocaleString() + ')';
+    if (ticker === 'SPY') msg += ' · SPX mirrored';
+    toast(msg);
+    loadState();
+  } catch (e) {
+    toast(e.message || 'Full port error', 'red');
+  }
 }
 
 function applyPreset(name) {

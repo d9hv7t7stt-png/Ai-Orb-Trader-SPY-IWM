@@ -180,7 +180,8 @@ app.post("/api/trade-config", authguard.requireSecret, (req, res) => {
     if (spy.contracts !== undefined || iwm.contracts !== undefined) {
       setContractSize(
         spy.contracts !== undefined ? spy.contracts : getState().contracts.SPY,
-        iwm.contracts !== undefined ? iwm.contracts : getState().contracts.IWM
+        iwm.contracts !== undefined ? iwm.contracts : getState().contracts.IWM,
+        spy.contracts !== undefined ? spy.contracts : undefined // SPX mirrors SPY when SPY size changes
       );
     }
     if (spy.dte !== undefined) settings.setDTE("SPY", spy.dte);
@@ -341,12 +342,76 @@ app.post("/api/sms", authguard.requireSecret, async (req, res) => {
 
 app.post("/api/contracts", authguard.requireSecret, (req, res) => {
   try {
-    const { spy, iwm } = req.body;
+    const { spy, iwm, spx } = req.body || {};
     if (!spy || !iwm) return res.status(400).json({ error: "spy and iwm required" });
-    setContractSize(spy, iwm);
+    setContractSize(spy, iwm, spx);
     res.json({ ok: true, contracts: getState().contracts });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Full-port: size contracts from all available buying power for SPY or IWM.
+// Also mirrors SPY size onto SPX (same params).
+app.post("/api/full-port", authguard.requireSecret, async (req, res) => {
+  try {
+    var ticker = String((req.body && req.body.ticker) || "").toUpperCase();
+    if (ticker !== "SPY" && ticker !== "IWM") {
+      return res.status(400).json({ ok: false, error: "ticker must be SPY or IWM" });
+    }
+
+    var bp = null;
+    var token = rh.getToken();
+    var acct = process.env.RH_ACCOUNT_NUMBER;
+    if (token && acct) {
+      var status = await rh.checkAuthStatus();
+      if (status.ok) {
+        var body = await new Promise(function(resolve) {
+          var opts = {
+            hostname: "api.robinhood.com",
+            path: "/accounts/" + acct + "/",
+            headers: {
+              "Authorization": "Bearer " + token,
+              "Accept": "application/json",
+              "X-Robinhood-API-Version": "1.431.4",
+              "User-Agent": "Robinhood/823 (iPhone; iOS 16.0; Scale/3.00)"
+            }
+          };
+          var req3 = https.request(opts, function(r) {
+            var raw = ""; r.on("data", function(c) { raw += c; });
+            r.on("end", function() { try { resolve(JSON.parse(raw)); } catch (e) { resolve({}); } });
+          });
+          req3.on("error", function() { resolve({}); });
+          req3.end();
+        });
+        bp = parseFloat(body.buying_power || body.cash || 0) || null;
+      }
+    }
+    if (!(bp > 0)) {
+      return res.status(400).json({ ok: false, error: "buying power unavailable — check RH auth" });
+    }
+
+    var fullPort = require("./utils/fullPort");
+    var result = await fullPort.computeFullPort(ticker, bp);
+    if (!result.ok) return res.status(400).json(result);
+
+    var s = getState();
+    var spyC = ticker === "SPY" ? result.contracts : s.contracts.SPY;
+    var iwmC = ticker === "IWM" ? result.contracts : s.contracts.IWM;
+    var spxC = ticker === "SPY" ? result.contracts : (s.contracts.SPX || s.contracts.SPY);
+    setContractSize(spyC, iwmC, spxC);
+
+    var cfg = buildTradeConfigPreview(spyC, iwmC, settings.getDTE("SPY"), settings.getDTE("IWM"));
+    res.json({
+      ok: true,
+      ticker: ticker,
+      contracts: getState().contracts,
+      fullPort: result,
+      config: cfg
+    });
+  } catch (e) {
+    console.log("[FULL_PORT_ERROR]", e.message);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
