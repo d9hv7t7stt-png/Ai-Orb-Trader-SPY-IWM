@@ -407,6 +407,39 @@ test("cross_entry_enabled defaults true and persists", function() {
   assert.strictEqual(all.cross_entry_enabled, true);
 });
 
+test("buy_enabled defaults true per ticker and persists", function() {
+  var settings = require("../utils/settings");
+  var allOn = settings.setBuyEnabledMap({ SPY: true, IWM: true, SPX: true });
+  assert.strictEqual(allOn.SPY, true);
+  assert.strictEqual(allOn.IWM, true);
+  assert.strictEqual(allOn.SPX, true);
+  assert.strictEqual(settings.isBuyEnabled("SPY"), true);
+  assert.strictEqual(settings.isBuyEnabled("IWM"), true);
+  assert.strictEqual(settings.isBuyEnabled("SPX"), true);
+  assert.strictEqual(settings.isBuyEnabled("SPXW"), true);
+
+  settings.setBuyEnabled("IWM", false);
+  assert.strictEqual(settings.isBuyEnabled("IWM"), false);
+  assert.strictEqual(settings.isBuyEnabled("SPY"), true);
+  assert.strictEqual(settings.isBuyEnabled("SPX"), true);
+
+  settings.setBuyEnabled("SPX", false);
+  assert.strictEqual(settings.isBuyEnabled("SPX"), false);
+  assert.strictEqual(settings.isBuyEnabled("SPXW"), false);
+
+  var map = settings.setBuyEnabledMap({ SPY: false, IWM: true });
+  assert.strictEqual(map.SPY, false);
+  assert.strictEqual(map.IWM, true);
+  assert.strictEqual(map.SPX, false);
+
+  var all = settings.getAll();
+  assert.strictEqual(all.buy_enabled.SPY, false);
+  assert.strictEqual(all.buy_enabled.IWM, true);
+  assert.strictEqual(all.buy_enabled.SPX, false);
+
+  settings.setBuyEnabledMap({ SPY: true, IWM: true, SPX: true });
+});
+
 test("Whop license key format accepts dash-separated uppercase", function() {
   var whop = require("../scripts/whop-customer-templates/whopLicense");
   assert.strictEqual(whop.isLicenseKeyFormat("ABCD12-EF3456-GH7890"), true);

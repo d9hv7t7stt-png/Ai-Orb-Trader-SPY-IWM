@@ -553,6 +553,36 @@
     font-family: var(--display);
     font-size: 14px; letter-spacing: 0.12em; margin-bottom: 2px;
   }
+  .sizing-card-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin-bottom: 2px;
+  }
+  .sizing-card-head h3 { margin-bottom: 0; }
+  .buy-toggle {
+    flex-shrink: 0;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 5px 8px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    cursor: pointer; font-family: var(--mono);
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .buy-toggle .buy-label {
+    font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-dim);
+  }
+  .buy-toggle .buy-state {
+    font-family: var(--display); font-size: 10px; letter-spacing: 0.1em;
+  }
+  .buy-toggle.on {
+    border-color: rgba(0,240,168,0.45);
+    background: var(--green-dim);
+  }
+  .buy-toggle.on .buy-state { color: var(--green); }
+  .buy-toggle.off {
+    border-color: rgba(255,77,106,0.4);
+    background: var(--red-dim);
+  }
+  .buy-toggle.off .buy-state { color: var(--red); }
   .sizing-card .sub {
     font-size: 9px; color: var(--text-dim); letter-spacing: 0.08em;
     text-transform: uppercase; margin-bottom: 12px;
@@ -671,7 +701,13 @@
       <div class="panel-body">
         <div class="sizing-grid">
           <div class="sizing-card">
-            <h3>SPY</h3>
+            <div class="sizing-card-head">
+              <h3>SPY</h3>
+              <button type="button" class="buy-toggle on" id="buy-spy" onclick="toggleBuy('SPY')" title="Allow live buys for SPY">
+                <span class="buy-label">Buy</span>
+                <span class="buy-state" id="buy-spy-state">ON</span>
+              </button>
+            </div>
             <div class="sub" id="spy-expiry-sub">—</div>
             <div class="contract-row">
               <span class="contract-label">Contracts</span>
@@ -692,7 +728,13 @@
             <button class="set-btn" onclick="saveTradeConfig('SPY')">Save SPY</button>
           </div>
           <div class="sizing-card iwm">
-            <h3>IWM</h3>
+            <div class="sizing-card-head">
+              <h3>IWM</h3>
+              <button type="button" class="buy-toggle on" id="buy-iwm" onclick="toggleBuy('IWM')" title="Allow live buys for IWM">
+                <span class="buy-label">Buy</span>
+                <span class="buy-state" id="buy-iwm-state">ON</span>
+              </button>
+            </div>
             <div class="sub" id="iwm-expiry-sub">—</div>
             <div class="contract-row">
               <span class="contract-label">Contracts</span>
@@ -713,7 +755,13 @@
             <button class="set-btn" onclick="saveTradeConfig('IWM')">Save IWM</button>
           </div>
           <div class="sizing-card spx">
-            <h3>SPX</h3>
+            <div class="sizing-card-head">
+              <h3>SPX</h3>
+              <button type="button" class="buy-toggle on" id="buy-spx" onclick="toggleBuy('SPX')" title="Allow live buys for SPX (SPY ORB mirror)">
+                <span class="buy-label">Buy</span>
+                <span class="buy-state" id="buy-spx-state">ON</span>
+              </button>
+            </div>
             <div class="sub" id="spx-expiry-sub">Mirrors SPY DTE · SPY ORB</div>
             <div class="contract-row">
               <span class="contract-label">Contracts</span>
@@ -1127,6 +1175,40 @@ function updateSafetyUI(data) {
     crossPill.className = 'sys-toggle ' + (crossOn ? 'on' : 'off');
     if (crossState) crossState.textContent = crossOn ? 'ON' : 'OFF';
   }
+  updateBuyToggles(data && data.buy_enabled);
+}
+
+function updateBuyToggles(map) {
+  map = map || (state && state.buy_enabled) || { SPY: true, IWM: true, SPX: true };
+  ['SPY', 'IWM', 'SPX'].forEach(function(t) {
+    var on = map[t] !== false;
+    var btn = document.getElementById('buy-' + t.toLowerCase());
+    var st = document.getElementById('buy-' + t.toLowerCase() + '-state');
+    if (btn) btn.className = 'buy-toggle ' + (on ? 'on' : 'off');
+    if (st) st.textContent = on ? 'ON' : 'OFF';
+  });
+}
+
+async function toggleBuy(ticker) {
+  var t = String(ticker || '').toUpperCase();
+  if (t !== 'SPY' && t !== 'IWM' && t !== 'SPX') return;
+  var cur = (state && state.buy_enabled) || { SPY: true, IWM: true, SPX: true };
+  var next = cur[t] === false;
+  if (!next && !confirm('Turn OFF live buys for ' + t + '?\n\nNew entries/adds will be skipped. Open positions still manage stops/exits.')) return;
+  if (next && !confirm('Turn ON live buys for ' + t + '?')) return;
+  try {
+    var body = { buy_ticker: t, buy_enabled_value: next };
+    var res = await apiFetch('/api/settings/flags', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    var data = await res.json();
+    if (!data.ok) { toast(data.error || 'Buy toggle failed', 'red'); return; }
+    if (state) state.buy_enabled = data.buy_enabled;
+    updateBuyToggles(data.buy_enabled);
+    toast(t + ' buys ' + (next ? 'ON' : 'OFF'));
+  } catch (e) { toast(e.message || 'Error', 'red'); }
 }
 
 async function toggleFlag(key) {

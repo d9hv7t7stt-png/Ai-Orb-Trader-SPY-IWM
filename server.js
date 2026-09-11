@@ -53,6 +53,7 @@ app.get("/health", async (req, res) => {
     trading_enabled: settings.isTradingEnabled(),
     dual_leg_live: settings.isDualLegLive(),
     cross_entry_enabled: settings.isCrossEntryEnabled(),
+    buy_enabled: settings.getBuyEnabled(),
     webhook_queue: webhookQueue.summary().counts,
     token_expires_at: rh.getAccessTokenExpiryMs() ? new Date(rh.getAccessTokenExpiryMs()).toISOString() : null,
     webhook_url: ((req.get("x-forwarded-proto") || req.protocol) + "://" + req.get("host") + "/webhook"),
@@ -107,6 +108,7 @@ app.get("/api/state", authguard.requireSecret, async (req, res) => {
   s.trading_enabled = settings.isTradingEnabled();
   s.dual_leg_live = settings.isDualLegLive();
   s.cross_entry_enabled = settings.isCrossEntryEnabled();
+  s.buy_enabled = settings.getBuyEnabled();
   s.webhook_queue = webhookQueue.summary();
   res.json(s);
 });
@@ -116,10 +118,17 @@ app.post("/api/settings/flags", authguard.requireSecret, (req, res) => {
     var body = req.body || {};
     if (body.dual_leg_live !== undefined) settings.setDualLegLive(!!body.dual_leg_live);
     if (body.cross_entry_enabled !== undefined) settings.setCrossEntryEnabled(!!body.cross_entry_enabled);
+    if (body.buy_enabled && typeof body.buy_enabled === "object") {
+      settings.setBuyEnabledMap(body.buy_enabled);
+    }
+    if (body.buy_ticker && body.buy_enabled_value !== undefined) {
+      settings.setBuyEnabled(body.buy_ticker, body.buy_enabled_value);
+    }
     res.json({
       ok: true,
       dual_leg_live: settings.isDualLegLive(),
       cross_entry_enabled: settings.isCrossEntryEnabled(),
+      buy_enabled: settings.getBuyEnabled(),
       durable: settings.getAll().durable
     });
   } catch (e) {
