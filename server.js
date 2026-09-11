@@ -454,6 +454,21 @@ app.get("/api/discord/sunday", authguard.requireSecret, async (req, res) => {
   }
 });
 
+app.post("/api/discord/broadcast", authguard.requireSecret, async (req, res) => {
+  try {
+    var body = req.body || {};
+    var content = body.content != null ? String(body.content) : "";
+    if (!content) return res.status(400).json({ ok: false, error: "content required" });
+    var posted = await discord.broadcastRaw(content, {
+      channels: body.channels || req.query.channels || "all",
+      pingEveryone: !!body.pingEveryone || content.indexOf("@everyone") !== -1
+    });
+    res.json({ ok: true, posted: posted || [] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/api/discord/orb", authguard.requireSecret, async (req, res) => {
   try {
     var force = String(req.query.force || "") === "1";
