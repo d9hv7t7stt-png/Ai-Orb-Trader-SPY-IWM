@@ -350,8 +350,12 @@ async function placeOptionOrder(ticker, side, contracts, expiry, strike, optionT
   const askPrice = quoteRes.results?.[0]?.ask_price || "1.00";
   const limitPrice = (parseFloat(askPrice) * 1.05).toFixed(2);
 
+  var acctResolved = await resolveAccountNumber();
+  var acctNum = acctResolved.accountNumber || process.env.RH_ACCOUNT_NUMBER;
+  if (!acctNum) throw new Error("No Robinhood account number — set RH_ACCOUNT_NUMBER");
+
   const order = {
-    account: `https://api.robinhood.com/accounts/${process.env.RH_ACCOUNT_NUMBER}/`,
+    account: `https://api.robinhood.com/accounts/${acctNum}/`,
     direction: "debit",
     legs: [{
       option: instrumentUrl,
@@ -487,7 +491,7 @@ async function closeOptionPosition(ticker, contracts, reason, matchOpts) {
   const limitPrice = (parseFloat(bidPrice) * 0.95).toFixed(2);
 
   const order = {
-    account: `https://api.robinhood.com/accounts/${process.env.RH_ACCOUNT_NUMBER}/`,
+    account: `https://api.robinhood.com/accounts/${(await resolveAccountNumber()).accountNumber || process.env.RH_ACCOUNT_NUMBER}/`,
     direction: "credit",
     legs: [{
       option: instrumentUrl,
@@ -706,14 +710,158 @@ async function getOptionMarkByUrl(instrumentUrl) {
 }
 
 var _authCache = { at: 0, result: null };
+var _acctCache = { at: 0, accountNumber: null, accounts: null };
+
+function parseMoney(v) {
+  if (v == null || v === "") return null;
+  var n = parseFloat(v);
+  return isNaN(n) ? null : n;
+}
+
+function accountFunds(acct) {
+  if (!acct) return 0;
+  var bp = parseMoney(acct.buying_power);
+  var cash = parseMoney(acct.cash);
+  if (bp != null && bp > 0) return bp;
+  if (cash != null && cash > 0) return cash;
+  return bp != null ? bp : (cash != null ? cash : 0);
+}
+
+// List every RH brokerage account on this login. Wrong RH_ACCOUNT_NUMBER is the
+// usual reason BP shows a tiny/wrong number while auth still works.
+async function listAccounts() {
+  if (!_token) return { ok: false, error: "no_token", accounts: [] };
+  var r = await rawRequest("GET", "/accounts/", null, _token);
+  if (isAuthError(r)) {
+    var ok = await reauthorize();
+    if (!ok) return { ok: false, error: "auth_failed", accounts: [] };
+    r = await rawRequest("GET", "/accounts/", null, _token);
+    if (isAuthError(r)) return { ok: false, error: "auth_failed", accounts: [] };
+  }
+  if (r.status < 200 || r.status >= 300) {
+    var detail = (r.body && (r.body.detail || r.body.error)) || ("http_" + r.status);
+    return { ok: false, error: String(detail), accounts: [] };
+  }
+  var results = (r.body && r.body.results) || [];
+  if (!Array.isArray(results)) results = [];
+  return { ok: true, error: null, accounts: results };
+}
+
+// Pick the account that actually holds the money.
+// - If RH_ACCOUNT_NUMBER matches a listed account, use it UNLESS another account
+//   clearly has far more buying power (common when the env var was copied wrong).
+// - Otherwise use the richest account on this login.
+async function resolveAccountNumber(opts) {
+  opts = opts || {};
+  var force = !!opts.force;
+  var now = Date.now();
+  if (!force && _acctCache.accountNumber && (now - _acctCache.at) < 60000) {
+    return { ok: true, accountNumber: _acctCache.accountNumber, accounts: _acctCache.accounts || [] };
+  }
+  var listed = await listAccounts();
+  if (!listed.ok) {
+    var fallback = process.env.RH_ACCOUNT_NUMBER || null;
+    return { ok: !!fallback, accountNumber: fallback, accounts: [], error: listed.error };
+  }
+  var accounts = listed.accounts || [];
+  var envAcct = process.env.RH_ACCOUNT_NUMBER ? String(process.env.RH_ACCOUNT_NUMBER).trim() : "";
+  var envMatch = null;
+  var best = null;
+  for (var i = 0; i < accounts.length; i++) {
+    var a = accounts[i];
+    if (!a || !a.account_number) continue;
+    var funds = accountFunds(a);
+    if (!best || funds > accountFunds(best)) best = a;
+    if (envAcct && String(a.account_number) === envAcct) envMatch = a;
+  }
+
+  var chosen = null;
+  var reason = "richest";
+  if (envMatch) {
+    var envFunds = accountFunds(envMatch);
+    var bestFunds = best ? accountFunds(best) : 0;
+    // Env account exists but is basically empty while another has real money → wrong number.
+    if (best && best.account_number !== envMatch.account_number && bestFunds > Math.max(envFunds * 5, envFunds + 100)) {
+      chosen = best;
+      reason = "env_too_low_using_richest";
+      console.log("[ACCOUNT] RH_ACCOUNT_NUMBER=" + envAcct + " has $" + envFunds.toFixed(2) +
+        " but account " + best.account_number + " has $" + bestFunds.toFixed(2) + " — using the funded account");
+    } else {
+      chosen = envMatch;
+      reason = "env";
+    }
+  } else if (best) {
+    chosen = best;
+    reason = envAcct ? "env_not_in_list" : "no_env_richest";
+    if (envAcct) {
+      console.log("[ACCOUNT] RH_ACCOUNT_NUMBER=" + envAcct + " not on this login — using " + best.account_number);
+    } else {
+      console.log("[ACCOUNT] RH_ACCOUNT_NUMBER missing — using " + best.account_number);
+    }
+  }
+
+  var num = chosen ? String(chosen.account_number) : (envAcct || null);
+  _acctCache = { at: now, accountNumber: num, accounts: accounts, reason: reason };
+  return { ok: !!num, accountNumber: num, accounts: accounts, reason: reason, chosen: chosen };
+}
+
+async function getBuyingPowerFunds(opts) {
+  opts = opts || {};
+  var resolved = await resolveAccountNumber({ force: !!opts.force });
+  if (!resolved.accountNumber) {
+    return {
+      ok: false,
+      buying_power: null,
+      cash: null,
+      account_number: null,
+      accounts: [],
+      error: resolved.error || "no_account"
+    };
+  }
+  var acctNum = resolved.accountNumber;
+  var body = null;
+  if (resolved.chosen && String(resolved.chosen.account_number) === acctNum) {
+    body = resolved.chosen;
+  } else {
+    var r = await rawRequest("GET", "/accounts/" + acctNum + "/", null, _token);
+    if (isAuthError(r)) {
+      var ok = await reauthorize();
+      if (ok) r = await rawRequest("GET", "/accounts/" + acctNum + "/", null, _token);
+    }
+    body = (r && r.body) || {};
+  }
+  var bp = body.buying_power || body.cash || null;
+  var cash = body.cash != null ? body.cash : null;
+  var summary = (resolved.accounts || []).map(function(a) {
+    return {
+      account_number: a.account_number,
+      buying_power: a.buying_power,
+      cash: a.cash,
+      type: a.type || a.brokerage_account_type || null
+    };
+  });
+  console.log("[BUYING_POWER] account=" + acctNum + " bp=" + bp + " cash=" + cash +
+    " reason=" + (resolved.reason || "?") + " accounts=" + summary.length);
+  return {
+    ok: bp != null,
+    buying_power: bp,
+    cash: cash,
+    account_number: acctNum,
+    accounts: summary,
+    error: null
+  };
+}
+
+function getResolvedAccountNumber() {
+  return (_acctCache && _acctCache.accountNumber) || process.env.RH_ACCOUNT_NUMBER || null;
+}
 
 async function checkAuthStatus() {
   if (!_token) return { ok: false, reason: "no_token" };
   var now = Date.now();
   if (_authCache.result && (now - _authCache.at) < 60000) return _authCache.result;
-  var acct = process.env.RH_ACCOUNT_NUMBER;
-  var path = acct ? "/accounts/" + acct + "/" : "/accounts/";
-  var r = await rawRequest("GET", path, null, _token);
+  // Prefer /accounts/ list so a wrong RH_ACCOUNT_NUMBER does not look like auth failure.
+  var r = await rawRequest("GET", "/accounts/", null, _token);
   var result = isAuthError(r) ? { ok: false, reason: "token_rejected" } : { ok: true };
   _authCache = { at: now, result: result };
   return result;
@@ -726,7 +874,11 @@ async function getOpenOptionPositions() {
 
 async function fetchOpenOptionPositions() {
   var path = "/options/positions/?nonzero=true";
-  var acct = process.env.RH_ACCOUNT_NUMBER;
+  var acct = getResolvedAccountNumber();
+  if (!acct) {
+    var resolved = await resolveAccountNumber();
+    acct = resolved.accountNumber;
+  }
   if (acct) path += "&account_numbers=" + encodeURIComponent(acct);
   var all = [];
   var guard = 0;
@@ -790,5 +942,6 @@ module.exports = {
   getQuote, placeOptionOrder, closeOptionPosition,
   getOptionOrder, waitForFillPrice, waitForCloseConfirmation, fillPriceFromOrder, perShareFromRhPosition,
   getOptionMark, getOptionMarkByUrl, getOpenOptionPositions, fetchOpenOptionPositions,
-  optionPositionQty, sameOptionUrl, isAlreadyFlatError
+  optionPositionQty, sameOptionUrl, isAlreadyFlatError,
+  listAccounts, resolveAccountNumber, getBuyingPowerFunds, getResolvedAccountNumber
 };
