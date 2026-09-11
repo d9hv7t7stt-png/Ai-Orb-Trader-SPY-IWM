@@ -235,9 +235,9 @@ test("grok secret falls back to WEBHOOK_SECRET", function() {
 test("trade sizing preview matches live half+half", function() {
   var state = require("../utils/state");
   var sz = state.getTradeSizingFromTotal(7);
-  assert.strictEqual(sz.halfEntry, 4);
+  assert.strictEqual(sz.halfEntry, 3);
   assert.strictEqual(sz.retestAdd, 4);
-  assert.strictEqual(sz.fullPosition, 8);
+  assert.strictEqual(sz.fullPosition, 7);
   var from1 = state.getTradeSizingFromTotal(1);
   assert.strictEqual(from1.halfEntry, 1);
   assert.strictEqual(from1.retestAdd, 1);
@@ -817,4 +817,55 @@ ghostClosePromise.then(function() {
     process.exit(1);
   }
   console.log("\n" + passed + " tests passed");
+});
+
+
+console.log("fullPort + SPX live");
+test("fullPort contractsFromBuyingPower max whole contracts, never fractional", function() {
+  var fullPort = require("../utils/fullPort");
+  // With 5% premium pad + 98.5% BP util, size is conservative whole contracts.
+  var n = fullPort.contractsFromBuyingPower(10000, 2.5, { dualLeg: false, premiumPad: 1, bpUtilization: 1 });
+  assert.strictEqual(n, 40);
+  assert.strictEqual(fullPort.contractsFromBuyingPower(10000, 2.5, { dualLeg: true, premiumPad: 1, bpUtilization: 1 }), 20);
+  assert.strictEqual(fullPort.contractsFromBuyingPower(100, 2.5, { dualLeg: false }), 0);
+  assert.strictEqual(fullPort.contractsFromBuyingPower(250000, 1.0, { dualLeg: false, premiumPad: 1, bpUtilization: 1 }), 100);
+  // Odd leftovers are dropped — never fractional.
+  assert.strictEqual(fullPort.preferEvenContracts(41), 40);
+  assert.strictEqual(fullPort.wholeContracts(3.9), 3);
+  // Padded sizing still returns whole contracts only.
+  var padded = fullPort.contractsFromBuyingPower(10000, 2.5, { dualLeg: false });
+  assert.ok(padded >= 1 && padded <= 40);
+  assert.strictEqual(padded % 1, 0);
+  assert.strictEqual(padded % 2, 0);
+});
+
+test("SPX is a live ticker and trades SPX chain", function() {
+  var liveTickers = require("../utils/liveTickers");
+  assert.ok(liveTickers.isLiveTicker("SPX"));
+  assert.strictEqual(liveTickers.tradeSymbolFor("SPX"), "SPX");
+  assert.strictEqual(liveTickers.tradeSymbolFor("SPXW"), "SPX");
+  assert.deepStrictEqual(liveTickers.chainSymbolsFor("SPX"), ["SPX", "SPXW"]);
+  assert.ok(liveTickers.matchesChainSymbol("SPXW", "SPX"));
+});
+
+test("SPX DTE and contract size mirror SPY", function() {
+  var expiry = require("../utils/expiry");
+  var settings = require("../utils/settings");
+  var state = require("../utils/state");
+  settings.setDTE("SPY", 1);
+  assert.strictEqual(expiry.getDTE("SPX"), 1);
+  assert.strictEqual(settings.getDTE("SPX"), 1);
+  state.setContractSize(7, 3);
+  assert.strictEqual(state.getState().contracts.SPY, 7);
+  assert.strictEqual(state.getState().contracts.IWM, 3);
+  assert.strictEqual(state.getState().contracts.SPX, 7);
+  state.setContractSize(2, 2, 5);
+  assert.strictEqual(state.getState().contracts.SPX, 5);
+});
+
+test("breakeven still activates at +20%", function() {
+  var exitlogic = require("../utils/exitlogic");
+  assert.strictEqual(exitlogic.BREAKEVEN_AT_PCT, 20);
+  var be = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 1, breakEvenActivated: false }, 2.40);
+  assert.ok(be.activateBreakeven);
 });

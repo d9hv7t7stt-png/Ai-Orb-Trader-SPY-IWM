@@ -31,13 +31,20 @@ async function resolveEntryPrice(instrumentUrl, limitPrice) {
 }
 
 async function placeOrder(opts) {
+  var liveTickers = require("./liveTickers");
+  var chainSymbol = liveTickers.tradeSymbolFor(opts.ticker);
   var expiry = opts.expiry || getExpiry(opts.ticker);
-  var price = await resolveUnderlying(opts.ticker);
-  var strike = opts.strike != null ? Math.round(parseFloat(opts.strike)) : Math.round(price);
+  var price = await resolveUnderlying(opts.ticker === "SPX" || opts.ticker === "SPXW" ? "SPX" : opts.ticker);
+  // Index options strike in $5 increments.
+  var rawStrike = opts.strike != null ? parseFloat(opts.strike) : price;
+  var strike = (chainSymbol === "SPX" || opts.ticker === "SPX" || opts.ticker === "SPXW")
+    ? Math.round(rawStrike / 5) * 5
+    : Math.round(rawStrike);
   if (strike <= 0) throw new Error("Could not resolve underlying price for " + opts.ticker + " — check RH_TOKEN");
-  console.log("[ORDER] " + opts.ticker + " " + opts.side + " x" + opts.contracts +
+  console.log("[ORDER] " + opts.ticker + (chainSymbol !== opts.ticker ? ("→" + chainSymbol) : "") +
+    " " + opts.side + " x" + opts.contracts +
     " strike=" + strike + " expiry=" + expiry + (opts.dteTag != null ? (" dte=" + opts.dteTag) : ""));
-  var result = await rh.placeOptionOrder(opts.ticker, opts.side, opts.contracts, expiry, strike, opts.side);
+  var result = await rh.placeOptionOrder(chainSymbol, opts.side, opts.contracts, expiry, strike, opts.side);
   var entryPrice = 0;
   if (result.order_id) {
     entryPrice = await rh.waitForFillPrice(result.order_id, result.instrumentUrl);

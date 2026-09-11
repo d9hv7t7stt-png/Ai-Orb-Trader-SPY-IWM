@@ -41,8 +41,10 @@ function save() {
 }
 
 function getDTE(ticker) {
-  var v = settings.dte[ticker];
-  return typeof v === "number" ? v : (ticker === "SPY" ? 1 : 0);
+  var t = String(ticker || "").toUpperCase();
+  if (t === "SPX" || t === "SPXW") t = "SPY";
+  var v = settings.dte[t];
+  return typeof v === "number" ? v : (t === "SPY" ? 1 : 0);
 }
 
 function setDTE(ticker, val) {

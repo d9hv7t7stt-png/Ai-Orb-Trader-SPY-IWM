@@ -13,8 +13,9 @@ function normalizeSide(rhPos) {
 }
 
 function findRhPosition(rhPositions, ticker, pos) {
+  var liveTickers = require("./liveTickers");
   var open = (rhPositions || []).filter(function(p) {
-    return p.chain_symbol === ticker && rh.optionPositionQty(p) > 0;
+    return liveTickers.matchesChainSymbol(p.chain_symbol, ticker) && rh.optionPositionQty(p) > 0;
   });
   if (!open.length) return null;
 
