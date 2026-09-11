@@ -58,9 +58,15 @@ async function closeLiveOrLog(ticker, contracts, reason) {
 }
 
 function liveEntryBlocked(ticker, action) {
-  if (settings.isTradingEnabled()) return false;
-  stateModule.logEvent("KILL_SWITCH", ticker + " live " + action + " blocked");
-  return true;
+  if (!settings.isTradingEnabled()) {
+    stateModule.logEvent("KILL_SWITCH", ticker + " live " + action + " blocked");
+    return true;
+  }
+  if (!settings.isBuyEnabled(ticker)) {
+    stateModule.logEvent("BUY_OFF", ticker + " live " + action + " blocked — buy toggle OFF");
+    return true;
+  }
+  return false;
 }
 
 function isRetryableRhError(msg) {

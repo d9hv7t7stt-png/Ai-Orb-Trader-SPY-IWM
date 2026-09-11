@@ -24,13 +24,15 @@ function test(name, fn) {
 }
 
 console.log("paperLegs");
-test("5% / 2.5% per leg floors contracts", function() {
-  // $50k * 5% * 50% = $1,250 / ($2.50 * 100) = 5 contracts
+test("20% / 10% per leg floors contracts", function() {
+  // $50k * 20% * 50% = $5,000 / ($2.50 * 100) = 20 contracts
+  assert.strictEqual(paperLegs.sizeContracts(50000, 20, 0.5, 2.50), 20);
+  // $10k * 10% = $1,000 / ($3 * 100) = 3
+  assert.strictEqual(paperLegs.sizeContracts(10000, 20, 0.5, 3.00), 3);
+  assert.strictEqual(paperLegs.sizeContracts(10000, 20, 0.5, 1.00), 10);
+  assert.strictEqual(paperLegs.sizeContracts(50000, 20, 0.5, 0), 0);
+  // legacy 5% math still works in the helper
   assert.strictEqual(paperLegs.sizeContracts(50000, 5, 0.5, 2.50), 5);
-  // $10k * 2.5% = $250 / ($3 * 100) = 0 (too expensive)
-  assert.strictEqual(paperLegs.sizeContracts(10000, 5, 0.5, 3.00), 0);
-  assert.strictEqual(paperLegs.sizeContracts(10000, 5, 0.5, 1.00), 2);
-  assert.strictEqual(paperLegs.sizeContracts(50000, 5, 0.5, 0), 0);
 });
 
 test("SPXW strikes round to $5; equity to $1", function() {
@@ -405,6 +407,39 @@ test("cross_entry_enabled defaults true and persists", function() {
   assert.strictEqual(settings.isCrossEntryEnabled(), true);
   var all = settings.getAll();
   assert.strictEqual(all.cross_entry_enabled, true);
+});
+
+test("buy_enabled defaults true per ticker and persists", function() {
+  var settings = require("../utils/settings");
+  var allOn = settings.setBuyEnabledMap({ SPY: true, IWM: true, SPX: true });
+  assert.strictEqual(allOn.SPY, true);
+  assert.strictEqual(allOn.IWM, true);
+  assert.strictEqual(allOn.SPX, true);
+  assert.strictEqual(settings.isBuyEnabled("SPY"), true);
+  assert.strictEqual(settings.isBuyEnabled("IWM"), true);
+  assert.strictEqual(settings.isBuyEnabled("SPX"), true);
+  assert.strictEqual(settings.isBuyEnabled("SPXW"), true);
+
+  settings.setBuyEnabled("IWM", false);
+  assert.strictEqual(settings.isBuyEnabled("IWM"), false);
+  assert.strictEqual(settings.isBuyEnabled("SPY"), true);
+  assert.strictEqual(settings.isBuyEnabled("SPX"), true);
+
+  settings.setBuyEnabled("SPX", false);
+  assert.strictEqual(settings.isBuyEnabled("SPX"), false);
+  assert.strictEqual(settings.isBuyEnabled("SPXW"), false);
+
+  var map = settings.setBuyEnabledMap({ SPY: false, IWM: true });
+  assert.strictEqual(map.SPY, false);
+  assert.strictEqual(map.IWM, true);
+  assert.strictEqual(map.SPX, false);
+
+  var all = settings.getAll();
+  assert.strictEqual(all.buy_enabled.SPY, false);
+  assert.strictEqual(all.buy_enabled.IWM, true);
+  assert.strictEqual(all.buy_enabled.SPX, false);
+
+  settings.setBuyEnabledMap({ SPY: true, IWM: true, SPX: true });
 });
 
 test("Whop license key format accepts dash-separated uppercase", function() {
