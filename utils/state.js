@@ -51,7 +51,9 @@ function restorePositions(savedPos) {
   var positions = { SPY: null, IWM: null, SPX: null };
   if (!savedPos || _saved.lastReset !== _today) return positions;
   ["SPY", "IWM", "SPX"].forEach(function(t) {
-    if (savedPos[t] && !savedPos[t].stopped) positions[t] = savedPos[t];
+    var p = savedPos[t];
+    // Only restore bot-opened positions. Manual / imported RH inventory stays out of TP/SL.
+    if (p && !p.stopped && p.managed === true) positions[t] = p;
   });
   return positions;
 }
@@ -69,6 +71,21 @@ let state = {
   lastReset: (_saved && _saved.lastReset === _today) ? _saved.lastReset : null,
   log: []
 };
+
+// Belt-and-suspenders: never keep imported/manual inventory in the TP/SL book.
+(function purgeUnmanagedOnLoad() {
+  var dirty = false;
+  ["SPY", "IWM", "SPX"].forEach(function(t) {
+    var pos = state.positions[t];
+    if (pos && !pos.stopped && pos.managed !== true) {
+      state.positions[t] = null;
+      dirty = true;
+    }
+  });
+  if (dirty) {
+    try { savePersistedState(); } catch (e) {}
+  }
+})();
 
 function getState() { return state; }
 
@@ -110,10 +127,27 @@ function setORB(ticker, high, low, source) {
 
 function getPosition(ticker) { return state.positions[ticker]; }
 
-// Only bot-opened positions are managed (TP/SL, flips, auto-sell).
-// Manual RH contracts must never be imported into managed state.
+// Only positions the bot explicitly opened (managed === true) get TP/SL / auto-sell.
+// Missing flag = manual or pre-tag import — do not manage.
 function isManagedPosition(pos) {
-  return !!(pos && !pos.stopped && pos.managed !== false);
+  return !!(pos && !pos.stopped && pos.managed === true);
+}
+
+// Drop any non-bot positions already in memory (e.g. imported before this rule).
+function dropUnmanagedPositions(reason) {
+  var dropped = [];
+  ["SPY", "IWM", "SPX"].forEach(function(t) {
+    var pos = state.positions[t];
+    if (!pos || pos.stopped) return;
+    if (pos.managed === true) return;
+    state.positions[t] = null;
+    dropped.push(t + (pos.strike != null ? (" " + pos.strike) : "") + " " + (pos.side || ""));
+  });
+  if (dropped.length) {
+    logEvent("UNMANAGED_DROP", (reason || "not bot-managed") + " — cleared: " + dropped.join(", "));
+    savePersistedState();
+  }
+  return dropped;
 }
 
 function openHalfPosition(ticker, side, contracts, entryPrice, meta) {
@@ -453,6 +487,7 @@ module.exports = {
   setORB: setORB,
   getPosition: getPosition,
   isManagedPosition: isManagedPosition,
+  dropUnmanagedPositions: dropUnmanagedPositions,
   openHalfPosition: openHalfPosition,
   setPositionLegs: setPositionLegs,
   reduceLegContracts: reduceLegContracts,
