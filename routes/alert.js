@@ -134,7 +134,7 @@ async function mirrorSpyLiveToSpx(kind, side, opts) {
     }
 
     if (kind === "stop" || kind === "flip_close") {
-      if (!spxPos || spxPos.stopped) return null;
+      if (!spxPos || spxPos.stopped || !stateModule.isManagedPosition(spxPos)) return null;
       var reason = opts.reason || ("SPY " + kind + " → SPX close");
       stateModule.logEvent("SPX_MIRROR", reason);
       var closed = await closeLiveOrLog("SPX", spxPos.contracts, reason);
@@ -143,7 +143,7 @@ async function mirrorSpyLiveToSpx(kind, side, opts) {
     }
 
     if (kind === "expected_move") {
-      if (!spxPos || spxPos.stopped) return null;
+      if (!spxPos || spxPos.stopped || !stateModule.isManagedPosition(spxPos)) return null;
       if ((spxPos.lastProfitTier || 0) >= 300) return null;
       var qty90 = Math.floor(spxPos.contracts * 0.9);
       if (qty90 < 1) return null;
@@ -390,8 +390,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var slLive = pos ? stopLabel(pos) : slPaper;
     stateModule.logEvent("STOP_LOSS", ticker + " " + slLive + " stop hit");
     await notify("onStop", [ticker, optPrice || 0, slPaper]);
-    if (!pos || pos.stopped || pos.side !== wantSide) {
-      return { ok: true, message: ticker + " paper stop sent (no matching live position)" };
+    if (!pos || pos.stopped || pos.side !== wantSide || !stateModule.isManagedPosition(pos)) {
+      return { ok: true, message: ticker + " paper stop sent (no matching bot-managed live position)" };
     }
     var stopQty = pos.contracts;
     var stopEntry = pos.entryPrice;
@@ -415,7 +415,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var total = isLiveTicker(ticker) ? (s.contracts[ticker] || 1) : 0;
     var half  = isLiveTicker(ticker) ? Math.ceil(total / 2) : 0;
 
-    if (pos && !pos.stopped && pos.side === "put") {
+    if (pos && !pos.stopped && pos.side === "put" && stateModule.isManagedPosition(pos)) {
       stateModule.logEvent("FLIP", ticker + " breakout long — paper close + live close if possible");
       await notify("onFullClose", [ticker, optPrice || 0]);
       if (await closeLiveOrLog(ticker, pos.contracts, "ORB breakout flip to long")) {
@@ -429,7 +429,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     }
 
     pos = stateModule.getPosition(ticker);
-    if (pos && !pos.stopped && pos.side === "call") {
+    if (pos && !pos.stopped && pos.side === "call" && stateModule.isManagedPosition(pos)) {
       await notify("onAdd", [ticker, optPrice || 0]);
       if (pos.halfIn) {
         stateModule.logEvent("RETEST", ticker + " retest add " + pos.totalContracts + "c");
@@ -460,7 +460,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var total2 = isLiveTicker(ticker) ? (s.contracts[ticker] || 1) : 0;
     var half2  = isLiveTicker(ticker) ? Math.ceil(total2 / 2) : 0;
 
-    if (pos && !pos.stopped && pos.side === "call") {
+    if (pos && !pos.stopped && pos.side === "call" && stateModule.isManagedPosition(pos)) {
       stateModule.logEvent("FLIP", ticker + " breakout short — paper close + live close if possible");
       await notify("onFullClose", [ticker, optPrice || 0]);
       if (await closeLiveOrLog(ticker, pos.contracts, "ORB breakout flip to short")) {
@@ -474,7 +474,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     }
 
     pos = stateModule.getPosition(ticker);
-    if (pos && !pos.stopped && pos.side === "put") {
+    if (pos && !pos.stopped && pos.side === "put" && stateModule.isManagedPosition(pos)) {
       await notify("onAdd", [ticker, optPrice || 0]);
       if (pos.halfIn) {
         stateModule.logEvent("RETEST", ticker + " retest add " + pos.totalContracts + "c");
@@ -508,8 +508,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
   if (event === "expected_move_hit") {
     var timeframe = payload.timeframe || "daily";
     await notify("onExpectedMoveExit", [ticker, optPrice || 0, timeframe]);
-    if (!pos || pos.stopped) {
-      return { ok: true, message: ticker + " paper expected-move sent (no live position)" };
+    if (!pos || pos.stopped || !stateModule.isManagedPosition(pos)) {
+      return { ok: true, message: ticker + " paper expected-move sent (no bot-managed live position)" };
     }
     if ((pos.lastProfitTier || 0) >= 300) {
       return { ok: true, message: ticker + " paper expected-move sent · live already processed" };

@@ -153,6 +153,29 @@ test("reconcile grace is at least 10 minutes", function() {
   assert.ok(reconcile.FLAT_CONFIRM_NEEDED >= 2);
 });
 
+test("manual RH contracts are not managed by TP/SL", function() {
+  var state = require("../utils/state");
+  assert.strictEqual(typeof state.isManagedPosition, "function");
+  state.openHalfPosition("SPY", "call", 2, 1.5);
+  var bot = state.getPosition("SPY");
+  assert.strictEqual(state.isManagedPosition(bot), true);
+  assert.strictEqual(bot.managed, true);
+  state.closePosition("SPY", "test");
+  // Default import path must refuse to take over manual RH inventory.
+  state.importRhPosition("SPY", "call", 5, 1.25, { instrumentUrl: "https://x" });
+  assert.strictEqual(state.getPosition("SPY").stopped, true);
+  var sync = state.syncManagedQtyFromRh("IWM", 9);
+  assert.strictEqual(sync.changed, false);
+  state.openHalfPosition("IWM", "put", 2, 0.9);
+  sync = state.syncManagedQtyFromRh("IWM", 9);
+  assert.strictEqual(sync.ignoredExtra, 7);
+  assert.strictEqual(state.getPosition("IWM").contracts, 2);
+  sync = state.syncManagedQtyFromRh("IWM", 1);
+  assert.strictEqual(sync.changed, true);
+  assert.strictEqual(state.getPosition("IWM").contracts, 1);
+  state.closePosition("IWM", "test");
+});
+
 test("already-flat close errors are detected", function() {
   assert.ok(rh.isAlreadyFlatError("No open position found"));
   assert.ok(rh.isAlreadyFlatError("No matching open position found"));

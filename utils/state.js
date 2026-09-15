@@ -110,6 +110,12 @@ function setORB(ticker, high, low, source) {
 
 function getPosition(ticker) { return state.positions[ticker]; }
 
+// Only bot-opened positions are managed (TP/SL, flips, auto-sell).
+// Manual RH contracts must never be imported into managed state.
+function isManagedPosition(pos) {
+  return !!(pos && !pos.stopped && pos.managed !== false);
+}
+
 function openHalfPosition(ticker, side, contracts, entryPrice, meta) {
   meta = meta || {};
   var totalForRetest = meta.totalContracts != null
@@ -126,6 +132,7 @@ function openHalfPosition(ticker, side, contracts, entryPrice, meta) {
     lastProfitTier: 0,
     stopPct: null,
     stopped: false,
+    managed: true,
     crossEntry: !!meta.crossEntry,
     stopMode: meta.stopMode || "mid",
     strike: meta.strike || null,
@@ -368,6 +375,11 @@ function inferPositionPhase(ticker, qty) {
 
 function importRhPosition(ticker, side, qty, entryPrice, meta) {
   meta = meta || {};
+  // Manual / orphan RH inventory is never managed by TP/SL.
+  if (meta.managed === false || meta.managed == null) {
+    logEvent("RECONCILE", ticker + " RH " + side + " " + qty + "c ignored — not bot-managed");
+    return;
+  }
   var phase = inferPositionPhase(ticker, qty);
   state.positions[ticker] = {
     side: side,
@@ -380,6 +392,7 @@ function importRhPosition(ticker, side, qty, entryPrice, meta) {
     lastProfitTier: 0,
     stopPct: null,
     stopped: false,
+    managed: true,
     crossEntry: !!meta.crossEntry,
     stopMode: meta.stopMode || "mid",
     strike: meta.strike || null,
@@ -391,6 +404,20 @@ function importRhPosition(ticker, side, qty, entryPrice, meta) {
     (phase.halfIn ? " (half)" : " (full)") +
     (meta.crossEntry ? " cross-entry stop=" + meta.stopMode : "") + " [reconcile]");
   savePersistedState();
+}
+
+// Never inflate managed size from RH (manual adds stay unmanaged).
+// Only shrink when RH has fewer than our bot-managed contracts.
+function syncManagedQtyFromRh(ticker, rhQty) {
+  var pos = state.positions[ticker];
+  if (!pos || pos.stopped || !isManagedPosition(pos)) return { changed: false, ignoredExtra: 0 };
+  var q = Math.max(0, Math.floor(parseFloat(rhQty) || 0));
+  if (q > pos.contracts) {
+    return { changed: false, ignoredExtra: q - pos.contracts };
+  }
+  if (q === pos.contracts) return { changed: false, ignoredExtra: 0 };
+  syncPositionQty(ticker, q);
+  return { changed: true, ignoredExtra: 0 };
 }
 
 function syncPositionQty(ticker, qty) {
@@ -425,6 +452,7 @@ module.exports = {
   resetDay: resetDay,
   setORB: setORB,
   getPosition: getPosition,
+  isManagedPosition: isManagedPosition,
   openHalfPosition: openHalfPosition,
   setPositionLegs: setPositionLegs,
   reduceLegContracts: reduceLegContracts,
@@ -445,6 +473,7 @@ module.exports = {
   inferPositionPhase: inferPositionPhase,
   importRhPosition: importRhPosition,
   syncPositionQty: syncPositionQty,
+  syncManagedQtyFromRh: syncManagedQtyFromRh,
   markEodSold: markEodSold,
   logEvent: logEvent,
   etDateKey: etDateKey
