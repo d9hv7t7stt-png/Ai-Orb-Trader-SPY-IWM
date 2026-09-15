@@ -161,7 +161,12 @@ async function reconcileRhPositions() {
     if (!side) continue;
 
     // Dual-leg live positions: sync each leg to its RH option independently.
+    // Never inflate a leg above bot-managed size (manual adds on that option stay unmanaged).
     if (statePos && statePos.legs && statePos.legs.length && !statePos.stopped) {
+      if (!stateModule.isManagedPosition(statePos)) {
+        stateModule.logEvent("RECONCILE", ticker + " dual-leg RH present but not bot-managed — leaving alone");
+        continue;
+      }
       var legSynced = false;
       for (var li = 0; li < statePos.legs.length; li++) {
         var leg = statePos.legs[li];
@@ -184,13 +189,20 @@ async function reconcileRhPositions() {
         var legQty = Math.max(0, Math.floor(rh.optionPositionQty(rhLeg)));
         var legMark = await rh.getOptionMarkByUrl(rhLeg.option);
         var legFill = fillFromRhPosition(rhLeg, legMark);
-        leg.contracts = legQty;
+        if (legQty > leg.contracts) {
+          stateModule.logEvent("RECONCILE", ticker + " DTE" + leg.dteTag + " RH has +" +
+            (legQty - leg.contracts) + "c beyond bot-managed — ignoring manual contracts");
+        } else if (legQty < leg.contracts) {
+          leg.contracts = legQty;
+          legSynced = true;
+        }
         if (rhLeg.option) leg.instrumentUrl = rhLeg.option;
         if (legFill.strike) leg.strike = legFill.strike;
         if (legFill.expiry) leg.expiry = legFill.expiry;
         if (legFill.entryPrice > 0) {
           if (!(leg.entryPrice > 0) || entryLooksInflated(leg.entryPrice, legFill.entryPrice, legMark)) {
             leg.entryPrice = legFill.entryPrice;
+            legSynced = true;
           }
         }
         legSynced = true;
@@ -210,47 +222,25 @@ async function reconcileRhPositions() {
     var mark = await rh.getOptionMarkByUrl(rhPos.option);
     var fill = fillFromRhPosition(rhPos, mark);
 
-    if (!statePos || statePos.stopped) {
-      var meta = {
-        instrumentUrl: fill.instrumentUrl,
-        strike: fill.strike,
-        expiry: fill.expiry
-      };
-      if (statePos) {
-        meta.crossEntry = !!statePos.crossEntry;
-        meta.stopMode = statePos.stopMode || "mid";
-      }
-      if (!meta.crossEntry && ticker === "SPY") {
-        var iwm = stateModule.getPosition("IWM");
-        if (iwm && !iwm.stopped && iwm.side === side) {
-          meta.crossEntry = true;
-          meta.stopMode = side === "call" ? "orb_low" : "orb_high";
-        }
-      }
-      stateModule.importRhPosition(ticker, side, qty, fill.entryPrice, meta);
-      stateModule.logEvent("RECONCILE", ticker + " imported RH " + side + " " + qty + "c" +
-        (fill.entryPrice ? " @ $" + fill.entryPrice.toFixed(2) : "") +
-        (meta.crossEntry ? " (cross-entry stop=" + meta.stopMode + ")" : ""));
-      synced.push(ticker);
+    // Manual RH contracts: never import into managed state / TP-SL engine.
+    if (!statePos || statePos.stopped || !stateModule.isManagedPosition(statePos)) {
+      stateModule.logEvent("RECONCILE", ticker + " RH " + side + " " + qty + "c present but not bot-managed — leaving alone");
       continue;
     }
 
     if (statePos.side !== side) {
-      stateModule.logEvent("RECONCILE_WARN", ticker + " state=" + statePos.side + " RH=" + side + " — syncing to RH");
-      var sideMeta = {
-        instrumentUrl: fill.instrumentUrl,
-        strike: fill.strike,
-        expiry: fill.expiry,
-        crossEntry: !!statePos.crossEntry,
-        stopMode: statePos.stopMode || "mid"
-      };
-      stateModule.importRhPosition(ticker, side, qty, fill.entryPrice || statePos.entryPrice, sideMeta);
-      synced.push(ticker);
+      stateModule.logEvent("RECONCILE_WARN", ticker + " state=" + statePos.side + " RH=" + side +
+        " — not importing; bot-managed side kept until flat/close");
       continue;
     }
 
-    stateModule.syncPositionQty(ticker, qty);
+    var sync = stateModule.syncManagedQtyFromRh(ticker, qty);
+    if (sync.ignoredExtra > 0) {
+      stateModule.logEvent("RECONCILE", ticker + " RH has +" + sync.ignoredExtra +
+        "c beyond bot-managed " + statePos.contracts + "c — ignoring manual contracts");
+    }
     var fillMeta = { instrumentUrl: fill.instrumentUrl, strike: fill.strike, expiry: fill.expiry };
+    statePos = stateModule.getPosition(ticker) || statePos;
     if (!(statePos.entryPrice > 0) || entryLooksInflated(statePos.entryPrice, fill.entryPrice, mark)) {
       fillMeta.entryPrice = fill.entryPrice;
       if (statePos.entryPrice > 0 && fill.entryPrice > 0) {

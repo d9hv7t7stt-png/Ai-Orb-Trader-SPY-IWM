@@ -100,14 +100,19 @@ async function manageOneLeg(ticker, pos, legIndex, rhPositions) {
   if (rhPos) {
     var qty = Math.floor(rh.optionPositionQty(rhPos));
     if (qty !== leg.contracts) {
-      leg.contracts = Math.max(0, qty);
-      if (rhPos.option) leg.instrumentUrl = rhPos.option;
-      if (rhPos.strike_price) leg.strike = Math.round(parseFloat(rhPos.strike_price));
-      if (rhPos.expiration_date) leg.expiry = rhPos.expiration_date;
-      stateModule.setPositionLegs(ticker, pos.legs);
-      pos = stateModule.getPosition(ticker) || pos;
-      leg = pos.legs[legIndex];
-      if (!leg || leg.contracts < 1) return;
+      if (qty > leg.contracts) {
+        stateModule.logEvent("PROFIT_MGR", ticker + " DTE" + leg.dteTag + " ignoring +" +
+          (qty - leg.contracts) + "c manual RH contracts");
+      } else {
+        leg.contracts = Math.max(0, qty);
+        if (rhPos.option) leg.instrumentUrl = rhPos.option;
+        if (rhPos.strike_price) leg.strike = Math.round(parseFloat(rhPos.strike_price));
+        if (rhPos.expiration_date) leg.expiry = rhPos.expiration_date;
+        stateModule.setPositionLegs(ticker, pos.legs);
+        pos = stateModule.getPosition(ticker) || pos;
+        leg = pos.legs[legIndex];
+        if (!leg || leg.contracts < 1) return;
+      }
     }
   }
 
@@ -225,6 +230,10 @@ async function checkProfitTiers() {
     var ticker = tickers[i];
     var pos = stateModule.getPosition(ticker);
     if (!pos || pos.stopped) continue;
+    if (!stateModule.isManagedPosition(pos)) {
+      console.log("[PROFIT_MGR] " + ticker + " skipped — not bot-managed");
+      continue;
+    }
 
     if (await checkCrossEntryStop(ticker, pos, s)) continue;
 
@@ -252,7 +261,11 @@ async function checkProfitTiers() {
     }
 
     if (rhPos && Math.floor(rh.optionPositionQty(rhPos)) !== pos.contracts) {
-      stateModule.syncPositionQty(ticker, Math.floor(rh.optionPositionQty(rhPos)));
+      var sync = stateModule.syncManagedQtyFromRh(ticker, Math.floor(rh.optionPositionQty(rhPos)));
+      if (sync.ignoredExtra > 0) {
+        stateModule.logEvent("PROFIT_MGR", ticker + " ignoring +" + sync.ignoredExtra +
+          "c manual RH contracts beyond bot-managed size");
+      }
       stateModule.applyOrderFill(ticker, {
         instrumentUrl: rhPos.option,
         strike: rhPos.strike_price,
