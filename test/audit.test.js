@@ -173,7 +173,12 @@ test("manual RH contracts are not managed by TP/SL", function() {
   sync = state.syncManagedQtyFromRh("IWM", 1);
   assert.strictEqual(sync.changed, true);
   assert.strictEqual(state.getPosition("IWM").contracts, 1);
-  state.closePosition("IWM", "test");
+  // Legacy imported-style object without managed:true must not be managed.
+  state.getState().positions.IWM.managed = undefined;
+  assert.strictEqual(state.isManagedPosition(state.getPosition("IWM")), false);
+  var dropped = state.dropUnmanagedPositions("test");
+  assert.ok(dropped.indexOf("IWM") !== -1 || dropped.some(function(x) { return x.indexOf("IWM") === 0; }));
+  assert.strictEqual(state.getPosition("IWM"), null);
 });
 
 test("already-flat close errors are detected", function() {

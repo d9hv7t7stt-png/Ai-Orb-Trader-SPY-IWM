@@ -6,7 +6,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "dashboard")));
 
 const { handleAlert } = require("./routes/alert");
-const { getState, setContractSize, getTradeSizingFromTotal } = require("./utils/state");
+const { getState, setContractSize, getTradeSizingFromTotal, dropUnmanagedPositions } = require("./utils/state");
 const { ensureLoggedIn, submitSmsCode, getPendingWorkflow, scheduleDailyReauth, scheduleProactiveRefresh, getAuthInfo } = require("./utils/reauth");
 const rh = require("./utils/robinhood");
 const discord = require("./utils/discord");
@@ -626,6 +626,11 @@ app.listen(PORT, async () => {
   if (authguard.getSecret()) console.log("[AUTH] API secret enabled");
   if (authguard.getGrokSecret()) console.log("[AUTH] Grok API secret enabled");
   await ensureLoggedIn();
+  try {
+    dropUnmanagedPositions("startup — only bot-opened positions stay in TP/SL");
+  } catch (e) {
+    console.log("[UNMANAGED_DROP_ERROR]", e.message);
+  }
   try {
     var recon = await reconcile.reconcileRhPositions();
     if (recon.ok) console.log("[RECONCILE] synced tickers: " + (recon.synced.join(", ") || "none"));
