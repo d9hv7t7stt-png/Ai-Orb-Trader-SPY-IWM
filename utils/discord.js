@@ -227,7 +227,7 @@ function morningMessages(theme, name) {
   return {
     45: { color: 0x4da6ff, title: "👁️ 45 Minutes to Open — SPX Pre-Market Check",
       description: "Morning rundown incoming. Reviewing SPX 0DTE + 1DTE legs before the bell. 📋",
-      footer: "SPXW · 20% risk/trade · Not financial advice." },
+      footer: "SPXW · max $10k/trade · Not financial advice." },
     60: { color: 0xf5c518, content: "@everyone", title: "☀️ Good Morning, Traders!",
       description: "Market opens in one hour. **Argus ORB Trader 50K** is tracking **SPXW** off SPY ORB — 0DTE ATM + 1DTE expected-move strikes.\n\n" + sizingBlurb(20, 10000) + "\n\nArgus is warmed up and ready. 👁️",
       footer: "SPXW · max $10k/trade · Not financial advice." },
