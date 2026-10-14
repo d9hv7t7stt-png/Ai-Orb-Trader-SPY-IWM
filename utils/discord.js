@@ -3,7 +3,7 @@
 // Paper accounts: percent sizing, 0DTE ATM + 1DTE expected-move legs, touch-based move exits.
 //
 // Channels (webhook env vars):
-//   main     DISCORD_WEBHOOK_URL      SPXW from SPY signals  $50k  20%/trade (10% per leg)  15-min
+//   main     DISCORD_WEBHOOK_URL      SPXW from SPY signals  $50k  20%/trade capped $10k  15-min
 //   free     DISCORD_WEBHOOK_FREE     IWM                    $10k  20%/trade (10% per leg)  30-min
 //   spy0dte  DISCORD_WEBHOOK_SPY0DTE  SPY                    $10k  20%/trade (10% per leg)  30-min
 //   qqq      DISCORD_WEBHOOK_QQQ      QQQ                    $10k  20%/trade (10% per leg)  30-min
@@ -25,10 +25,14 @@ function etTimeLabel() {
   return new Date().toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET";
 }
 
-function sizingBlurb(riskPctVal) {
+function sizingBlurb(riskPctVal, maxRiskDollars) {
   var rp = riskPctVal || 20;
   var perLeg = (rp / 2).toFixed(rp % 2 === 0 ? 0 : 1);
-  return "**Sizing:** " + rp + "% of account balance per trade (" + perLeg + "% per leg). Contract count scales with option premium — not a fixed number of contracts.";
+  var base = "**Sizing:** " + rp + "% of account balance per trade (" + perLeg + "% per leg)";
+  if (maxRiskDollars != null && maxRiskDollars > 0) {
+    base += ", capped at $" + Number(maxRiskDollars).toLocaleString("en-US") + " at one time";
+  }
+  return base + ". Contract count scales with option premium — not a fixed number of contracts.";
 }
 
 function paperMarketHours() {
@@ -225,8 +229,8 @@ function morningMessages(theme, name) {
       description: "Morning rundown incoming. Reviewing SPX 0DTE + 1DTE legs before the bell. 📋",
       footer: "SPXW · 20% risk/trade · Not financial advice." },
     60: { color: 0xf5c518, content: "@everyone", title: "☀️ Good Morning, Traders!",
-      description: "Market opens in one hour. **Argus ORB Trader 50K** is tracking **SPXW** off SPY ORB — 0DTE ATM + 1DTE expected-move strikes.\n\n" + sizingBlurb(20) + "\n\nArgus is warmed up and ready. 👁️",
-      footer: "SPXW · 20% balance/trade · Not financial advice." },
+      description: "Market opens in one hour. **Argus ORB Trader 50K** is tracking **SPXW** off SPY ORB — 0DTE ATM + 1DTE expected-move strikes.\n\n" + sizingBlurb(20, 10000) + "\n\nArgus is warmed up and ready. 👁️",
+      footer: "SPXW · max $10k/trade · Not financial advice." },
     30: { color: 0xf5a623, content: "@everyone", title: "🌅 30 Minutes Out",
       description: "Half hour to go. Argus is authenticated, connected, and on standby. All systems green.\n\nTake a breath. Trust the process. Let Argus do its thing. 💚",
       footer: "Not financial advice. Trade at your own risk." },
@@ -315,6 +319,9 @@ function createChannel(cfg) {
   }
   function riskPct() { return cfg.riskPct || 20; }
   function legFraction() { return 0.5; }
+  function maxRiskDollars() {
+    return cfg.maxRiskDollars != null && cfg.maxRiskDollars > 0 ? cfg.maxRiskDollars : null;
+  }
 
   async function resolveLegExitPrice(pos, signalTicker, tradeTicker, signalOptionPrice) {
     if (signalTicker === tradeTicker && signalOptionPrice && signalOptionPrice > 0) return signalOptionPrice;
@@ -381,9 +388,10 @@ function createChannel(cfg) {
     var m = await fetchOptionMark(tradeTicker, side, strike, expiry);
     var hint = sameTicker && dteTag === 0 ? optionPriceHint : null;
     var price = (hint && hint > 0) ? hint : (m && m.price) || 0;
-    var contracts = paperLegs.sizeContracts(account.balance, riskPct(), legFraction(), price);
+    var contracts = paperLegs.sizeContracts(account.balance, riskPct(), legFraction(), price, maxRiskDollars());
     if (contracts < 1) {
-      console.log("[PAPER][" + cfg.id + "] skip " + tradeTicker + " " + dteTag + "DTE — premium too high for " + (riskPct() * legFraction()) + "% sizing");
+      console.log("[PAPER][" + cfg.id + "] skip " + tradeTicker + " " + dteTag + "DTE — premium too high for sizing"
+        + (maxRiskDollars() ? " (max $" + maxRiskDollars() + ")" : ""));
       return null;
     }
     var key = paperLegs.legKey(tradeTicker, dteTag);
@@ -498,7 +506,7 @@ function createChannel(cfg) {
       optionPrice = m && m.price ? m.price : pos.lastKnownPrice || pos.entryPrice || 0;
     }
     if (pos.retestAdded) return;
-    var addQty = paperLegs.sizeContracts(account.balance, riskPct(), legFraction(), optionPrice);
+    var addQty = paperLegs.sizeContracts(account.balance, riskPct(), legFraction(), optionPrice, maxRiskDollars());
     if (addQty < 1) return;
     pos.contracts += addQty;
     pos.totalContracts += addQty;
@@ -909,7 +917,7 @@ function createChannel(cfg) {
     await send({
       color: 0x4da6ff,
       title: "📊 " + cfg.name + " · " + label + " Update",
-      description: sizingBlurb(riskPct()),
+      description: sizingBlurb(riskPct(), maxRiskDollars()),
       fields: fields,
       footer: { text: footer() },
       timestamp: new Date().toISOString()
@@ -1081,7 +1089,7 @@ function buildChannelConfigs() {
   if (process.env.DISCORD_WEBHOOK_URL)
     list.push({
       id: "main", name: "Argus ORB Trader 50K", webhook: process.env.DISCORD_WEBHOOK_URL,
-      startBalance: 50000, riskPct: 20, dualLeg: true, signalTickers: ["SPY"], tradeTicker: "SPXW",
+      startBalance: 50000, riskPct: 20, maxRiskDollars: 10000, dualLeg: true, signalTickers: ["SPY"], tradeTicker: "SPXW",
       tickers: ["SPXW"], watchlist: watchlist, updateMins: 15, theme: "default"
     });
   if (process.env.DISCORD_WEBHOOK_FREE)
@@ -1323,7 +1331,7 @@ function initChannels(getToken) {
 function first() {
   return channels[0] || createChannel({
     id: "main", name: "Argus ORB Trader 50K", webhook: process.env.DISCORD_WEBHOOK_URL,
-    startBalance: 50000, riskPct: 20, dualLeg: true, signalTickers: ["SPY"], tradeTicker: "SPXW",
+    startBalance: 50000, riskPct: 20, maxRiskDollars: 10000, dualLeg: true, signalTickers: ["SPY"], tradeTicker: "SPXW",
     tickers: ["SPXW"], watchlist: closeDigestUtil.MAIN_WATCHLIST, updateMins: 15, theme: "default"
   });
 }
