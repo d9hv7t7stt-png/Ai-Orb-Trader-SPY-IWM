@@ -24,9 +24,13 @@ function listLegsForTrade(positions, tradeTicker) {
   });
 }
 
-function sizeContracts(balance, riskPct, legFraction, premium) {
+function sizeContracts(balance, riskPct, legFraction, premium, maxRiskDollars) {
   if (!premium || premium <= 0 || !balance || balance <= 0) return 0;
-  var legRisk = balance * (riskPct / 100) * legFraction;
+  var tradeRisk = balance * (riskPct / 100);
+  if (maxRiskDollars != null && maxRiskDollars > 0) {
+    tradeRisk = Math.min(tradeRisk, maxRiskDollars);
+  }
+  var legRisk = tradeRisk * legFraction;
   return Math.floor(legRisk / (premium * 100));
 }
 

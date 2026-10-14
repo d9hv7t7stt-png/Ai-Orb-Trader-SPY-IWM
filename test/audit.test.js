@@ -35,6 +35,15 @@ test("20% / 10% per leg floors contracts", function() {
   assert.strictEqual(paperLegs.sizeContracts(50000, 5, 0.5, 2.50), 5);
 });
 
+test("SPX paper maxRiskDollars caps trade at $10k", function() {
+  // Without cap: $80k * 20% * 50% = $8,000 / ($2 * 100) = 40
+  assert.strictEqual(paperLegs.sizeContracts(80000, 20, 0.5, 2.00), 40);
+  // With $10k max trade: min($16k, $10k) * 50% = $5,000 / ($2 * 100) = 25
+  assert.strictEqual(paperLegs.sizeContracts(80000, 20, 0.5, 2.00, 10000), 25);
+  // At $50k start, 20% is already $10k — cap is a no-op
+  assert.strictEqual(paperLegs.sizeContracts(50000, 20, 0.5, 2.50, 10000), 20);
+});
+
 test("SPXW strikes round to $5; equity to $1", function() {
   assert.strictEqual(paperLegs.roundStrike("SPXW", 6402), 6400);
   assert.strictEqual(paperLegs.roundStrike("SPXW", 6403), 6405);
