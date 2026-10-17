@@ -77,6 +77,14 @@ function isEndOfDayWindow() {
   return m >= (15 * 60 + 45) && m < (16 * 60);   // 3:45–4:00 PM ET
 }
 
+// No new trades (entries, flips into a new position, retest adds) at or after 3:55 PM ET.
+// Managing / exiting open positions is unaffected.
+var ENTRY_CUTOFF_MIN_ET = 15 * 60 + 55;
+function isAfterEntryCutoffET(minutesOfDay) {
+  var m = (typeof minutesOfDay === "number") ? minutesOfDay : etMinutesOfDay();
+  return m >= ENTRY_CUTOFF_MIN_ET;
+}
+
 function isWeekdayET(date) {
   return !marketCal.isWeekendET(date);
 }
@@ -182,6 +190,8 @@ module.exports = {
   evaluate: evaluate,
   gainPct: gainPct,
   isEndOfDayWindow: isEndOfDayWindow,
+  isAfterEntryCutoffET: isAfterEntryCutoffET,
+  ENTRY_CUTOFF_MIN_ET: ENTRY_CUTOFF_MIN_ET,
   isRegularMarketHours: isRegularMarketHours,
   isWeekdayET: isWeekdayET,
   isTradingDayET: isTradingDayET,
