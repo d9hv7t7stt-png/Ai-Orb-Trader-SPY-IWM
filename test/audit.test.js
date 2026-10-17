@@ -24,24 +24,72 @@ function test(name, fn) {
 }
 
 console.log("paperLegs");
-test("20% / 10% per leg floors contracts", function() {
-  // $50k * 20% * 50% = $5,000 / ($2.50 * 100) = 20 contracts
-  assert.strictEqual(paperLegs.sizeContracts(50000, 20, 0.5, 2.50), 20);
-  // $10k * 10% = $1,000 / ($3 * 100) = 3
-  assert.strictEqual(paperLegs.sizeContracts(10000, 20, 0.5, 3.00), 3);
-  assert.strictEqual(paperLegs.sizeContracts(10000, 20, 0.5, 1.00), 10);
-  assert.strictEqual(paperLegs.sizeContracts(50000, 20, 0.5, 0), 0);
-  // legacy 5% math still works in the helper
-  assert.strictEqual(paperLegs.sizeContracts(50000, 5, 0.5, 2.50), 5);
+test("4% / 4% / 2% leg sizing floors contracts", function() {
+  assert.strictEqual(paperLegs.LEG_PCT_0DTE, 4);
+  assert.strictEqual(paperLegs.LEG_PCT_1DTE, 4);
+  assert.strictEqual(paperLegs.RETEST_ADD_PCT, 2);
+  assert.strictEqual(paperLegs.MAX_EXPOSURE_PCT, 10);
+  assert.strictEqual(paperLegs.legPctForDte(0), 4);
+  assert.strictEqual(paperLegs.legPctForDte(1), 4);
+  // $10k * 4% = $400 / ($1.00 * 100) = 4 ; / ($0.50 * 100) = 8 ; / ($3 * 100) = 1 (floored)
+  assert.strictEqual(paperLegs.sizeLegContracts(10000, 4, 1.00, 0), 4);
+  assert.strictEqual(paperLegs.sizeLegContracts(10000, 4, 0.50, 0), 8);
+  assert.strictEqual(paperLegs.sizeLegContracts(10000, 4, 3.00, 0), 1);
+  // $50k * 4% = $2,000 / ($2.50 * 100) = 8
+  assert.strictEqual(paperLegs.sizeLegContracts(50000, 4, 2.50, 0), 8);
+  // retest: $10k * 2% = $200 / ($1.00 * 100) = 2
+  assert.strictEqual(paperLegs.sizeLegContracts(10000, 2, 1.00, 0), 2);
+  assert.strictEqual(paperLegs.sizeLegContracts(10000, 4, 0, 0), 0);
 });
 
-test("SPX paper maxRiskDollars caps trade at $10k", function() {
-  // Without cap: $80k * 20% * 50% = $8,000 / ($2 * 100) = 40
-  assert.strictEqual(paperLegs.sizeContracts(80000, 20, 0.5, 2.00), 40);
-  // With $10k max trade: min($16k, $10k) * 50% = $5,000 / ($2 * 100) = 25
-  assert.strictEqual(paperLegs.sizeContracts(80000, 20, 0.5, 2.00, 10000), 25);
-  // At $50k start, 20% is already $10k — cap is a no-op
-  assert.strictEqual(paperLegs.sizeContracts(50000, 20, 0.5, 2.50, 10000), 20);
+test("leg skipped when under 1 contract", function() {
+  // $3k * 4% = $120 < $200 for one 2.00 contract → 0 (skip)
+  assert.strictEqual(paperLegs.sizeLegContracts(3000, 4, 2.00, 0), 0);
+  assert.strictEqual(paperLegs.sizeLegContracts(3000, 4, 1.20, 0), 1);
+});
+
+test("open options exposure never exceeds 10% of balance", function() {
+  var bal = 10000;
+  var cap = paperLegs.exposureCapDollars(bal);
+  assert.strictEqual(cap, 1000);
+  var positions = {};
+  // 0DTE leg at 0.70: floor($400 / $70) = 5c = $350
+  var c0 = paperLegs.sizeLegContracts(bal, 4, 0.70, paperLegs.openExposureDollars(positions));
+  assert.strictEqual(c0, 5);
+  positions["SPY:0"] = { contracts: c0, totalContracts: c0, entryPrice: 0.70, costBasis: 0.70 * c0 * 100 };
+  // 1DTE leg at 0.30: floor($400 / $30) = 13c = $390
+  var c1 = paperLegs.sizeLegContracts(bal, 4, 0.30, paperLegs.openExposureDollars(positions));
+  assert.strictEqual(c1, 13);
+  positions["SPY:1"] = { contracts: c1, totalContracts: c1, entryPrice: 0.30, costBasis: 0.30 * c1 * 100 };
+  // retest at 0.50: floor($200 / $50) = 4c = $200
+  var add = paperLegs.sizeLegContracts(bal, 2, 0.50, paperLegs.openExposureDollars(positions));
+  assert.strictEqual(add, 4);
+  positions["SPY:0"].contracts += add;
+  positions["SPY:0"].totalContracts += add;
+  positions["SPY:0"].costBasis += 0.50 * add * 100;
+  var total = paperLegs.openExposureDollars(positions);
+  assert.ok(total <= cap, "total " + total + " > cap " + cap);
+  // Cap binds when older exposure is still open (e.g. a 1DTE leg held overnight worth $900):
+  var held = { "SPY:1": { contracts: 9, totalContracts: 9, entryPrice: 1.00, costBasis: 900 } };
+  // 4% would buy 4c at 1.00, but only $100 of room is left → 1c
+  assert.strictEqual(paperLegs.sizeLegContracts(bal, 4, 1.00, paperLegs.openExposureDollars(held)), 1);
+  // No room at all → 0
+  held["SPY:1"].contracts = 10; held["SPY:1"].totalContracts = 10; held["SPY:1"].costBasis = 1000;
+  assert.strictEqual(paperLegs.sizeLegContracts(bal, 2, 0.10, paperLegs.openExposureDollars(held)), 0);
+  // Exposure counts only remaining contracts after trims
+  var trimmed = { "SPY:0": { contracts: 3, totalContracts: 10, entryPrice: 1.00, costBasis: 1000 } };
+  assert.strictEqual(paperLegs.openExposureDollars(trimmed), 300);
+  // Legacy persisted legs without costBasis fall back to entryPrice
+  assert.strictEqual(paperLegs.legExposureDollars({ contracts: 2, totalContracts: 2, entryPrice: 1.5 }), 300);
+});
+
+test("SPX paper maxRiskDollars still caps open exposure at $10k", function() {
+  // $200k * 10% = $20k, but the $10k cap wins
+  assert.strictEqual(paperLegs.exposureCapDollars(200000, 10000), 10000);
+  // $50k * 10% = $5k is already under $10k — cap is a no-op
+  assert.strictEqual(paperLegs.exposureCapDollars(50000, 10000), 5000);
+  // $200k * 4% = $8,000 per leg; with $9,000 already open only $1,000 room → floor($1,000 / $200) = 5
+  assert.strictEqual(paperLegs.sizeLegContracts(200000, 4, 2.00, 9000, 10000), 5);
 });
 
 test("SPXW strikes round to $5; equity to $1", function() {
@@ -878,6 +926,18 @@ var ghostClosePromise = (async function() {
     assert.strictEqual(ok, true);
   });
 
+  await run("paper accounts open no new entry at/after 3:55 PM ET", async function() {
+    var discordMod = require("../utils/discord");
+    var origCutoff = exitlogic.isAfterEntryCutoffET;
+    exitlogic.isAfterEntryCutoffET = function() { return true; };
+    try {
+      var opened = await discordMod.postEntry("SPY", "call", 1.00, 580, 578, 580.4);
+      assert.strictEqual(opened, false);
+    } finally {
+      exitlogic.isAfterEntryCutoffET = origCutoff;
+    }
+  });
+
   rh.closeOptionPosition = origClose;
   // silence unused in case state import is tree-shaken mentally
   void stateModule;
@@ -933,6 +993,30 @@ test("SPX DTE and contract size mirror SPY", function() {
   assert.strictEqual(state.getState().contracts.SPX, 7);
   state.setContractSize(2, 2, 5);
   assert.strictEqual(state.getState().contracts.SPX, 5);
+});
+
+test("no new trades at or after 3:55 PM ET", function() {
+  assert.strictEqual(exitlogic.ENTRY_CUTOFF_MIN_ET, 15 * 60 + 55);
+  assert.strictEqual(exitlogic.isAfterEntryCutoffET(9 * 60 + 35), false);
+  assert.strictEqual(exitlogic.isAfterEntryCutoffET(15 * 60 + 54), false);
+  assert.strictEqual(exitlogic.isAfterEntryCutoffET(15 * 60 + 55), true);
+  assert.strictEqual(exitlogic.isAfterEntryCutoffET(15 * 60 + 59), true);
+});
+
+test("live entries/retests blocked after 3:55 PM ET; allowed before", function() {
+  var alertRoute = require("../routes/alert");
+  var orig = exitlogic.isAfterEntryCutoffET;
+  try {
+    exitlogic.isAfterEntryCutoffET = function() { return true; };
+    assert.strictEqual(alertRoute.liveEntryBlocked("SPY", "entry"), true);
+    assert.strictEqual(alertRoute.liveEntryBlocked("SPX", "spy-mirror retest"), true);
+    exitlogic.isAfterEntryCutoffET = function() { return false; };
+    var settings = require("../utils/settings");
+    var expectOpen = settings.isTradingEnabled() && settings.isBuyEnabled("SPY");
+    assert.strictEqual(alertRoute.liveEntryBlocked("SPY", "entry"), !expectOpen);
+  } finally {
+    exitlogic.isAfterEntryCutoffET = orig;
+  }
 });
 
 test("breakeven still activates at +20%", function() {

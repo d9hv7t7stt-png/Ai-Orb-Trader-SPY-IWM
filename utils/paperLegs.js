@@ -8,6 +8,13 @@ var MARK_INTERVAL_MS = 10000;
 var ONE_DTE_EXIT_FRAC = 0.75;
 var ZERO_DTE_EXIT_FRAC = 1.0;
 
+// Sizing rule (Oct 2026): never more than 10% of the account in options at once.
+//   0DTE ATM leg = 4% · 1DTE expected-move leg = 4% · one-time retest add (0DTE leg) = 2%.
+var LEG_PCT_0DTE = 4;
+var LEG_PCT_1DTE = 4;
+var RETEST_ADD_PCT = 2;
+var MAX_EXPOSURE_PCT = 10;
+
 function legKey(tradeTicker, dteTag) {
   return tradeTicker + ":" + dteTag;
 }
@@ -24,14 +31,45 @@ function listLegsForTrade(positions, tradeTicker) {
   });
 }
 
-function sizeContracts(balance, riskPct, legFraction, premium, maxRiskDollars) {
-  if (!premium || premium <= 0 || !balance || balance <= 0) return 0;
-  var tradeRisk = balance * (riskPct / 100);
-  if (maxRiskDollars != null && maxRiskDollars > 0) {
-    tradeRisk = Math.min(tradeRisk, maxRiskDollars);
-  }
-  var legRisk = tradeRisk * legFraction;
-  return Math.floor(legRisk / (premium * 100));
+function legPctForDte(dteTag) {
+  return dteTag === 0 ? LEG_PCT_0DTE : LEG_PCT_1DTE;
+}
+
+// Dollars still committed to one open leg: remaining contracts at their cost per contract.
+// costBasis/totalContracts covers a retest add at a different price; falls back to entryPrice.
+function legExposureDollars(pos) {
+  if (!pos || !(pos.contracts > 0)) return 0;
+  var perContract = (pos.costBasis > 0 && pos.totalContracts > 0)
+    ? pos.costBasis / pos.totalContracts
+    : (pos.entryPrice || 0) * 100;
+  return pos.contracts * perContract;
+}
+
+// Total open options exposure for one account (all open legs, every ticker).
+function openExposureDollars(positions) {
+  return Object.keys(positions || {}).reduce(function(sum, k) {
+    return sum + legExposureDollars(positions[k]);
+  }, 0);
+}
+
+// Hard cap per account: 10% of balance (and never above maxRiskDollars when set, e.g. SPX $10k).
+function exposureCapDollars(balance, maxRiskDollars) {
+  if (!balance || balance <= 0) return 0;
+  var cap = balance * (MAX_EXPOSURE_PCT / 100);
+  if (maxRiskDollars != null && maxRiskDollars > 0) cap = Math.min(cap, maxRiskDollars);
+  return cap;
+}
+
+// contracts = floor(pct × balance ÷ (premium × 100)), limited so open exposure stays ≤ the cap.
+// Returns 0 when that is under 1 contract (caller skips the leg).
+function sizeLegContracts(balance, legPct, premium, openExposure, maxRiskDollars) {
+  if (!premium || premium <= 0 || !balance || balance <= 0 || !legPct || legPct <= 0) return 0;
+  var budget = balance * (legPct / 100);
+  var room = exposureCapDollars(balance, maxRiskDollars) - (openExposure || 0);
+  if (room <= 0) return 0;
+  if (room < budget) budget = room;
+  var n = Math.floor(budget / (premium * 100));
+  return n >= 1 ? n : 0;
 }
 
 function roundStrike(ticker, price) {
@@ -106,7 +144,15 @@ module.exports = {
   legKey: legKey,
   parseLegKey: parseLegKey,
   listLegsForTrade: listLegsForTrade,
-  sizeContracts: sizeContracts,
+  sizeLegContracts: sizeLegContracts,
+  legPctForDte: legPctForDte,
+  legExposureDollars: legExposureDollars,
+  openExposureDollars: openExposureDollars,
+  exposureCapDollars: exposureCapDollars,
+  LEG_PCT_0DTE: LEG_PCT_0DTE,
+  LEG_PCT_1DTE: LEG_PCT_1DTE,
+  RETEST_ADD_PCT: RETEST_ADD_PCT,
+  MAX_EXPOSURE_PCT: MAX_EXPOSURE_PCT,
   roundStrike: roundStrike,
   strikeForLegTicker: strikeForLegTicker,
   getEntryMoveTargets: getEntryMoveTargets,
