@@ -10,8 +10,16 @@ async function flattenTicker(ticker, reason) {
   var closed = [];
   if (pos && !pos.stopped && pos.contracts > 0) {
     var qty = pos.contracts;
-    var ok = await trayd.closeAllLegs(ticker, reason);
+    var pending = [];
+    var ok = await trayd.closeAllLegs(ticker, reason, function(leg, fill) {
+      pending.push({ leg: leg, fill: fill, contracts: leg ? leg.contracts : qty });
+    });
     if (ok) {
+      try {
+        await require("./pnl").logConfirmedLiveClose(ticker, pos, null, pending);
+      } catch (e) {
+        stateModule.logEvent("PNL_WARN", ticker + " kill-switch close P&L failed: " + e.message);
+      }
       stateModule.closePosition(ticker, reason);
       closed.push({ ticker: ticker, contracts: qty, source: "state", ok: true });
     } else {

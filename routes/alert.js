@@ -47,15 +47,30 @@ async function notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close, 
   return opened;
 }
 
-async function closeLiveOrLog(ticker, contracts, reason) {
+async function closeLiveOrLog(ticker, contracts, reason, optPrice) {
   var pos = stateModule.getPosition(ticker);
+  var pending = [];
+  var multi = false;
   if (pos && pos.legs && pos.legs.length) {
     var openLegs = pos.legs.filter(function(l) { return l && l.contracts > 0; });
     if (openLegs.length > 1 || (pos.dualLeg && openLegs.length >= 1 && contracts >= pos.contracts)) {
-      return trayd.closeAllLegs(ticker, reason);
+      multi = true;
     }
   }
-  return trayd.closeLiveOrLog(ticker, contracts, reason);
+  var ok;
+  if (multi) {
+    ok = await trayd.closeAllLegs(ticker, reason, function(leg, fill) {
+      pending.push({ leg: leg, fill: fill });
+    });
+  } else {
+    var sink = {};
+    ok = await trayd.closeLiveOrLog(ticker, contracts, reason, null, sink);
+    if (ok && !sink.alreadyFlat) pending.push({ leg: null, fill: sink.fillPrice || 0, contracts: contracts });
+  }
+  if (ok && pos && pending.length) {
+    await pnlUtil.logConfirmedLiveClose(ticker, pos, optPrice, pending);
+  }
+  return ok;
 }
 
 function liveEntryBlocked(ticker, action) {
@@ -142,7 +157,7 @@ async function mirrorSpyLiveToSpx(kind, side, opts) {
       if (!spxPos || spxPos.stopped || !stateModule.isManagedPosition(spxPos)) return null;
       var reason = opts.reason || ("SPY " + kind + " → SPX close");
       stateModule.logEvent("SPX_MIRROR", reason);
-      var closed = await closeLiveOrLog("SPX", spxPos.contracts, reason);
+      var closed = await closeLiveOrLog("SPX", spxPos.contracts, reason, null);
       if (closed) stateModule.closePosition("SPX", reason);
       return { closed: closed };
     }
@@ -153,8 +168,12 @@ async function mirrorSpyLiveToSpx(kind, side, opts) {
       var qty90 = Math.floor(spxPos.contracts * 0.9);
       if (qty90 < 1) return null;
       var emReason = (opts.timeframe || "daily") + " expected move 90% exit (SPY mirror)";
-      var ok = await trayd.closeLiveOrLog("SPX", qty90, emReason);
+      var emSink = {};
+      var ok = await trayd.closeLiveOrLog("SPX", qty90, emReason, null, emSink);
       if (ok) {
+        if (!emSink.alreadyFlat) {
+          await pnlUtil.logConfirmedLiveClose("SPX", spxPos, null, [{ leg: null, fill: emSink.fillPrice || 0, contracts: qty90 }]);
+        }
         stateModule.reduceContracts("SPX", qty90);
         stateModule.markProfitTier("SPX", 300);
         spxPos = stateModule.getPosition("SPX");
@@ -432,11 +451,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       return { ok: true, message: ticker + " paper stop sent (no matching bot-managed live position)" };
     }
     var stopQty = pos.contracts;
-    var stopEntry = pos.entryPrice;
-    var stopSide = pos.side;
-    var liveClosed = await closeLiveOrLog(ticker, stopQty, slLive);
+    var liveClosed = await closeLiveOrLog(ticker, stopQty, slLive, optPrice);
     if (liveClosed) {
-      if (optPrice) pnlUtil.logTradePnL(ticker, stopSide, stopEntry, optPrice, stopQty);
       stateModule.closePosition(ticker, slLive);
     }
     if (ticker === "SPY") {
@@ -450,14 +466,14 @@ async function processEvent(payload, ticker, event, lockedTickers) {
   }
 
   if (event === "breakout_long") {
+    choppyFilters.noteBreakout(ticker, "long");
     var total = isLiveTicker(ticker) ? (s.contracts[ticker] || 1) : 0;
     var half  = isLiveTicker(ticker) ? Math.ceil(total / 2) : 0;
 
     if (pos && !pos.stopped && pos.side === "put" && stateModule.isManagedPosition(pos)) {
       stateModule.logEvent("FLIP", ticker + " breakout long — paper close + live close if possible");
       await notify("onFullClose", [ticker, optPrice || 0]);
-      if (await closeLiveOrLog(ticker, pos.contracts, "ORB breakout flip to long")) {
-        if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, pos.contracts);
+      if (await closeLiveOrLog(ticker, pos.contracts, "ORB breakout flip to long", optPrice)) {
         stateModule.closePosition(ticker, "flip to long");
         pos = null;
         if (ticker === "SPY") {
@@ -495,14 +511,14 @@ async function processEvent(payload, ticker, event, lockedTickers) {
   }
 
   if (event === "breakout_short") {
+    choppyFilters.noteBreakout(ticker, "short");
     var total2 = isLiveTicker(ticker) ? (s.contracts[ticker] || 1) : 0;
     var half2  = isLiveTicker(ticker) ? Math.ceil(total2 / 2) : 0;
 
     if (pos && !pos.stopped && pos.side === "call" && stateModule.isManagedPosition(pos)) {
       stateModule.logEvent("FLIP", ticker + " breakout short — paper close + live close if possible");
       await notify("onFullClose", [ticker, optPrice || 0]);
-      if (await closeLiveOrLog(ticker, pos.contracts, "ORB breakout flip to short")) {
-        if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, pos.contracts);
+      if (await closeLiveOrLog(ticker, pos.contracts, "ORB breakout flip to short", optPrice)) {
         stateModule.closePosition(ticker, "flip to short");
         pos = null;
         if (ticker === "SPY") {
@@ -555,9 +571,12 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var qty90 = Math.floor(pos.contracts * 0.9);
     if (qty90 < 1) return { ok: true, message: ticker + " paper expected-move sent · live not enough contracts" };
     stateModule.logEvent("PROFIT_TIER_3", ticker + " " + timeframe + " expected move — selling 90% (" + qty90 + "c)");
-    var closed = await trayd.closeLiveOrLog(ticker, qty90, timeframe + " expected move 90% exit");
+    var emSink = {};
+    var closed = await trayd.closeLiveOrLog(ticker, qty90, timeframe + " expected move 90% exit", null, emSink);
     if (closed) {
-      if (optPrice) pnlUtil.logTradePnL(ticker, pos.side, pos.entryPrice, optPrice, qty90);
+      if (!emSink.alreadyFlat) {
+        await pnlUtil.logConfirmedLiveClose(ticker, pos, optPrice, [{ leg: null, fill: emSink.fillPrice || 0, contracts: qty90 }]);
+      }
       stateModule.reduceContracts(ticker, qty90);
       stateModule.markProfitTier(ticker, 300);
       pos = stateModule.getPosition(ticker);

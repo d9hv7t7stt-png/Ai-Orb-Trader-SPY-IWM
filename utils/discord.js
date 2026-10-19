@@ -384,6 +384,7 @@ function createChannel(cfg) {
     account.totalTrades++;
     try {
       require("./choppyFilters").noteClosedPnl(pos.tradeTicker, totalProfit, {
+        paper: true,
         shadowIds: pos.filterShadowIds,
         side: pos.side,
         strike: pos.strike,

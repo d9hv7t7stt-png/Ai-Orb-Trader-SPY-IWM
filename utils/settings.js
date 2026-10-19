@@ -13,6 +13,10 @@ var FILTER_MODES = { off: true, shadow: true, on: true };
 var DEFAULT_STOP_AFTER_FIRST_LOSS = { SPY: "on", IWM: "on", QQQ: "on", SPX: "on" };
 var DEFAULT_ORB_RECROSS_SKIP = { SPY: "on", IWM: "on", QQQ: "off", SPX: "off" };
 var DEFAULT_ORB_RECROSS_MIN = 2;
+var DEFAULT_ORB_WIDTH_SKIP = { SPY: "on", IWM: "on", QQQ: "on", SPX: "off" };
+// null means that bound is not applied. SPY/QQQ skip a wide open; IWM skips a narrow one.
+var DEFAULT_ORB_WIDTH_MAX = { SPY: 0.15, IWM: null, QQQ: 0.35, SPX: null };
+var DEFAULT_ORB_WIDTH_MIN = { SPY: null, IWM: 0.30, QQQ: null, SPX: null };
 
 var DEFAULTS = {
   dte: { SPY: 1, IWM: 0 },
@@ -23,7 +27,10 @@ var DEFAULTS = {
   buy_enabled: { SPY: true, IWM: true, SPX: true },
   stop_after_first_loss: { SPY: "on", IWM: "on", QQQ: "on", SPX: "on" },
   orb_recross_skip: { SPY: "on", IWM: "on", QQQ: "off", SPX: "off" },
-  orb_recross_min: DEFAULT_ORB_RECROSS_MIN
+  orb_recross_min: DEFAULT_ORB_RECROSS_MIN,
+  orb_width_skip: { SPY: "on", IWM: "on", QQQ: "on", SPX: "off" },
+  orb_width_max: { SPY: 0.15, IWM: null, QQQ: 0.35, SPX: null },
+  orb_width_min: { SPY: null, IWM: 0.30, QQQ: null, SPX: null }
 };
 
 function normalizeModeMap(map, defaults) {
@@ -43,13 +50,46 @@ function normalizeRecrossMin(v) {
   return n;
 }
 
+function normalizeBoundMap(map, defaults) {
+  var src = map && typeof map === "object" ? map : null;
+  var out = {};
+  FILTER_TICKERS.forEach(function(t) {
+    if (src && Object.prototype.hasOwnProperty.call(src, t)) {
+      if (src[t] == null || src[t] === "") out[t] = null;
+      else {
+        var n = parseFloat(src[t]);
+        out[t] = isFinite(n) && n >= 0 ? n : (defaults[t] != null ? defaults[t] : null);
+      }
+    } else {
+      out[t] = defaults[t] != null ? defaults[t] : null;
+    }
+  });
+  return out;
+}
+
+function mergeBoundMap(cur, partial) {
+  if (!partial || typeof partial !== "object") return cur;
+  FILTER_TICKERS.forEach(function(t) {
+    if (!Object.prototype.hasOwnProperty.call(partial, t)) return;
+    if (partial[t] == null || partial[t] === "") cur[t] = null;
+    else {
+      var n = parseFloat(partial[t]);
+      if (isFinite(n) && n >= 0) cur[t] = n;
+    }
+  });
+  return cur;
+}
+
 // Pure. Does not write orb-settings.json and does not mutate raw.
 function resolveFilterSettings(raw) {
   raw = raw || {};
   return {
     stop_after_first_loss: normalizeModeMap(raw.stop_after_first_loss, DEFAULT_STOP_AFTER_FIRST_LOSS),
     orb_recross_skip: normalizeModeMap(raw.orb_recross_skip, DEFAULT_ORB_RECROSS_SKIP),
-    orb_recross_min: normalizeRecrossMin(raw.orb_recross_min)
+    orb_recross_min: normalizeRecrossMin(raw.orb_recross_min),
+    orb_width_skip: normalizeModeMap(raw.orb_width_skip, DEFAULT_ORB_WIDTH_SKIP),
+    orb_width_max: normalizeBoundMap(raw.orb_width_max, DEFAULT_ORB_WIDTH_MAX),
+    orb_width_min: normalizeBoundMap(raw.orb_width_min, DEFAULT_ORB_WIDTH_MIN)
   };
 }
 
@@ -77,6 +117,9 @@ function normalize(s) {
   s.stop_after_first_loss = filters.stop_after_first_loss;
   s.orb_recross_skip = filters.orb_recross_skip;
   s.orb_recross_min = filters.orb_recross_min;
+  s.orb_width_skip = filters.orb_width_skip;
+  s.orb_width_max = filters.orb_width_max;
+  s.orb_width_min = filters.orb_width_min;
   return s;
 }
 
@@ -131,9 +174,21 @@ function setFilterConfig(partial) {
     });
   }
   if (partial.orb_recross_min !== undefined) cur.orb_recross_min = normalizeRecrossMin(partial.orb_recross_min);
+  if (partial.orb_width_skip && typeof partial.orb_width_skip === "object") {
+    FILTER_TICKERS.forEach(function(t) {
+      if (partial.orb_width_skip[t] === undefined) return;
+      var m = String(partial.orb_width_skip[t]).toLowerCase();
+      if (FILTER_MODES[m]) cur.orb_width_skip[t] = m;
+    });
+  }
+  cur.orb_width_max = mergeBoundMap(cur.orb_width_max, partial.orb_width_max);
+  cur.orb_width_min = mergeBoundMap(cur.orb_width_min, partial.orb_width_min);
   settings.stop_after_first_loss = cur.stop_after_first_loss;
   settings.orb_recross_skip = cur.orb_recross_skip;
   settings.orb_recross_min = cur.orb_recross_min;
+  settings.orb_width_skip = cur.orb_width_skip;
+  settings.orb_width_max = cur.orb_width_max;
+  settings.orb_width_min = cur.orb_width_min;
   save();
   return getFilterConfig();
 }
@@ -149,6 +204,9 @@ function getAll() {
     stop_after_first_loss: filters.stop_after_first_loss,
     orb_recross_skip: filters.orb_recross_skip,
     orb_recross_min: filters.orb_recross_min,
+    orb_width_skip: filters.orb_width_skip,
+    orb_width_max: filters.orb_width_max,
+    orb_width_min: filters.orb_width_min,
     durable: persist.isDurable()
   };
 }

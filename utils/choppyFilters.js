@@ -1,17 +1,20 @@
 // Choppy-day entry filters.
 //
-// stop_after_first_loss — after a ticker closes a losing trade, block new
-//   entries on that ticker for the rest of the ET trading day.
-// orb_recross_skip — count closes transitioning between above, inside, and
-//   below the opening range from 9:35 to 10:15 ET. The OR is the same 9:30–9:35
-//   bar Argus already stores. Bars are 5 minutes; a bar counts once it has
-//   closed and its start is in [9:35, 10:15). The 10:15 bar does not count, and
-//   later bars never add to the total. Before 10:15 the running total blocks
-//   as soon as it reaches orb_recross_min (default 2).
+// stop_after_first_loss — after a losing close, block new entries for the rest
+//   of the ET trading day. A live loss arms only that live ticker. A paper loss
+//   arms only the Discord channel that closed it.
+// orb_recross_skip — count opposite breakout_long / breakout_short alerts per
+//   ticker. The first breakout in [9:35, 10:15) ET sets the side. Each later
+//   opposite-side breakout before 10:15 adds 1. The count freezes at 10:15.
+//   Threshold is orb_recross_min (default 2). Alerts are counted even while a
+//   position is open. Yahoo is not called.
+// orb_width_skip — OR width % = (orbHigh - orbLow) / orbMid * 100 from the
+//   TradingView orb_set range. Each ticker has its own max and/or min. A missing
+//   range fails open.
 //
 // Modes: off (no effect), shadow (trade still sent, review row written),
 // on (entry blocked, review row still written). Review file: filter-shadow.json
-// on the data volume.
+// on the data volume. New entries only; retest adds and exits are not filtered.
 
 var fs = require("fs");
 
@@ -111,13 +114,14 @@ function barsFromYahooChart(parsed) {
 
 function loadLossState() {
   if (_loss) return _loss;
-  _loss = { date: null, losses: {} };
+  _loss = { date: null, losses: {}, recross: {} };
   try {
     if (fs.existsSync(lossFile())) {
       var parsed = JSON.parse(fs.readFileSync(lossFile(), "utf8"));
       if (parsed && typeof parsed === "object") {
         _loss.date = parsed.date || null;
         _loss.losses = parsed.losses && typeof parsed.losses === "object" ? parsed.losses : {};
+        _loss.recross = parsed.recross && typeof parsed.recross === "object" ? parsed.recross : {};
       }
     }
   } catch (e) {}
@@ -129,26 +133,110 @@ function saveLossState() {
   catch (e) { console.log("[FILTER] loss-state save failed: " + e.message); }
 }
 
-function hasLossToday(ticker, date) {
-  var t = canon(ticker);
-  if (!t) return false;
-  var st = loadLossState();
-  if (st.date !== todayISO(date)) return false;
-  return !!st.losses[t];
-}
-
-function markLoss(ticker, date) {
-  var t = canon(ticker);
-  if (!t) return false;
+function ensureDay(date) {
   var d = todayISO(date);
   var st = loadLossState();
   if (st.date !== d) {
     st.date = d;
     st.losses = {};
+    st.recross = {};
   }
-  st.losses[t] = true;
+  if (!st.losses || typeof st.losses !== "object") st.losses = {};
+  if (!st.recross || typeof st.recross !== "object") st.recross = {};
+  return st;
+}
+
+function liveLossKey(ticker) { return "live:" + ticker; }
+function paperLossKey(channel) { return "paper:" + String(channel); }
+
+function hasLossToday(ticker, date) {
+  var t = canon(ticker);
+  if (!t) return false;
+  var st = loadLossState();
+  if (st.date !== todayISO(date)) return false;
+  return !!(st.losses[liveLossKey(t)] || st.losses[t]);
+}
+
+function hasPaperLoss(channel, date) {
+  if (!channel) return false;
+  var st = loadLossState();
+  if (st.date !== todayISO(date)) return false;
+  return !!st.losses[paperLossKey(channel)];
+}
+
+function markScoped(key, date) {
+  if (!key) return false;
+  var st = ensureDay(date);
+  st.losses[key] = true;
   saveLossState();
   return true;
+}
+
+function markLoss(ticker, date) {
+  var t = canon(ticker);
+  if (!t) return false;
+  return markScoped(liveLossKey(t), date);
+}
+
+function normalizeBreakSide(side) {
+  var s = String(side || "").toLowerCase();
+  if (s === "long" || s === "call" || s === "breakout_long") return "long";
+  if (s === "short" || s === "put" || s === "breakout_short") return "short";
+  return null;
+}
+
+// First in-window breakout sets the side (count stays 0). Each later opposite
+// side before 10:15 adds 1. Same-side repeats do not. At/after 10:15 the stored
+// count is left unchanged.
+function noteBreakout(ticker, side, opts) {
+  opts = opts || {};
+  var t = canon(ticker);
+  var norm = normalizeBreakSide(side);
+  if (!t || !norm) return null;
+  var asOf = typeof opts.asOfMin === "number" ? opts.asOfMin : asOfMinutes(opts);
+  var st = ensureDay(opts.date);
+  var rec = st.recross[t] || { count: 0, lastSide: null };
+  var frozen = asOf >= WINDOW_END_MIN;
+  var beforeWindow = asOf < WINDOW_START_MIN;
+  if (!frozen && !beforeWindow) {
+    if (!rec.lastSide) rec.lastSide = norm;
+    else if (rec.lastSide !== norm) {
+      rec.count += 1;
+      rec.lastSide = norm;
+    }
+  }
+  st.recross[t] = rec;
+  saveLossState();
+  return { count: rec.count, lastSide: rec.lastSide, frozen: frozen };
+}
+
+function recrossCount(ticker, date) {
+  var t = canon(ticker);
+  var st = loadLossState();
+  if (!t || st.date !== todayISO(date) || !st.recross || !st.recross[t]) return 0;
+  return st.recross[t].count || 0;
+}
+
+function roundPct(n) {
+  return Math.round(n * 10000) / 10000;
+}
+
+function orbWidthPct(high, low) {
+  var h = parseFloat(high);
+  var l = parseFloat(low);
+  if (!isFinite(h) || !isFinite(l) || h <= l) return null;
+  var mid = (h + l) / 2;
+  if (!(mid > 0)) return null;
+  return roundPct((h - l) / mid * 100);
+}
+
+function widthBreach(ticker, width, cfg) {
+  if (width == null || !isFinite(width)) return null;
+  var max = cfg.orb_width_max ? cfg.orb_width_max[ticker] : null;
+  var min = cfg.orb_width_min ? cfg.orb_width_min[ticker] : null;
+  if (max != null && width > max) return { bound: "max", limit: max, width: width };
+  if (min != null && width < min) return { bound: "min", limit: min, width: width };
+  return null;
 }
 
 function loadShadow() {
@@ -196,6 +284,8 @@ function logFilter(ticker, trigger, side, transitions, min, asOf, overallBlock) 
   var why;
   if (trigger.filter === "stop_after_first_loss") {
     why = "losing close already today";
+  } else if (trigger.filter === "orb_width_skip") {
+    why = trigger.detail || "OR width outside threshold";
   } else {
     var by = asOf >= WINDOW_END_MIN ? "10:15 ET" : (fmtMin(asOf) + " ET");
     why = transitions + " OR re-crosses >= " + min + " by " + by;
@@ -229,6 +319,11 @@ function buildTrade(opts, or, trigger, transitions, min) {
     trade.transitions = transitions;
     trade.minTransitions = min;
   }
+  if (trigger.filter === "orb_width_skip") {
+    trade.widthPct = trigger.widthPct;
+    trade.widthBound = trigger.bound;
+    trade.widthLimit = trigger.limit;
+  }
   return trade;
 }
 
@@ -258,18 +353,6 @@ function asOfMinutes(opts) {
   catch (e) { return 0; }
 }
 
-async function loadBars(ticker, opts) {
-  if (opts && opts.bars) return opts.bars;
-  try {
-    var yahoo = require("./yahoo");
-    var parsed = await yahoo.getChart(ticker, "5m", "1d");
-    return barsFromYahooChart(parsed);
-  } catch (e) {
-    console.log("[FILTER] " + ticker + " OR re-cross bars unavailable: " + e.message);
-    return null;
-  }
-}
-
 function triggersFor(lossMode, recrossMode, lossToday, transitions, min) {
   var triggers = [];
   if (lossMode !== "off" && lossToday) {
@@ -290,31 +373,43 @@ async function checkEntry(opts) {
   var cfg = configFrom(opts);
   var lossMode = cfg.stop_after_first_loss[ticker] || "off";
   var recrossMode = cfg.orb_recross_skip[ticker] || "off";
-  if (lossMode === "off" && recrossMode === "off") {
-    return { block: false, shadowIds: [], triggers: [], transitions: null };
+  var widthMode = (cfg.orb_width_skip && cfg.orb_width_skip[ticker]) || "off";
+  if (lossMode === "off" && recrossMode === "off" && widthMode === "off") {
+    return { block: false, shadowIds: [], triggers: [], transitions: null, widthPct: null };
   }
 
   var date = todayISO(opts.date);
-  var lossToday = opts.lossToday != null ? !!opts.lossToday : hasLossToday(ticker, date);
+  var lossToday = opts.lossToday != null
+    ? !!opts.lossToday
+    : (opts.channel ? hasPaperLoss(opts.channel, date) : hasLossToday(ticker, date));
   var transitions = null;
-  var or = null;
+  var or = resolveOr(ticker, opts);
   var asOf = asOfMinutes(opts);
-  if (recrossMode !== "off") {
-    or = resolveOr(ticker, opts);
-    if (!or) {
-      console.log("[FILTER] " + ticker + " orb_recross_skip not evaluated — opening range unavailable");
-    } else {
-      var bars = await loadBars(ticker, opts);
-      if (!bars) {
-        console.log("[FILTER] " + ticker + " orb_recross_skip not evaluated — no closed bars");
-      } else {
-        transitions = countOrbRecrosses(bars, or.high, or.low, asOf);
-      }
+  var widthPct = null;
+  if (recrossMode !== "off") transitions = recrossCount(ticker, date);
+  if (widthMode !== "off") {
+    if (or) widthPct = orbWidthPct(or.high, or.low);
+    if (widthPct == null) {
+      var miss = ticker + " orb_width_skip not evaluated — opening range unavailable";
+      try { require("./state").logEvent("FILTER", miss); }
+      catch (e) { console.log("[FILTER] " + miss); }
     }
   }
 
   var min = cfg.orb_recross_min;
   var triggers = triggersFor(lossMode, recrossMode, lossToday, transitions, min);
+  var breach = widthMode !== "off" && widthPct != null ? widthBreach(ticker, widthPct, cfg) : null;
+  if (breach) {
+    var cmp = breach.bound === "max" ? ">" : "<";
+    triggers.push({
+      filter: "orb_width_skip",
+      mode: widthMode,
+      bound: breach.bound,
+      limit: breach.limit,
+      widthPct: breach.width,
+      detail: "OR width " + breach.width + "% " + cmp + " " + breach.bound + " " + breach.limit + "%"
+    });
+  }
   var block = triggers.some(function(tr) { return tr.mode === "on"; });
   var shadowIds = [];
   triggers.forEach(function(tr) {
@@ -332,7 +427,7 @@ async function checkEntry(opts) {
     shadowIds.push(id);
     logFilter(ticker, tr, opts.side, transitions, min, asOf, block);
   });
-  return { block: block, shadowIds: shadowIds, triggers: triggers, transitions: transitions };
+  return { block: block, shadowIds: shadowIds, triggers: triggers, transitions: transitions, widthPct: widthPct };
 }
 
 function annotateOpenTrade(ids, patch) {
@@ -382,7 +477,13 @@ function noteClosedPnl(ticker, pnl, extra) {
   var n = parseFloat(pnl);
   if (!isFinite(n)) return;
   var date = todayISO(extra.date);
-  if (n < 0) markLoss(t, date);
+  if (n < 0) {
+    if (extra.paper || extra.channel) {
+      if (extra.channel) markScoped(paperLossKey(extra.channel), date);
+    } else {
+      markLoss(t, date);
+    }
+  }
   var ids = extra.shadowIds;
   if (!ids || !ids.length) return;
   var data = loadShadow();
@@ -423,7 +524,11 @@ module.exports = {
   countOrbRecrosses: countOrbRecrosses,
   barsFromYahooChart: barsFromYahooChart,
   hasLossToday: hasLossToday,
+  hasPaperLoss: hasPaperLoss,
   markLoss: markLoss,
+  noteBreakout: noteBreakout,
+  recrossCount: recrossCount,
+  orbWidthPct: orbWidthPct,
   checkEntry: checkEntry,
   annotateOpenTrade: annotateOpenTrade,
   annotateFromPosition: annotateFromPosition,
