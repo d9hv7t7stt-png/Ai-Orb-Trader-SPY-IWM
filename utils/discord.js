@@ -377,6 +377,20 @@ function createChannel(cfg) {
     });
     if (totalProfit >= 0) account.wins++; else account.losses++;
     account.totalTrades++;
+    try {
+      require("./choppyFilters").noteClosedPnl(pos.tradeTicker, totalProfit, {
+        shadowIds: pos.filterShadowIds,
+        side: pos.side,
+        strike: pos.strike,
+        expiry: pos.expiry,
+        entryTime: pos.entryTime,
+        orbHigh: pos.orbHigh,
+        orbLow: pos.orbLow,
+        channel: cfg.id
+      });
+    } catch (e) {
+      console.log("[FILTER] close note failed: " + e.message);
+    }
   }
 
   async function openLeg(tradeTicker, side, dteTag, orbHigh, orbLow, underlying, moveTargets, optionPriceHint, signalTicker) {
@@ -407,7 +421,8 @@ function createChannel(cfg) {
       lastKnownPrice: price, maxPrice: price,
       targetUpper: moveTargets ? moveTargets.upper : null,
       targetLower: moveTargets ? moveTargets.lower : null,
-      moveExitDone: false
+      moveExitDone: false,
+      entryTime: new Date().toISOString()
     };
     account.positions[key] = pos;
     savePaperState();
@@ -479,6 +494,23 @@ function createChannel(cfg) {
       console.log("[PAPER][" + cfg.id + "] flipping " + tradeTicker + " " + firstPos.side + " → " + side);
       await fullClose(signalTicker || tradeTicker, optionPrice || 0);
     }
+    var gate = { block: false, shadowIds: [] };
+    try {
+      gate = await require("./choppyFilters").checkEntry({
+        ticker: tradeTicker,
+        side: side,
+        event: "entry",
+        orbHigh: orbHigh,
+        orbLow: orbLow,
+        channel: cfg.id,
+        signalTicker: signalTicker,
+        entryPrice: optionPrice || 0
+      });
+    } catch (e) {
+      console.log("[FILTER] " + cfg.id + " entry check failed open: " + e.message);
+      gate = { block: false, shadowIds: [] };
+    }
+    if (gate.block) return false;
     var moveTargets = await paperLegs.getEntryMoveTargets(tradeTicker);
     var opened = [];
     var open1DTE = cfg.dualLeg !== false;
@@ -491,6 +523,28 @@ function createChannel(cfg) {
     if (!opened.length) {
       console.log("[PAPER][" + cfg.id + "] no legs opened for " + tradeTicker);
       return false;
+    }
+    if (gate.shadowIds && gate.shadowIds.length) {
+      opened.forEach(function(o) {
+        o.pos.filterShadowIds = gate.shadowIds.slice();
+      });
+      var firstLeg = opened[0].pos;
+      try {
+        require("./choppyFilters").annotateOpenTrade(gate.shadowIds, {
+          side: side,
+          strike: firstLeg.strike,
+          expiry: firstLeg.expiry,
+          entryPrice: firstLeg.entryPrice,
+          contracts: opened.reduce(function(sum, o) { return sum + (o.contracts || 0); }, 0),
+          entryTime: firstLeg.entryTime,
+          orbHigh: orbHigh,
+          orbLow: orbLow,
+          channel: cfg.id
+        });
+      } catch (e) {
+        console.log("[FILTER] " + cfg.id + " shadow annotate failed: " + e.message);
+      }
+      savePaperState();
     }
     await sendEntryEmbed(tradeTicker, side, orbHigh, orbLow, opened, signalTicker);
     return true;

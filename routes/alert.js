@@ -4,6 +4,7 @@ var orbUtil = require("../utils/orb");
 var yahoo = require("../utils/yahoo");
 var pnlUtil = require("../utils/pnl");
 var settings = require("../utils/settings");
+var choppyFilters = require("../utils/choppyFilters");
 
 var discord = null;
 try { discord = require("../utils/discord"); } catch (e) { discord = null; }
@@ -217,6 +218,19 @@ async function tryLiveRetestAdd(ticker, side, qty, pos) {
 
 async function tryLiveHalfEntry(ticker, side, half, total, optPrice) {
   if (liveEntryBlocked(ticker, "entry")) return { order: null, retryable: false, blocked: true };
+  var gate = { block: false, shadowIds: [] };
+  try {
+    gate = await choppyFilters.checkEntry({
+      ticker: ticker,
+      side: side,
+      event: "entry",
+      contracts: half,
+      entryPrice: optPrice || 0
+    });
+  } catch (e) {
+    stateModule.logEvent("FILTER", ticker + " entry check failed open: " + e.message);
+  }
+  if (gate.block) return { order: null, retryable: false, blocked: true, filterBlocked: true };
   var dual = settings.isDualLegLive();
   stateModule.logEvent("ENTRY", ticker + " " + side + " @ half=" + half + "/" + total +
     (dual ? " (0DTE+1DTE dual-leg)" : ""));
@@ -225,7 +239,8 @@ async function tryLiveHalfEntry(ticker, side, half, total, optPrice) {
     var perLeg = Math.max(1, half);
     stateModule.openHalfPosition(ticker, side, perLeg * 2, optPrice || 0, {
       dualLeg: true,
-      totalContracts: perLeg
+      totalContracts: perLeg,
+      filterShadowIds: gate.shadowIds
     });
     try {
       var dualRes = await trayd.placeDualLegEntry(ticker, side, perLeg);
@@ -244,6 +259,7 @@ async function tryLiveHalfEntry(ticker, side, half, total, optPrice) {
         };
       });
       stateModule.setPositionLegs(ticker, legStates);
+      choppyFilters.annotateFromPosition(gate.shadowIds, ticker);
       if (dualRes.partial) {
         stateModule.logEvent("ORDER_WARN", ticker + " dual-leg partial — 0DTE live, 1DTE failed: " +
           (dualRes.error || "unknown"));
@@ -258,9 +274,10 @@ async function tryLiveHalfEntry(ticker, side, half, total, optPrice) {
     }
   }
 
-  stateModule.openHalfPosition(ticker, side, half, optPrice || 0);
+  stateModule.openHalfPosition(ticker, side, half, optPrice || 0, { filterShadowIds: gate.shadowIds });
   try {
     var order = await placeAndFill(ticker, side, half);
+    choppyFilters.annotateFromPosition(gate.shadowIds, ticker);
     return { order: order, retryable: false };
   } catch (e) {
     stateModule.closePosition(ticker, "entry order failed");
@@ -279,12 +296,29 @@ async function tryIwmCrossEntry(side, spyOrbHigh, spyOrbLow, s, lockedTickers) {
   var spyHalf = Math.ceil(s.contracts.SPY / 2);
   if (liveEntryBlocked("SPY", "cross-entry")) return { order: null, retryable: false, blocked: true };
   if (!processing["SPY"] && (!spyPos || spyPos.stopped) && s.orb.SPY.set) {
+    var gate = { block: false, shadowIds: [] };
+    try {
+      gate = await choppyFilters.checkEntry({
+        ticker: "SPY",
+        side: side,
+        event: "cross_entry",
+        orbHigh: spyOrbHigh,
+        orbLow: spyOrbLow,
+        contracts: spyHalf
+      });
+    } catch (e) {
+      stateModule.logEvent("FILTER", "SPY cross-entry check failed open: " + e.message);
+    }
+    if (gate.block) return { order: null, retryable: false, blocked: true, filterBlocked: true };
     processing["SPY"] = true;
     lockedTickers.push("SPY");
     stateModule.logEvent("CROSS_ENTRY", "IWM " + side + " → SPY " + side + " half=" + spyHalf + " stop=" + stopMode);
-    stateModule.openHalfPosition("SPY", side, spyHalf, 0, { crossEntry: true, stopMode: stopMode });
+    stateModule.openHalfPosition("SPY", side, spyHalf, 0, {
+      crossEntry: true, stopMode: stopMode, filterShadowIds: gate.shadowIds
+    });
     try {
       var cross = await placeAndFill("SPY", side, spyHalf);
+      choppyFilters.annotateFromPosition(gate.shadowIds, "SPY");
       recentlySeen("SPY", side === "call" ? "cross_long" : "cross_short");
       return { order: cross, retryable: false };
     } catch (e) {

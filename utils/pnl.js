@@ -2,17 +2,45 @@ var fs = require("fs");
 var persist = require("./persist");
 
 var PNL_FILE = persist.filePath("orb-pnl.json");
+var OPTIONAL_FIELDS = ["entryTime", "strike", "expiry", "orbHigh", "orbLow"];
+
+function pnlFile() {
+  return process.env.ORB_PNL_FILE || PNL_FILE;
+}
+
+function autoTradeFields(ticker) {
+  var fields = {};
+  try {
+    var stateModule = require("./state");
+    var key = String(ticker || "").toUpperCase();
+    if (key === "SPXW") key = "SPX";
+    var pos = stateModule.getPosition(key) || stateModule.getPosition(ticker);
+    var orbMap = (stateModule.getState().orb || {});
+    var orb = orbMap[key] || orbMap[ticker] || {};
+    if (pos) {
+      if (pos.openedAtMs) fields.entryTime = new Date(pos.openedAtMs).toISOString();
+      if (pos.strike != null) fields.strike = pos.strike;
+      if (pos.expiry) fields.expiry = pos.expiry;
+      if (pos.filterShadowIds && pos.filterShadowIds.length) fields.shadowIds = pos.filterShadowIds.slice();
+    }
+    if (orb.high != null) fields.orbHigh = orb.high;
+    if (orb.low != null) fields.orbLow = orb.low;
+  } catch (e) {}
+  return fields;
+}
 
 function etYmd(date) {
   return (date || new Date()).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 }
 
-function logTradePnL(ticker, side, entryPrice, exitPrice, contracts) {
+function logTradePnL(ticker, side, entryPrice, exitPrice, contracts, extra) {
   try {
+    var file = pnlFile();
     var data = { trades: [] };
-    if (fs.existsSync(PNL_FILE)) data = JSON.parse(fs.readFileSync(PNL_FILE, "utf8"));
+    if (fs.existsSync(file)) data = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!data.trades) data.trades = [];
     var pnl = (parseFloat(exitPrice) - parseFloat(entryPrice)) * contracts * 100;
-    data.trades.push({
+    var rec = {
       time: new Date().toISOString(),
       ticker: ticker,
       side: side,
@@ -20,11 +48,36 @@ function logTradePnL(ticker, side, entryPrice, exitPrice, contracts) {
       exitPrice: exitPrice,
       contracts: contracts,
       pnl: pnl
+    };
+    var fields = Object.assign({}, autoTradeFields(ticker));
+    if (extra && typeof extra === "object") {
+      OPTIONAL_FIELDS.forEach(function(k) {
+        if (extra[k] != null && extra[k] !== "") fields[k] = extra[k];
+      });
+      if (extra.shadowIds && extra.shadowIds.length) fields.shadowIds = extra.shadowIds;
+      if (extra.date) fields.date = extra.date;
+    }
+    OPTIONAL_FIELDS.forEach(function(k) {
+      if (fields[k] != null && fields[k] !== "") rec[k] = fields[k];
     });
+    data.trades.push(rec);
     var yearAgo = new Date();
     yearAgo.setFullYear(yearAgo.getFullYear() - 1);
     data.trades = data.trades.filter(function(t) { return new Date(t.time) >= yearAgo; });
-    fs.writeFileSync(PNL_FILE, JSON.stringify(data));
+    fs.writeFileSync(file, JSON.stringify(data));
+    try {
+      require("./choppyFilters").noteClosedPnl(ticker, pnl, {
+        date: fields.date,
+        shadowIds: fields.shadowIds,
+        strike: rec.strike,
+        expiry: rec.expiry,
+        entryTime: rec.entryTime,
+        orbHigh: rec.orbHigh,
+        orbLow: rec.orbLow
+      });
+    } catch (filterErr) {
+      console.log("[PNL_ERROR] filter note failed: " + filterErr.message);
+    }
   } catch (e) {
     console.log("[PNL_ERROR]", e.message);
   }
@@ -32,8 +85,9 @@ function logTradePnL(ticker, side, entryPrice, exitPrice, contracts) {
 
 function aggregatePnL() {
   try {
-    if (!fs.existsSync(PNL_FILE)) return { daily: null, weekly: null, monthly: null, yearly: null };
-    var data = JSON.parse(fs.readFileSync(PNL_FILE, "utf8"));
+    var file = pnlFile();
+    if (!fs.existsSync(file)) return { daily: null, weekly: null, monthly: null, yearly: null };
+    var data = JSON.parse(fs.readFileSync(file, "utf8"));
     var now = new Date();
     var todayEt = etYmd(now);
     var daily = 0, weekly = 0, monthly = 0, yearly = 0;

@@ -174,6 +174,8 @@ function openHalfPosition(ticker, side, contracts, entryPrice, meta) {
     instrumentUrl: meta.instrumentUrl || null,
     legs: meta.legs || null,
     dualLeg: !!meta.dualLeg,
+    filterShadowIds: Array.isArray(meta.filterShadowIds) && meta.filterShadowIds.length
+      ? meta.filterShadowIds.slice() : null,
     openedAtMs: Date.now()
   };
   logEvent("POSITION_OPEN", ticker + " " + side + " half " + contracts + "c @ $" + entryPrice +
