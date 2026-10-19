@@ -1,10 +1,18 @@
 // utils/settings.js
 // App settings persisted to durable storage (survives redeploys when a Railway
-// volume is attached). Currently holds per-ticker DTE, set from the dashboard.
+// volume is attached). Holds per-ticker DTE plus the choppy-day entry filters.
 
 var fs = require("fs");
 var persist = require("./persist");
 var FILE = persist.filePath("orb-settings.json");
+
+var FILTER_TICKERS = ["SPY", "IWM", "QQQ", "SPX"];
+var FILTER_MODES = { off: true, shadow: true, on: true };
+// Missing keys fall back to these. Live by default; QQQ and SPX stay out of
+// the re-cross filter until turned on.
+var DEFAULT_STOP_AFTER_FIRST_LOSS = { SPY: "on", IWM: "on", QQQ: "on", SPX: "on" };
+var DEFAULT_ORB_RECROSS_SKIP = { SPY: "on", IWM: "on", QQQ: "off", SPX: "off" };
+var DEFAULT_ORB_RECROSS_MIN = 2;
 
 var DEFAULTS = {
   dte: { SPY: 1, IWM: 0 },
@@ -12,8 +20,38 @@ var DEFAULTS = {
   dual_leg_live: false,
   cross_entry_enabled: true,
   // Per-ticker live buys (entries/adds). Stops/exits still run when off.
-  buy_enabled: { SPY: true, IWM: true, SPX: true }
+  buy_enabled: { SPY: true, IWM: true, SPX: true },
+  stop_after_first_loss: { SPY: "on", IWM: "on", QQQ: "on", SPX: "on" },
+  orb_recross_skip: { SPY: "on", IWM: "on", QQQ: "off", SPX: "off" },
+  orb_recross_min: DEFAULT_ORB_RECROSS_MIN
 };
+
+function normalizeModeMap(map, defaults) {
+  var src = map && typeof map === "object" ? map : {};
+  var out = {};
+  FILTER_TICKERS.forEach(function(t) {
+    var v = src[t];
+    if (typeof v === "string" && FILTER_MODES[String(v).toLowerCase()]) out[t] = String(v).toLowerCase();
+    else out[t] = defaults[t];
+  });
+  return out;
+}
+
+function normalizeRecrossMin(v) {
+  var n = parseInt(v, 10);
+  if (!isFinite(n) || n < 1 || n > 20) return DEFAULT_ORB_RECROSS_MIN;
+  return n;
+}
+
+// Pure. Does not write orb-settings.json and does not mutate raw.
+function resolveFilterSettings(raw) {
+  raw = raw || {};
+  return {
+    stop_after_first_loss: normalizeModeMap(raw.stop_after_first_loss, DEFAULT_STOP_AFTER_FIRST_LOSS),
+    orb_recross_skip: normalizeModeMap(raw.orb_recross_skip, DEFAULT_ORB_RECROSS_SKIP),
+    orb_recross_min: normalizeRecrossMin(raw.orb_recross_min)
+  };
+}
 
 function deepDefault() { return JSON.parse(JSON.stringify(DEFAULTS)); }
 
@@ -35,6 +73,10 @@ function normalize(s) {
   if (typeof s.dual_leg_live !== "boolean") s.dual_leg_live = DEFAULTS.dual_leg_live;
   if (typeof s.cross_entry_enabled !== "boolean") s.cross_entry_enabled = DEFAULTS.cross_entry_enabled;
   s.buy_enabled = normalizeBuyEnabled(s.buy_enabled);
+  var filters = resolveFilterSettings(s);
+  s.stop_after_first_loss = filters.stop_after_first_loss;
+  s.orb_recross_skip = filters.orb_recross_skip;
+  s.orb_recross_min = filters.orb_recross_min;
   return s;
 }
 
@@ -67,13 +109,46 @@ function setDTE(ticker, val) {
   return n;
 }
 
+function getFilterConfig() {
+  return resolveFilterSettings(settings);
+}
+
+function setFilterConfig(partial) {
+  partial = partial || {};
+  var cur = getFilterConfig();
+  if (partial.stop_after_first_loss && typeof partial.stop_after_first_loss === "object") {
+    FILTER_TICKERS.forEach(function(t) {
+      if (partial.stop_after_first_loss[t] === undefined) return;
+      var m = String(partial.stop_after_first_loss[t]).toLowerCase();
+      if (FILTER_MODES[m]) cur.stop_after_first_loss[t] = m;
+    });
+  }
+  if (partial.orb_recross_skip && typeof partial.orb_recross_skip === "object") {
+    FILTER_TICKERS.forEach(function(t) {
+      if (partial.orb_recross_skip[t] === undefined) return;
+      var m = String(partial.orb_recross_skip[t]).toLowerCase();
+      if (FILTER_MODES[m]) cur.orb_recross_skip[t] = m;
+    });
+  }
+  if (partial.orb_recross_min !== undefined) cur.orb_recross_min = normalizeRecrossMin(partial.orb_recross_min);
+  settings.stop_after_first_loss = cur.stop_after_first_loss;
+  settings.orb_recross_skip = cur.orb_recross_skip;
+  settings.orb_recross_min = cur.orb_recross_min;
+  save();
+  return getFilterConfig();
+}
+
 function getAll() {
+  var filters = getFilterConfig();
   return {
     dte: { SPY: getDTE("SPY"), IWM: getDTE("IWM") },
     trading_enabled: isTradingEnabled(),
     dual_leg_live: isDualLegLive(),
     cross_entry_enabled: isCrossEntryEnabled(),
     buy_enabled: getBuyEnabled(),
+    stop_after_first_loss: filters.stop_after_first_loss,
+    orb_recross_skip: filters.orb_recross_skip,
+    orb_recross_min: filters.orb_recross_min,
     durable: persist.isDurable()
   };
 }
@@ -160,5 +235,8 @@ module.exports = {
   isBuyEnabled: isBuyEnabled,
   setBuyEnabled: setBuyEnabled,
   setBuyEnabledMap: setBuyEnabledMap,
+  resolveFilterSettings: resolveFilterSettings,
+  getFilterConfig: getFilterConfig,
+  setFilterConfig: setFilterConfig,
   FILE: FILE
 };

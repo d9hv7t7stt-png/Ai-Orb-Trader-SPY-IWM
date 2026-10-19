@@ -43,6 +43,7 @@ app.get("/health", async (req, res) => {
   var auth = await getAuthInfo();
   var s = getState();
   var lastAuthErr = (s.log || []).find(function(e) { return e.type === "AUTH_ERROR"; });
+  var filters = settings.getFilterConfig();
   res.json({
     status: "running",
     time: new Date().toISOString(),
@@ -54,6 +55,9 @@ app.get("/health", async (req, res) => {
     dual_leg_live: settings.isDualLegLive(),
     cross_entry_enabled: settings.isCrossEntryEnabled(),
     buy_enabled: settings.getBuyEnabled(),
+    stop_after_first_loss: filters.stop_after_first_loss,
+    orb_recross_skip: filters.orb_recross_skip,
+    orb_recross_min: filters.orb_recross_min,
     webhook_queue: webhookQueue.summary().counts,
     token_expires_at: rh.getAccessTokenExpiryMs() ? new Date(rh.getAccessTokenExpiryMs()).toISOString() : null,
     webhook_url: ((req.get("x-forwarded-proto") || req.protocol) + "://" + req.get("host") + "/webhook"),
@@ -91,6 +95,10 @@ app.get("/api/state", authguard.requireSecret, async (req, res) => {
   s.dual_leg_live = settings.isDualLegLive();
   s.cross_entry_enabled = settings.isCrossEntryEnabled();
   s.buy_enabled = settings.getBuyEnabled();
+  var filters = settings.getFilterConfig();
+  s.stop_after_first_loss = filters.stop_after_first_loss;
+  s.orb_recross_skip = filters.orb_recross_skip;
+  s.orb_recross_min = filters.orb_recross_min;
   s.webhook_queue = webhookQueue.summary();
   res.json(s);
 });
@@ -106,11 +114,37 @@ app.post("/api/settings/flags", authguard.requireSecret, (req, res) => {
     if (body.buy_ticker && body.buy_enabled_value !== undefined) {
       settings.setBuyEnabled(body.buy_ticker, body.buy_enabled_value);
     }
+    if (body.stop_after_first_loss || body.orb_recross_skip || body.orb_recross_min !== undefined) {
+      settings.setFilterConfig({
+        stop_after_first_loss: body.stop_after_first_loss,
+        orb_recross_skip: body.orb_recross_skip,
+        orb_recross_min: body.orb_recross_min
+      });
+    }
+    var filterCfg = settings.getFilterConfig();
     res.json({
       ok: true,
       dual_leg_live: settings.isDualLegLive(),
       cross_entry_enabled: settings.isCrossEntryEnabled(),
       buy_enabled: settings.getBuyEnabled(),
+      stop_after_first_loss: filterCfg.stop_after_first_loss,
+      orb_recross_skip: filterCfg.orb_recross_skip,
+      orb_recross_min: filterCfg.orb_recross_min,
+      durable: settings.getAll().durable
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/settings/filters", authguard.requireSecret, (req, res) => {
+  try {
+    var cfg = settings.setFilterConfig(req.body || {});
+    res.json({
+      ok: true,
+      stop_after_first_loss: cfg.stop_after_first_loss,
+      orb_recross_skip: cfg.orb_recross_skip,
+      orb_recross_min: cfg.orb_recross_min,
       durable: settings.getAll().durable
     });
   } catch (e) {
