@@ -59,6 +59,10 @@ async function closeLiveOrLog(ticker, contracts, reason) {
 }
 
 function liveEntryBlocked(ticker, action) {
+  if (require("../utils/exitlogic").isAfterEntryCutoffET()) {
+    stateModule.logEvent("ENTRY_CUTOFF", ticker + " live " + action + " blocked — no new trades at/after 3:55 PM ET");
+    return true;
+  }
   if (!settings.isTradingEnabled()) {
     stateModule.logEvent("KILL_SWITCH", ticker + " live " + action + " blocked");
     return true;
@@ -571,4 +575,4 @@ async function processEvent(payload, ticker, event, lockedTickers) {
   throw new Error("Unknown event: " + event);
 }
 
-module.exports = { handleAlert: handleAlert };
+module.exports = { handleAlert: handleAlert, liveEntryBlocked: liveEntryBlocked };
