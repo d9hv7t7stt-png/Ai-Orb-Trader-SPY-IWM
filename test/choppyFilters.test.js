@@ -43,12 +43,20 @@ function allOff() {
   var off = { SPY: "off", IWM: "off", QQQ: "off", SPX: "off" };
   return settings.resolveFilterSettings({
     stop_after_first_loss: off,
-    orb_recross_skip: off
+    orb_recross_skip: off,
+    orb_width_skip: off
   });
 }
 
+function widthOff() {
+  return { SPY: "off", IWM: "off", QQQ: "off", SPX: "off" };
+}
+
 function spyModes(lossMode, recrossMode, min) {
-  var cfg = settings.resolveFilterSettings({ orb_recross_min: min == null ? 2 : min });
+  var cfg = settings.resolveFilterSettings({
+    orb_recross_min: min == null ? 2 : min,
+    orb_width_skip: widthOff()
+  });
   cfg.stop_after_first_loss.SPY = lossMode;
   cfg.orb_recross_skip.SPY = recrossMode;
   return cfg;
@@ -114,13 +122,37 @@ test("yahoo bars use ET bar starts and the 10:15 bar stays out of the count", fu
   assert.strictEqual(filters.countOrbRecrosses(bars, 100, 99, 16 * 60), 1);
 });
 
-test("before 10:15 a live filter blocks only once the threshold is hit", async function() {
+test("alert breakouts count opposite sides and freeze at 10:15", function() {
   filters.resetForTests();
+  var d = "2026-10-19";
+  function nb(ticker, side, min) {
+    return filters.noteBreakout(ticker, side, { date: d, asOfMin: min });
+  }
+  assert.strictEqual(nb("SPY", "short", 9 * 60 + 31).count, 0);
+  assert.strictEqual(nb("SPY", "short", 9 * 60 + 31).lastSide, null);
+  assert.strictEqual(nb("SPY", "long", 9 * 60 + 40).count, 0);
+  assert.strictEqual(nb("SPY", "long", 9 * 60 + 40).lastSide, "long");
+  assert.strictEqual(nb("SPY", "long", 9 * 60 + 45).count, 0);
+  assert.strictEqual(nb("SPY", "short", 9 * 60 + 50).count, 1);
+  assert.strictEqual(nb("SPY", "long", 10 * 60).count, 2);
+  assert.strictEqual(nb("SPY", "short", 10 * 60 + 15).count, 2);
+  assert.strictEqual(nb("SPY", "long", 12 * 60).count, 2);
+  assert.strictEqual(nb("IWM", "short", 9 * 60 + 50).count, 0);
+  assert.strictEqual(filters.recrossCount("SPY", d), 2);
+  assert.strictEqual(filters.recrossCount("IWM", d), 0);
+  assert.strictEqual(filters.recrossCount("SPY", "2026-10-20"), 0);
+});
+
+test("before 10:15 a live filter blocks only once the alert count hits the threshold", async function() {
+  filters.resetForTests();
+  var d = "2026-10-19";
+  filters.noteBreakout("SPY", "long", { date: d, asOfMin: 9 * 60 + 40 });
+  filters.noteBreakout("SPY", "short", { date: d, asOfMin: 9 * 60 + 45 });
   var early = await filters.checkEntry({
     ticker: "SPY",
     side: "put",
     event: "breakout_short",
-    date: "2026-10-19",
+    date: d,
     asOfMin: 9 * 60 + 45,
     orbHigh: 100,
     orbLow: 99,
@@ -131,11 +163,12 @@ test("before 10:15 a live filter blocks only once the threshold is hit", async f
   assert.strictEqual(early.block, false);
   assert.strictEqual(filters.getRecords().length, 0);
 
+  filters.noteBreakout("SPY", "long", { date: d, asOfMin: 9 * 60 + 50 });
   var hit = await filters.checkEntry({
     ticker: "SPY",
     side: "put",
     event: "breakout_short",
-    date: "2026-10-19",
+    date: d,
     asOfMin: 9 * 60 + 50,
     orbHigh: 100,
     orbLow: 99,
@@ -153,23 +186,22 @@ test("before 10:15 a live filter blocks only once the threshold is hit", async f
   assert.strictEqual(filters.getRecords()[0].trade.minTransitions, 2);
 
   filters.resetForTests();
+  filters.noteBreakout("IWM", "long", { date: d, asOfMin: 9 * 60 + 40 });
+  filters.noteBreakout("IWM", "short", { date: d, asOfMin: 9 * 60 + 50 });
+  filters.noteBreakout("IWM", "long", { date: d, asOfMin: 10 * 60 + 20 });
   var afterCutoff = await filters.checkEntry({
     ticker: "IWM",
     side: "call",
     event: "breakout_long",
-    date: "2026-10-19",
+    date: d,
     asOfMin: 12 * 60,
     orbHigh: 100,
     orbLow: 99,
-    bars: [
-      { startMin: 9 * 60 + 35, close: 101 },
-      { startMin: 9 * 60 + 40, close: 99.5 },
-      { startMin: 10 * 60 + 20, close: 98 },
-      { startMin: 10 * 60 + 25, close: 101 }
-    ],
+    bars: recrossBars(),
     settings: settings.resolveFilterSettings({
-      stop_after_first_loss: { SPY: "off", IWM: "off", QQQ: "off", SPX: "off" },
-      orb_recross_skip: { SPY: "off", IWM: "on", QQQ: "off", SPX: "off" }
+      stop_after_first_loss: widthOff(),
+      orb_recross_skip: { SPY: "off", IWM: "on", QQQ: "off", SPX: "off" },
+      orb_width_skip: widthOff()
     })
   });
   assert.strictEqual(afterCutoff.transitions, 1);
@@ -193,7 +225,7 @@ test("stop after first loss resets on the next ET day and stays per ticker", asy
     orbHigh: 100,
     orbLow: 99,
     bars: flatBars(),
-    settings: settings.resolveFilterSettings({})
+    settings: settings.resolveFilterSettings({ orb_width_skip: widthOff() })
   });
   assert.strictEqual(nextDay.block, false);
   assert.strictEqual(filters.getRecords().length, 0);
@@ -208,7 +240,7 @@ test("stop after first loss resets on the next ET day and stays per ticker", asy
     orbHigh: 200,
     orbLow: 199,
     bars: flatBars(),
-    settings: settings.resolveFilterSettings({})
+    settings: settings.resolveFilterSettings({ orb_width_skip: widthOff() })
   });
   assert.strictEqual(iwm.block, true);
   assert.strictEqual(iwm.triggers.length, 1);
@@ -223,13 +255,16 @@ test("stop after first loss resets on the next ET day and stays per ticker", asy
     orbHigh: 100,
     orbLow: 99,
     bars: flatBars(),
-    settings: settings.resolveFilterSettings({})
+    settings: settings.resolveFilterSettings({ orb_width_skip: widthOff() })
   });
   assert.strictEqual(spy.block, false);
 });
 
 test("off does nothing, shadow allows and records, on blocks and still records", async function() {
   filters.resetForTests();
+  filters.noteBreakout("SPY", "long", { date: "2026-10-19", asOfMin: 9 * 60 + 40 });
+  filters.noteBreakout("SPY", "short", { date: "2026-10-19", asOfMin: 9 * 60 + 50 });
+  filters.noteBreakout("SPY", "long", { date: "2026-10-19", asOfMin: 10 * 60 });
   var shared = {
     ticker: "SPY",
     side: "call",
@@ -356,6 +391,15 @@ test("missing settings keys fall back to live defaults and do not rewrite an old
   assert.strictEqual(resolved.orb_recross_skip.QQQ, "off");
   assert.strictEqual(resolved.orb_recross_skip.SPX, "off");
   assert.strictEqual(resolved.orb_recross_min, 2);
+  assert.strictEqual(resolved.orb_width_skip.SPY, "on");
+  assert.strictEqual(resolved.orb_width_skip.IWM, "on");
+  assert.strictEqual(resolved.orb_width_skip.QQQ, "on");
+  assert.strictEqual(resolved.orb_width_skip.SPX, "off");
+  assert.strictEqual(resolved.orb_width_max.SPY, 0.15);
+  assert.strictEqual(resolved.orb_width_max.QQQ, 0.35);
+  assert.strictEqual(resolved.orb_width_max.IWM, null);
+  assert.strictEqual(resolved.orb_width_min.IWM, 0.30);
+  assert.strictEqual(resolved.orb_width_min.SPY, null);
 
   var partial = settings.resolveFilterSettings({
     stop_after_first_loss: { SPY: "shadow", IWM: "nope" },
@@ -378,12 +422,19 @@ test("missing settings keys fall back to live defaults and do not rewrite an old
     assert.strictEqual(fresh.getFilterConfig().stop_after_first_loss.SPY, "on");
     assert.strictEqual(fresh.getFilterConfig().orb_recross_skip.SPX, "off");
     assert.strictEqual(fresh.getFilterConfig().orb_recross_min, 2);
+    assert.strictEqual(fresh.getFilterConfig().orb_width_skip.SPY, "on");
+    assert.strictEqual(fresh.getFilterConfig().orb_width_skip.SPX, "off");
+    assert.strictEqual(fresh.getFilterConfig().orb_width_max.QQQ, 0.35);
+    assert.strictEqual(fresh.getFilterConfig().orb_width_min.IWM, 0.30);
     assert.strictEqual(fresh.getAll().dte.SPY, 1);
     assert.strictEqual(fresh.getAll().buy_enabled.SPX, false);
     var disk = JSON.parse(fs.readFileSync(file, "utf8"));
     assert.strictEqual(disk.stop_after_first_loss, undefined);
     assert.strictEqual(disk.orb_recross_skip, undefined);
     assert.strictEqual(disk.orb_recross_min, undefined);
+    assert.strictEqual(disk.orb_width_skip, undefined);
+    assert.strictEqual(disk.orb_width_max, undefined);
+    assert.strictEqual(disk.orb_width_min, undefined);
     assert.strictEqual(disk.dte.SPY, 1);
     assert.strictEqual(disk.buy_enabled.SPX, false);
   } finally {
@@ -454,6 +505,188 @@ test("orb-pnl records gain entry time, strike, expiry, and OR without dropping o
   assert.strictEqual(second.orbHigh, undefined);
   assert.strictEqual(second.orbLow, undefined);
   assert.strictEqual(filters.hasLossToday("SPY", "2026-10-19"), true);
+  assert.strictEqual(filters.hasLossToday("IWM", "2026-10-19"), false);
+});
+
+test("passed bars do not drive orb_recross_skip", async function() {
+  filters.resetForTests();
+  var ignored = await filters.checkEntry({
+    ticker: "SPY",
+    side: "call",
+    date: "2026-10-19",
+    asOfMin: 11 * 60,
+    orbHigh: 100.05,
+    orbLow: 99.95,
+    bars: recrossBars(),
+    settings: spyModes("off", "on")
+  });
+  assert.strictEqual(ignored.transitions, 0);
+  assert.strictEqual(ignored.block, false);
+  assert.strictEqual(filters.getRecords().length, 0);
+});
+
+test("live losses arm live entries and paper losses stay on their channel", async function() {
+  filters.resetForTests();
+  var cfg = settings.resolveFilterSettings({
+    orb_recross_skip: widthOff(),
+    orb_width_skip: widthOff()
+  });
+  filters.noteClosedPnl("SPY", -20, { date: "2026-10-19", paper: true, channel: "spy0dte" });
+  assert.strictEqual(filters.hasLossToday("SPY", "2026-10-19"), false);
+  assert.strictEqual(filters.hasPaperLoss("spy0dte", "2026-10-19"), true);
+  assert.strictEqual(filters.hasPaperLoss("main", "2026-10-19"), false);
+
+  function entry(extra) {
+    return filters.checkEntry(Object.assign({
+      ticker: "SPY",
+      side: "call",
+      date: "2026-10-19",
+      asOfMin: 11 * 60,
+      settings: cfg
+    }, extra || {}));
+  }
+  assert.strictEqual((await entry()).block, false);
+  var paper = await entry({ channel: "spy0dte" });
+  assert.strictEqual(paper.block, true);
+  assert.strictEqual(paper.triggers[0].filter, "stop_after_first_loss");
+  assert.strictEqual((await entry({ channel: "main" })).block, false);
+
+  filters.noteClosedPnl("SPY", -8, { date: "2026-10-19" });
+  assert.strictEqual(filters.hasLossToday("SPY", "2026-10-19"), true);
+  assert.strictEqual((await entry()).block, true);
+  assert.strictEqual((await entry({ channel: "main" })).block, false);
+  assert.strictEqual((await entry({ channel: "qqq" })).block, false);
+});
+
+test("orb width skip uses each ticker max or min and fails open without a range", async function() {
+  var defaults = settings.resolveFilterSettings({});
+  assert.strictEqual(defaults.orb_width_skip.SPY, "on");
+  assert.strictEqual(defaults.orb_width_skip.QQQ, "on");
+  assert.strictEqual(defaults.orb_width_skip.IWM, "on");
+  assert.strictEqual(defaults.orb_width_skip.SPX, "off");
+  var cfg = settings.resolveFilterSettings({
+    stop_after_first_loss: widthOff(),
+    orb_recross_skip: widthOff()
+  });
+
+  function widthEntry(ticker, high, low, extraSettings) {
+    filters.resetForTests();
+    return filters.checkEntry({
+      ticker: ticker,
+      side: "call",
+      event: "breakout_long",
+      date: "2026-10-19",
+      asOfMin: 10 * 60,
+      orbHigh: high,
+      orbLow: low,
+      settings: extraSettings || cfg
+    });
+  }
+
+  assert.strictEqual(filters.orbWidthPct(100.10, 99.90), 0.2);
+  assert.strictEqual(filters.orbWidthPct(100.075, 99.925), 0.15);
+  var spyWide = await widthEntry("SPY", 100.10, 99.90);
+  assert.strictEqual(spyWide.block, true);
+  assert.strictEqual(spyWide.widthPct, 0.2);
+  assert.strictEqual(spyWide.triggers[0].filter, "orb_width_skip");
+  assert.strictEqual(spyWide.triggers[0].bound, "max");
+  assert.strictEqual(filters.getRecords()[0].trade.widthLimit, 0.15);
+  assert.strictEqual(filters.getRecords()[0].blocked, true);
+
+  var spyExact = await widthEntry("SPY", 100.075, 99.925);
+  assert.strictEqual(spyExact.widthPct, 0.15);
+  assert.strictEqual(spyExact.block, false);
+  assert.strictEqual(spyExact.triggers.length, 0);
+
+  var qqqWide = await widthEntry("QQQ", 100.18, 99.82);
+  assert.strictEqual(qqqWide.block, true);
+  assert.strictEqual(qqqWide.widthPct, 0.36);
+  var qqqExact = await widthEntry("QQQ", 100.175, 99.825);
+  assert.strictEqual(qqqExact.widthPct, 0.35);
+  assert.strictEqual(qqqExact.block, false);
+
+  var iwmNarrow = await widthEntry("IWM", 200.29, 199.71);
+  assert.strictEqual(iwmNarrow.block, true);
+  assert.strictEqual(iwmNarrow.triggers[0].bound, "min");
+  assert.strictEqual(iwmNarrow.widthPct, 0.29);
+  var iwmExact = await widthEntry("IWM", 200.30, 199.70);
+  assert.strictEqual(iwmExact.widthPct, 0.3);
+  assert.strictEqual(iwmExact.block, false);
+
+  var spx = await widthEntry("SPX", 5100, 5000);
+  assert.strictEqual(spx.block, false);
+  assert.strictEqual(spx.triggers.length, 0);
+
+  var raised = await widthEntry("SPY", 100.10, 99.90, settings.resolveFilterSettings({
+    stop_after_first_loss: widthOff(),
+    orb_recross_skip: widthOff(),
+    orb_width_max: { SPY: 0.25 }
+  }));
+  assert.strictEqual(raised.block, false);
+
+  var minOverride = await widthEntry("SPY", 100.10, 99.90, settings.resolveFilterSettings({
+    stop_after_first_loss: widthOff(),
+    orb_recross_skip: widthOff(),
+    orb_width_max: { SPY: null },
+    orb_width_min: { SPY: 0.50 }
+  }));
+  assert.strictEqual(minOverride.block, true);
+  assert.strictEqual(minOverride.triggers[0].bound, "min");
+
+  filters.resetForTests();
+  var logs = [];
+  var orig = console.log;
+  console.log = function(m) { logs.push(String(m)); };
+  try {
+    var missing = await filters.checkEntry({
+      ticker: "SPY",
+      side: "call",
+      date: "2026-10-19",
+      asOfMin: 10 * 60,
+      settings: cfg
+    });
+    assert.strictEqual(missing.block, false);
+    assert.strictEqual(missing.triggers.length, 0);
+    assert.ok(logs.some(function(line) {
+      return line.indexOf("SPY orb_width_skip not evaluated — opening range unavailable") !== -1;
+    }));
+  } finally {
+    console.log = orig;
+  }
+
+  var shadow = await widthEntry("SPY", 100.10, 99.90, settings.resolveFilterSettings({
+    stop_after_first_loss: widthOff(),
+    orb_recross_skip: widthOff(),
+    orb_width_skip: { SPY: "shadow", IWM: "off", QQQ: "off", SPX: "off" }
+  }));
+  assert.strictEqual(shadow.block, false);
+  assert.strictEqual(shadow.triggers[0].mode, "shadow");
+  assert.strictEqual(filters.getRecords()[0].action, "would_block");
+});
+
+test("confirmed live close prefers option price then fill then mark and arms only live", async function() {
+  filters.resetForTests();
+  assert.strictEqual(pnl.pickExitPrice(1.25, 0.4, 0.3), 1.25);
+  assert.strictEqual(pnl.pickExitPrice(0, 0.4, 0.3), 0.4);
+  assert.strictEqual(pnl.pickExitPrice(null, 0, 0.3), 0.3);
+  assert.strictEqual(pnl.pickExitPrice("", 0, 0), 0);
+
+  var logged = await pnl.logConfirmedLiveClose("SPY", {
+    side: "call", entryPrice: 2, contracts: 1, strike: 570
+  }, 1.5, [{ leg: null, fill: 0.4, contracts: 1 }], { date: "2026-10-19" });
+  assert.strictEqual(logged, 1);
+  assert.strictEqual(filters.hasLossToday("SPY", "2026-10-19"), true);
+  assert.strictEqual(filters.hasPaperLoss("spy0dte", "2026-10-19"), false);
+  var trades = JSON.parse(fs.readFileSync(process.env.ORB_PNL_FILE, "utf8")).trades;
+  var row = trades[trades.length - 1];
+  assert.strictEqual(row.exitPrice, 1.5);
+  assert.strictEqual(row.pnl, -50);
+  assert.strictEqual(row.ticker, "SPY");
+
+  var none = await pnl.logConfirmedLiveClose("IWM", {
+    side: "put", entryPrice: 1, contracts: 1
+  }, 0, [{ leg: null, fill: 0, contracts: 1 }], { date: "2026-10-19" });
+  assert.strictEqual(none, 0);
   assert.strictEqual(filters.hasLossToday("IWM", "2026-10-19"), false);
 });
 

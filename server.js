@@ -58,6 +58,9 @@ app.get("/health", async (req, res) => {
     stop_after_first_loss: filters.stop_after_first_loss,
     orb_recross_skip: filters.orb_recross_skip,
     orb_recross_min: filters.orb_recross_min,
+    orb_width_skip: filters.orb_width_skip,
+    orb_width_max: filters.orb_width_max,
+    orb_width_min: filters.orb_width_min,
     webhook_queue: webhookQueue.summary().counts,
     token_expires_at: rh.getAccessTokenExpiryMs() ? new Date(rh.getAccessTokenExpiryMs()).toISOString() : null,
     webhook_url: ((req.get("x-forwarded-proto") || req.protocol) + "://" + req.get("host") + "/webhook"),
@@ -99,6 +102,9 @@ app.get("/api/state", authguard.requireSecret, async (req, res) => {
   s.stop_after_first_loss = filters.stop_after_first_loss;
   s.orb_recross_skip = filters.orb_recross_skip;
   s.orb_recross_min = filters.orb_recross_min;
+  s.orb_width_skip = filters.orb_width_skip;
+  s.orb_width_max = filters.orb_width_max;
+  s.orb_width_min = filters.orb_width_min;
   s.webhook_queue = webhookQueue.summary();
   res.json(s);
 });
@@ -114,11 +120,15 @@ app.post("/api/settings/flags", authguard.requireSecret, (req, res) => {
     if (body.buy_ticker && body.buy_enabled_value !== undefined) {
       settings.setBuyEnabled(body.buy_ticker, body.buy_enabled_value);
     }
-    if (body.stop_after_first_loss || body.orb_recross_skip || body.orb_recross_min !== undefined) {
+    if (body.stop_after_first_loss || body.orb_recross_skip || body.orb_recross_min !== undefined
+        || body.orb_width_skip || body.orb_width_max || body.orb_width_min) {
       settings.setFilterConfig({
         stop_after_first_loss: body.stop_after_first_loss,
         orb_recross_skip: body.orb_recross_skip,
-        orb_recross_min: body.orb_recross_min
+        orb_recross_min: body.orb_recross_min,
+        orb_width_skip: body.orb_width_skip,
+        orb_width_max: body.orb_width_max,
+        orb_width_min: body.orb_width_min
       });
     }
     var filterCfg = settings.getFilterConfig();
@@ -130,6 +140,9 @@ app.post("/api/settings/flags", authguard.requireSecret, (req, res) => {
       stop_after_first_loss: filterCfg.stop_after_first_loss,
       orb_recross_skip: filterCfg.orb_recross_skip,
       orb_recross_min: filterCfg.orb_recross_min,
+      orb_width_skip: filterCfg.orb_width_skip,
+      orb_width_max: filterCfg.orb_width_max,
+      orb_width_min: filterCfg.orb_width_min,
       durable: settings.getAll().durable
     });
   } catch (e) {
@@ -145,6 +158,9 @@ app.post("/api/settings/filters", authguard.requireSecret, (req, res) => {
       stop_after_first_loss: cfg.stop_after_first_loss,
       orb_recross_skip: cfg.orb_recross_skip,
       orb_recross_min: cfg.orb_recross_min,
+      orb_width_skip: cfg.orb_width_skip,
+      orb_width_max: cfg.orb_width_max,
+      orb_width_min: cfg.orb_width_min,
       durable: settings.getAll().durable
     });
   } catch (e) {

@@ -135,7 +135,7 @@ async function closePartialPosition(opts) {
   return await rh.closeOptionPosition(opts.ticker, opts.contracts, opts.reason, match);
 }
 
-async function closeLiveOrLog(ticker, contracts, reason, matchOverride) {
+async function closeLiveOrLog(ticker, contracts, reason, matchOverride, sink) {
   try {
     var result = await closePartialPosition({
       ticker: ticker,
@@ -150,6 +150,7 @@ async function closeLiveOrLog(ticker, contracts, reason, matchOverride) {
         stateModule.logEvent("RECONCILE", ticker + " RH already flat on close (" + reason
           + ") — clearing ghost state");
         try { require("./reconcile").forceFlatNext(ticker); } catch (e) {}
+        if (sink) sink.alreadyFlat = true;
         return true;
       }
       stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + (result.error || "no matching position"));
@@ -157,12 +158,14 @@ async function closeLiveOrLog(ticker, contracts, reason, matchOverride) {
       try { require("./profitmanager").requestReconcileSoon(); } catch (e) {}
       return false;
     }
+    if (sink && result && result.fillPrice > 0) sink.fillPrice = result.fillPrice;
     return true;
   } catch (e) {
     if (rh.isAlreadyFlatError(e.message)) {
       stateModule.logEvent("RECONCILE", ticker + " RH already flat on close (" + reason
         + ") — clearing ghost state");
       try { require("./reconcile").forceFlatNext(ticker); } catch (e2) {}
+      if (sink) sink.alreadyFlat = true;
       return true;
     }
     stateModule.logEvent("ORDER_ERROR", ticker + " RH close failed: " + e.message);
@@ -171,7 +174,7 @@ async function closeLiveOrLog(ticker, contracts, reason, matchOverride) {
   }
 }
 
-async function closeAllLegs(ticker, reason) {
+async function closeAllLegs(ticker, reason, onLeg) {
   var pos = stateModule.getPosition(ticker);
   if (!pos || pos.stopped) return false;
   if (pos.legs && pos.legs.length) {
@@ -181,18 +184,23 @@ async function closeAllLegs(ticker, reason) {
       var leg = pos.legs[i];
       if (!leg || leg.contracts < 1) continue;
       any = true;
+      var sink = {};
       var ok = await closeLiveOrLog(ticker, leg.contracts, reason, {
         side: leg.side || pos.side,
         strike: leg.strike,
         expiry: leg.expiry,
         instrumentUrl: leg.instrumentUrl
-      });
+      }, sink);
       if (!ok) allOk = false;
+      else if (!sink.alreadyFlat && typeof onLeg === "function") onLeg(leg, sink.fillPrice || 0);
     }
     return any ? allOk : false;
   }
   if (!(pos.contracts > 0)) return false;
-  return closeLiveOrLog(ticker, pos.contracts, reason);
+  var single = {};
+  var singleOk = await closeLiveOrLog(ticker, pos.contracts, reason, null, single);
+  if (singleOk && !single.alreadyFlat && typeof onLeg === "function") onLeg(null, single.fillPrice || 0);
+  return singleOk;
 }
 
 module.exports = {

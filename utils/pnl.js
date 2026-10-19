@@ -111,4 +111,57 @@ function aggregatePnL() {
   }
 }
 
-module.exports = { logTradePnL: logTradePnL, aggregatePnL: aggregatePnL, PNL_FILE: PNL_FILE };
+function pickExitPrice(optPrice, fillPrice, mark) {
+  var o = parseFloat(optPrice);
+  if (o > 0) return o;
+  var f = parseFloat(fillPrice);
+  if (f > 0) return f;
+  var m = parseFloat(mark);
+  if (m > 0) return m;
+  return 0;
+}
+
+// Confirmed live close. option_price wins, then the Robinhood fill, then the mark.
+// A losing row arms stop_after_first_loss for the live ticker only.
+async function logConfirmedLiveClose(ticker, pos, optPrice, pending, extra) {
+  extra = extra || {};
+  if (!pos) return 0;
+  var jobs = pending && pending.length ? pending : [{ leg: null, fill: 0, contracts: pos.contracts }];
+  var logged = 0;
+  for (var i = 0; i < jobs.length; i++) {
+    var job = jobs[i] || {};
+    var leg = job.leg;
+    var entry = parseFloat(leg ? leg.entryPrice : pos.entryPrice);
+    var qty = leg ? leg.contracts : (job.contracts || pos.contracts);
+    var side = (leg && leg.side) || pos.side;
+    var url = (leg && leg.instrumentUrl) || pos.instrumentUrl;
+    var px = pickExitPrice(jobs.length === 1 ? optPrice : null, job.fill, 0);
+    if (!(px > 0) && url) {
+      try {
+        var mark = await require("./robinhood").getOptionMarkByUrl(url);
+        px = pickExitPrice(null, null, mark);
+      } catch (e) {}
+    }
+    if (!(px > 0) || !(entry > 0) || !(qty > 0)) continue;
+    logTradePnL(ticker, side, entry, px, qty, {
+      strike: leg && leg.strike != null ? leg.strike : pos.strike,
+      expiry: (leg && leg.expiry) || pos.expiry,
+      date: extra.date
+    });
+    logged++;
+  }
+  if (!logged) {
+    var msg = ticker + " live close confirmed but no option_price, fill, or mark — loss filter not armed";
+    try { require("./state").logEvent("PNL_WARN", msg); }
+    catch (e) { console.log("[PNL_WARN] " + msg); }
+  }
+  return logged;
+}
+
+module.exports = {
+  logTradePnL: logTradePnL,
+  aggregatePnL: aggregatePnL,
+  pickExitPrice: pickExitPrice,
+  logConfirmedLiveClose: logConfirmedLiveClose,
+  PNL_FILE: PNL_FILE
+};
