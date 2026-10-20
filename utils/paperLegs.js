@@ -140,7 +140,34 @@ function sellQtyForLeg(pos, fraction) {
   return Math.max(1, Math.floor(pos.contracts * fraction));
 }
 
+// ── held-leg expiry helpers ─────────────────────────────────────────────────
+// A held leg is priced only on its own expiry. Never roll it to another date.
+// expired: expiry before today ET, or expiry today once 4:00 PM ET has passed.
+function isExpiredLeg(pos, todayYmd, afterCloseToday) {
+  if (!pos || !pos.expiry || !todayYmd) return false;
+  if (pos.expiry < todayYmd) return true;
+  return pos.expiry === todayYmd && !!afterCloseToday;
+}
+
+// Settlement value per contract share: intrinsic at the closing underlying, else 0.
+function settlementPrice(side, strike, close) {
+  var k = parseFloat(strike), c = parseFloat(close);
+  if (!isFinite(k) || !isFinite(c) || c <= 0) return 0;
+  var v = side === "call" ? c - k : k - c;
+  return v > 0 ? v : 0;
+}
+
+// 3:45 PM ET sell: legs expiring today close 100%; other legs keep the normal fraction.
+function eodSellQty(pos, todayYmd, frac) {
+  if (!pos || !(pos.contracts > 0)) return 0;
+  if (pos.expiry && pos.expiry === todayYmd) return pos.contracts;
+  return Math.max(1, Math.floor(pos.contracts * frac));
+}
+
 module.exports = {
+  isExpiredLeg: isExpiredLeg,
+  settlementPrice: settlementPrice,
+  eodSellQty: eodSellQty,
   legKey: legKey,
   parseLegKey: parseLegKey,
   listLegsForTrade: listLegsForTrade,

@@ -55,15 +55,16 @@ async function resolveUnderlying(ticker, underlying) {
   return null;
 }
 
-async function fetchOptionMark(ticker, side, strike, expiry) {
+// opts.noRoll: held positions — quote only the leg's own expiry, never roll.
+async function fetchOptionMark(ticker, side, strike, expiry, opts) {
   try {
-    var m = await rh.getOptionMark(ticker, side, strike, expiry);
+    var m = await rh.getOptionMark(ticker, side, strike, expiry, opts);
     if (m && m.price > 0) return m;
   } catch (e) {
     console.log("[PAPER] RH option mark failed " + ticker + " " + strike + ": " + e.message);
   }
   try {
-    var y = await yahoo.getOptionMark(ticker, side, strike, expiry);
+    var y = await yahoo.getOptionMark(ticker, side, strike, expiry, opts);
     if (y && y.price > 0) {
       console.log("[PAPER] Yahoo option mark " + ticker + " " + y.strike + " $" + y.price.toFixed(2));
       return y;
@@ -117,6 +118,8 @@ function formatMoney(n) {
 }
 function formatPct(n) { return (n >= 0 ? "+" : "") + n.toFixed(1) + "%"; }
 function etISODate() { return new Date().toLocaleDateString("en-CA", { timeZone: "America/New_York" }); }
+function afterCloseET() { return exitlogic.etMinutesOfDay() >= 16 * 60; }
+var NO_ROLL = { noRoll: true };
 
 var DISCORD_FIELD_MAX = 1024;
 var DISCORD_FIELD_SAFE = 980;
@@ -252,6 +255,8 @@ function loadPnl(file) {
 
 // ── channel factory ─────────────────────────────────────────────────────────
 function createChannel(cfg) {
+  try { require("./pnlFix20261020").run(persist.dataDir(), cfg.id); }
+  catch (e) { console.log("[PNL_FIX][" + cfg.id + "] " + e.message); }
   var pnlFile = persist.filePath("pnl-" + cfg.id + ".json");
   var pnlStore = loadPnl(pnlFile);
   var paperFile = persist.filePath("paper-" + cfg.id + ".json");
@@ -293,11 +298,17 @@ function createChannel(cfg) {
     console.log("[DISCORD][" + cfg.id + "] restored " + Object.keys(account.positions).filter(function(k) {
       return account.positions[k] && account.positions[k].contracts > 0;
     }).length + " paper leg(s)");
+  } else if (savedPaper && savedPaper.positions) {
+    // Older-day state: keep only expired legs so they settle (never re-priced).
+    Object.keys(savedPaper.positions).forEach(function(k) {
+      var p = savedPaper.positions[k];
+      if (p && p.contracts > 0 && paperLegs.isExpiredLeg(p, etISODate(), afterCloseET())) account.positions[k] = p;
+    });
   }
 
   function savePnl() { try { require("fs").writeFileSync(pnlFile, JSON.stringify(pnlStore)); } catch (e) { console.log("[DISCORD] pnl save failed: " + e.message); } }
-  function realize(amount) {
-    var d = etISODate();
+  function realize(amount, onDate) {
+    var d = onDate || etISODate();
     pnlStore.byDate[d] = (pnlStore.byDate[d] || 0) + amount;
     pnlStore.allTime = (pnlStore.allTime || 0) + amount;
     account.balance += amount;
@@ -328,9 +339,41 @@ function createChannel(cfg) {
     return cfg.maxRiskDollars != null && cfg.maxRiskDollars > 0 ? cfg.maxRiskDollars : null;
   }
 
+  // Close expired legs at settlement (intrinsic at the expiry-day close, else $0).
+  // Quiet: no Discord post, no tier/stop logic, no stop_after_first_loss mark.
+  // P&L books to the expiry date.
+  var settling = false;
+  async function settleExpiredLegs() {
+    if (settling) return 0;
+    settling = true;
+    var n = 0;
+    try {
+      var today = etISODate(), after = afterCloseET();
+      var keys = Object.keys(account.positions);
+      for (var i = 0; i < keys.length; i++) {
+        var pos = account.positions[keys[i]];
+        if (!pos || !(pos.contracts > 0) || !paperLegs.isExpiredLeg(pos, today, after)) continue;
+        var close = null;
+        try { close = await yahoo.getCloseOnDate(pos.tradeTicker, pos.expiry); } catch (e) {}
+        var px = paperLegs.settlementPrice(pos.side, pos.strike, close);
+        var pnl = pos.contracts * (px - (pos.entryPrice || 0)) * 100;
+        realize(pnl, pos.expiry);
+        recordClose(pos, pnl, keys[i], { settlement: true });
+        console.log("[PAPER][" + cfg.id + "] settled expired " + keys[i] + " " + pos.strike + " " + pos.side + " exp " + pos.expiry
+          + " @ $" + px.toFixed(2) + " (close " + (close == null ? "n/a" : close) + ") P&L " + formatMoney(pnl));
+        account.positions[keys[i]] = null;
+        n++;
+      }
+      if (n) savePaperState();
+    } catch (e) {
+      console.log("[PAPER][" + cfg.id + "] settle failed: " + e.message);
+    } finally { settling = false; }
+    return n;
+  }
+
   async function resolveLegExitPrice(pos, signalTicker, tradeTicker, signalOptionPrice) {
     if (signalTicker === tradeTicker && signalOptionPrice && signalOptionPrice > 0) return signalOptionPrice;
-    var m = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry);
+    var m = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry, NO_ROLL);
     if (m && m.price > 0) return m.price;
     return pos.lastKnownPrice || pos.entryPrice || 0;
   }
@@ -371,7 +414,7 @@ function createChannel(cfg) {
     }
   }
 
-  function recordClose(pos, finalSalePnl, legKey) {
+  function recordClose(pos, finalSalePnl, legKey, opts) {
     var totalProfit = (pos.realizedPnl || 0) + finalSalePnl;
     var maxPrice = pos.maxPrice || pos.entryPrice || 0;
     var maxGainPct = pos.entryPrice > 0 ? ((maxPrice - pos.entryPrice) / pos.entryPrice) * 100 : 0;
@@ -382,6 +425,7 @@ function createChannel(cfg) {
     });
     if (totalProfit >= 0) account.wins++; else account.losses++;
     account.totalTrades++;
+    if (opts && opts.settlement) return;   // expiry settlement never arms choppy filters
     try {
       require("./choppyFilters").noteClosedPnl(pos.tradeTicker, totalProfit, {
         paper: true,
@@ -567,7 +611,7 @@ function createChannel(cfg) {
     if (entryCutoffReached("retest add", tradeTicker)) return;
     var sameTicker = !signalTicker || signalTicker === tradeTicker;
     if (!sameTicker || !optionPrice || optionPrice <= 0) {
-      var m = await fetchOptionMark(tradeTicker, pos.side, pos.strike, pos.expiry);
+      var m = await fetchOptionMark(tradeTicker, pos.side, pos.strike, pos.expiry, NO_ROLL);
       optionPrice = m && m.price ? m.price : pos.lastKnownPrice || pos.entryPrice || 0;
     }
     if (pos.retestAdded) return;
@@ -667,6 +711,7 @@ function createChannel(cfg) {
   }
 
   async function expectedMoveExit(signalTicker, optionPrice, timeframe) {
+    await settleExpiredLegs();
     var tradeTicker = tradeTickerForSignal(signalTicker);
     var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
     for (var i = 0; i < keys.length; i++) {
@@ -681,6 +726,7 @@ function createChannel(cfg) {
   }
 
   async function stop(signalTicker, currentPrice, reason) {
+    await settleExpiredLegs();
     var tradeTicker = tradeTickerForSignal(signalTicker);
     var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
     for (var i = 0; i < keys.length; i++) {
@@ -692,6 +738,7 @@ function createChannel(cfg) {
   }
 
   async function fullClose(signalTicker, currentPrice) {
+    await settleExpiredLegs();
     var tradeTicker = tradeTickerForSignal(signalTicker);
     var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
     for (var i = 0; i < keys.length; i++) {
@@ -724,12 +771,13 @@ function createChannel(cfg) {
   }
 
   async function eodSell(ticker, sellContracts, currentPrice, gainPct) {
+    await settleExpiredLegs();
     var tradeTicker = tradeTickerForSignal(ticker);
     var keys = paperLegs.listLegsForTrade(account.positions, tradeTicker);
     for (var i = 0; i < keys.length; i++) {
       var pos = account.positions[keys[i]];
       if (!pos) continue;
-      var qty = Math.max(1, Math.floor(pos.contracts * exitlogic.EOD_SELL_FRAC));
+      var qty = paperLegs.eodSellQty(pos, etISODate(), exitlogic.EOD_SELL_FRAC);
       await eodSellLeg(keys[i], qty, currentPrice, gainPct);
     }
   }
@@ -1004,15 +1052,15 @@ function createChannel(cfg) {
   }
 
   async function fetchLegOptionPrice(pos, rhAvailable) {
+    if (paperLegs.isExpiredLeg(pos, etISODate(), afterCloseET())) return null;
     if (!pos.strike) {
       var und = await resolveUnderlying(pos.tradeTicker, null);
       if (und) pos.strike = paperLegs.roundStrike(pos.tradeTicker, und);
     }
     if (pos.strike && !pos.instrumentUrl) {
-      var resolved = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry);
+      var resolved = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry, NO_ROLL);
       if (resolved) {
         if (resolved.instrument) pos.instrumentUrl = resolved.instrument;
-        if (resolved.expiry) pos.expiry = resolved.expiry;
         if (resolved.strike) pos.strike = resolved.strike;
       }
     }
@@ -1021,7 +1069,7 @@ function createChannel(cfg) {
       try {
         if (pos.instrumentUrl) price = await rh.getOptionMarkByUrl(pos.instrumentUrl);
         if ((!price || price <= 0) && pos.strike) {
-          var m = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry);
+          var m = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry, NO_ROLL);
           if (m) {
             price = m.price;
             if (m.instrument && !pos.instrumentUrl) pos.instrumentUrl = m.instrument;
@@ -1029,13 +1077,14 @@ function createChannel(cfg) {
         }
       } catch (e) { console.log("[PAPER_ENGINE][" + cfg.id + "] mark: " + e.message); }
     } else if (pos.strike) {
-      var ym = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry);
+      var ym = await fetchOptionMark(pos.tradeTicker, pos.side, pos.strike, pos.expiry, NO_ROLL);
       if (ym) price = ym.price;
     }
     return price;
   }
 
   async function pollMoveTargets() {
+    await settleExpiredLegs();
     var keys = openLegKeys();
     if (!keys.length) return;
     var tradeTickers = {};
@@ -1076,6 +1125,7 @@ function createChannel(cfg) {
   }
 
   async function pollOptionMarks(rhAvailable) {
+    await settleExpiredLegs();
     var keys = openLegKeys();
     for (var i = 0; i < keys.length; i++) {
       var key = keys[i];
@@ -1098,7 +1148,7 @@ function createChannel(cfg) {
 
       if (exitlogic.isEndOfDayWindow() && pos.eodSold !== exitlogic.etDateKey()) {
         pos.eodSold = exitlogic.etDateKey();
-        var eodQty = Math.max(1, Math.floor(pos.contracts * exitlogic.EOD_SELL_FRAC));
+        var eodQty = paperLegs.eodSellQty(pos, etISODate(), exitlogic.EOD_SELL_FRAC);
         await eodSellLeg(key, eodQty, price, decision.gain);
         continue;
       }
@@ -1134,6 +1184,7 @@ function createChannel(cfg) {
     orbSet: orbSet,
     sendRaw: sendRaw,
     pollMoveTargets: pollMoveTargets, pollOptionMarks: pollOptionMarks,
+    settleExpiredLegs: settleExpiredLegs,
     getAccount: function() { return account; },
     grokSnapshot: function() {
       return {
@@ -1369,6 +1420,11 @@ function initChannels(getToken) {
 
   // Do not auto-repost ORBs on every redeploy. New ORBs announce when Yahoo/TV sets them.
   // Use GET /api/discord/orb?force=1 only when you intentionally want a re-post.
+
+  channels.forEach(function(c) { c.settleExpiredLegs().catch(function() {}); });
+  setInterval(function() {
+    channels.forEach(function(c) { c.settleExpiredLegs().catch(function() {}); });
+  }, 60000);
 
   var moveBusy = false;
   var markBusy = false;

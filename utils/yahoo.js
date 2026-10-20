@@ -148,7 +148,8 @@ function pickOptionPrice(opt) {
 }
 
 // ATM/near-strike option mark when Robinhood is unavailable (Discord paper feed).
-function getOptionMark(ticker, side, strike, expiryYmd) {
+function getOptionMark(ticker, side, strike, expiryYmd, opts) {
+  var noRoll = !!(opts && opts.noRoll && expiryYmd);
   var wantStrike = Math.round(parseFloat(strike));
   if (!wantStrike || wantStrike <= 0) return Promise.resolve(null);
   var optionType = side === "call" ? "calls" : "puts";
@@ -165,6 +166,7 @@ function getOptionMark(ticker, side, strike, expiryYmd) {
           if (unixToYmd(expDates[i]) === expiryYmd) { targetUnix = expDates[i]; break; }
         }
       }
+      if (!targetUnix && noRoll) return null;
       if (!targetUnix) targetUnix = expDates[0];
 
       var chain = result.options[0];
@@ -176,6 +178,22 @@ function getOptionMark(ticker, side, strike, expiryYmd) {
       }
       return parseOptionMark(result, optionType, wantStrike, expiryYmd);
     } catch (e) { return null; }
+  });
+}
+
+// Regular-session close for one ET date (Yahoo daily bars). null if unavailable.
+function getCloseOnDate(ticker, ymd) {
+  return getChart(ticker, "1d", "1mo").then(function(j) {
+    try {
+      var r = j && j.chart && j.chart.result && j.chart.result[0];
+      var ts = (r && r.timestamp) || [];
+      var closes = r && r.indicators && r.indicators.quote && r.indicators.quote[0] && r.indicators.quote[0].close;
+      for (var i = 0; i < ts.length; i++) {
+        var d = new Date(ts[i] * 1000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
+        if (d === ymd && closes && closes[i] > 0) return parseFloat(closes[i]);
+      }
+    } catch (e) {}
+    return null;
   });
 }
 
@@ -348,6 +366,7 @@ module.exports = {
   getDailyCloses: getDailyCloses,
   getIntradayBar: getIntradayBar,
   getOptionMark: getOptionMark,
+  getCloseOnDate: getCloseOnDate,
   getChainForExpiry: getChainForExpiry,
   getATMStraddle: getATMStraddle,
   getExpirationDates: getExpirationDates,
