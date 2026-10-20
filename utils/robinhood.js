@@ -313,7 +313,7 @@ async function findNearestExpiry(ticker, strike, optionType, requested) {
   return null;
 }
 
-async function getOptionInstrument(ticker, expiry, strike, optionType) {
+async function getOptionInstrument(ticker, expiry, strike, optionType, opts) {
   async function tryExpiry(exp) {
     let url = `/options/instruments/?chain_symbol=${ticker}&expiration_dates=${exp}&strike_price=${strike}&type=${optionType}&state=active`;
     let res = await authedRequest("GET", url, null, "json");
@@ -329,6 +329,9 @@ async function getOptionInstrument(ticker, expiry, strike, optionType) {
   // 1) Requested expiry (with nearby-strike fallback)
   let inst = await tryExpiry(expiry);
   if (inst) return inst;
+
+  // Held positions pass noRoll: a missing expiry means expired, never "next one".
+  if (opts && opts.noRoll) return null;
 
   // 2) Requested expiry isn't listed (e.g. SPY 0DTE on a non-listed day, or
   //    IWM 1DTE when no next-day expiry exists) → roll to nearest available.
@@ -680,10 +683,11 @@ async function refreshWithStoredTokens() {
 
 // Read-only option pricing for the paper feed (no order placement involved).
 // Uses authedRequest so an expired access token auto-refreshes.
-async function getOptionMark(ticker, side, strike, expiry) {
+async function getOptionMark(ticker, side, strike, expiry, opts) {
   const optionType = side === "call" ? "call" : "put";
-  const instrument = await getOptionInstrument(ticker, expiry, strike, optionType);
+  const instrument = await getOptionInstrument(ticker, expiry, strike, optionType, opts);
   if (!instrument) return null;
+  if (opts && opts.noRoll && instrument.expiration_date && instrument.expiration_date !== expiry) return null;
   const price = await getOptionMarkByUrl(instrument.url);
   return {
     price: price,

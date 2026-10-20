@@ -172,6 +172,16 @@ function markScoped(key, date) {
   return true;
 }
 
+// Clear one channel's paper loss mark for a date (used by the one-time 2026-10-20 P&L fix).
+function clearPaperLoss(channel, date) {
+  var st = loadLossState();
+  var key = paperLossKey(channel);
+  if (st.date !== todayISO(date) || !st.losses[key]) return false;
+  delete st.losses[key];
+  saveLossState();
+  return true;
+}
+
 function markLoss(ticker, date) {
   var t = canon(ticker);
   if (!t) return false;
@@ -526,6 +536,7 @@ module.exports = {
   hasLossToday: hasLossToday,
   hasPaperLoss: hasPaperLoss,
   markLoss: markLoss,
+  clearPaperLoss: clearPaperLoss,
   noteBreakout: noteBreakout,
   recrossCount: recrossCount,
   orbWidthPct: orbWidthPct,
