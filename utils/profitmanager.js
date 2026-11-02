@@ -167,7 +167,7 @@ async function manageOneLeg(ticker, pos, legIndex, rhPositions) {
   if (decision.stopOut) {
     var reason = leg.breakEvenActivated || decision.activateBreakeven
       ? "Trailing stop " + decision.newStopPct + "%"
-      : "Initial stop -50%";
+      : "Initial stop -15%";
     stateModule.logEvent("STOP_OUT", tag + " " + reason + " @ $" + optionPrice.toFixed(2)
       + " (gain " + gainPct.toFixed(1) + "%)");
     if (!await trayd.closeLiveOrLog(ticker, contracts, reason, match)) return;
@@ -320,7 +320,7 @@ async function checkProfitTiers() {
     if (decision.stopOut && !pos.stopped) {
       var reason = pos.breakEvenActivated
         ? "Trailing stop " + decision.newStopPct + "%"
-        : "Initial stop -50%";
+        : "Initial stop -15%";
       stateModule.logEvent("STOP_OUT", ticker + " " + reason + " @ $" + optionPrice.toFixed(2)
         + " (gain " + gainPct.toFixed(1) + "%)");
       if (!await trayd.closeLiveOrLog(ticker, contracts, reason)) continue;

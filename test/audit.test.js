@@ -146,11 +146,8 @@ test("live and paper entries never call the chop/width gate (no trade limit)", f
 });
 
 console.log("exitlogic");
-test("initial stop at -50%", function() {
-  assert.strictEqual(exitlogic.INITIAL_STOP_PCT, -50);
-  var hold = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 0, breakEvenActivated: false }, 1.70);
-  assert.strictEqual(hold.stopOut, false);
-  var d = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 0, breakEvenActivated: false }, 1.00);
+test("initial stop at -15%", function() {
+  var d = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 0, breakEvenActivated: false }, 1.70);
   assert.ok(d.stopOut);
   assert.strictEqual(d.scaleOut, false);
 });

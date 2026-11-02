@@ -1143,7 +1143,7 @@ function createChannel(cfg) {
         await breakevenLeg(key);
       }
       if (decision.stopOut) {
-        var reason = pos.breakEvenActivated ? "Trailing Stop " + decision.newStopPct + "%" : "Initial Stop -50%";
+        var reason = pos.breakEvenActivated ? "Trailing Stop " + decision.newStopPct + "%" : "Initial Stop -15%";
         await stopLeg(key, price, reason);
         continue;
       }
