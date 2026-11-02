@@ -136,9 +136,21 @@ test("sell qty: 0DTE 100%, 1DTE 75% with 1-contract floor", function() {
   assert.strictEqual(paperLegs.sellQtyForLeg({ contracts: 1 }, 0.75), 1);
 });
 
+console.log("5-min ORB revert");
+test("live and paper entries never call the chop/width gate (no trade limit)", function() {
+  var fs = require("fs"), path = require("path");
+  ["../routes/alert.js", "../utils/discord.js"].forEach(function(f) {
+    var src = fs.readFileSync(path.join(__dirname, f), "utf8");
+    assert.strictEqual(/checkEntry\(/.test(src), false, f + " still gates entries");
+  });
+});
+
 console.log("exitlogic");
-test("initial stop at -15%", function() {
-  var d = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 0, breakEvenActivated: false }, 1.70);
+test("initial stop at -50%", function() {
+  assert.strictEqual(exitlogic.INITIAL_STOP_PCT, -50);
+  var hold = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 0, breakEvenActivated: false }, 1.70);
+  assert.strictEqual(hold.stopOut, false);
+  var d = exitlogic.evaluate({ entryPrice: 2, lastProfitTier: 0, breakEvenActivated: false }, 1.00);
   assert.ok(d.stopOut);
   assert.strictEqual(d.scaleOut, false);
 });
