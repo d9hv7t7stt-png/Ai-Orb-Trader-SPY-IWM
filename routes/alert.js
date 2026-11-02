@@ -242,17 +242,7 @@ async function tryLiveRetestAdd(ticker, side, qty, pos) {
 async function tryLiveHalfEntry(ticker, side, half, total, optPrice) {
   if (liveEntryBlocked(ticker, "entry")) return { order: null, retryable: false, blocked: true };
   var gate = { block: false, shadowIds: [] };
-  try {
-    gate = await choppyFilters.checkEntry({
-      ticker: ticker,
-      side: side,
-      event: "entry",
-      contracts: half,
-      entryPrice: optPrice || 0
-    });
-  } catch (e) {
-    stateModule.logEvent("FILTER", ticker + " entry check failed open: " + e.message);
-  }
+  // Original 5-min ORB: no chop filters, range-width limits, or daily trade cap.
   if (gate.block) return { order: null, retryable: false, blocked: true, filterBlocked: true };
   var dual = settings.isDualLegLive();
   stateModule.logEvent("ENTRY", ticker + " " + side + " @ half=" + half + "/" + total +
@@ -320,18 +310,7 @@ async function tryIwmCrossEntry(side, spyOrbHigh, spyOrbLow, s, lockedTickers) {
   if (liveEntryBlocked("SPY", "cross-entry")) return { order: null, retryable: false, blocked: true };
   if (!processing["SPY"] && (!spyPos || spyPos.stopped) && s.orb.SPY.set) {
     var gate = { block: false, shadowIds: [] };
-    try {
-      gate = await choppyFilters.checkEntry({
-        ticker: "SPY",
-        side: side,
-        event: "cross_entry",
-        orbHigh: spyOrbHigh,
-        orbLow: spyOrbLow,
-        contracts: spyHalf
-      });
-    } catch (e) {
-      stateModule.logEvent("FILTER", "SPY cross-entry check failed open: " + e.message);
-    }
+    // Original 5-min ORB: no chop filters, range-width limits, or daily trade cap.
     if (gate.block) return { order: null, retryable: false, blocked: true, filterBlocked: true };
     processing["SPY"] = true;
     lockedTickers.push("SPY");

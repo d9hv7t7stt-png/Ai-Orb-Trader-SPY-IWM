@@ -548,21 +548,7 @@ function createChannel(cfg) {
     // Flip close above still runs after the cutoff; only the new position is blocked.
     if (entryCutoffReached("entry", tradeTicker)) return false;
     var gate = { block: false, shadowIds: [] };
-    try {
-      gate = await require("./choppyFilters").checkEntry({
-        ticker: tradeTicker,
-        side: side,
-        event: "entry",
-        orbHigh: orbHigh,
-        orbLow: orbLow,
-        channel: cfg.id,
-        signalTicker: signalTicker,
-        entryPrice: optionPrice || 0
-      });
-    } catch (e) {
-      console.log("[FILTER] " + cfg.id + " entry check failed open: " + e.message);
-      gate = { block: false, shadowIds: [] };
-    }
+    // Original 5-min ORB: no chop filters, range-width limits, or daily trade cap.
     if (gate.block) return false;
     var moveTargets = await paperLegs.getEntryMoveTargets(tradeTicker);
     var opened = [];
