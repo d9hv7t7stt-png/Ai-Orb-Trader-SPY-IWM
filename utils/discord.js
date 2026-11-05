@@ -19,6 +19,8 @@ const closeDigestUtil = require("./closeDigest");
 const grokContent = require("./grokContent");
 const technicalsUtil = require("./technicals");
 const paperLegs = require("./paperLegs");
+const qqqBwr = require("./qqqBestWinRate");
+const expectedMoveUtil = require("./expectedMove");
 
 var underlyingSnaps = {};
 
@@ -217,7 +219,7 @@ function morningMessages(theme, name) {
         description: "Reviewing **QQQ 0DTE + 1DTE** legs and expected-move levels before the open. 📋",
         footer: "QQQ ORB • 0DTE + 1DTE • Not financial advice." },
       30: { color: 0xf5c518, content: "@everyone", title: "🌅 30 Minutes — Eyes on QQQ",
-        description: "Thirty out. Each entry opens **0DTE ATM + 1DTE at the expected-move strike**. Wait for the break, then execute.\n\nCalm hands win. 🧘",
+        description: "Thirty out. Best Win Rate: **5-minute opening range**, then **two 15-minute closes** through the 0.05% buffer. New breaks only if that bar ends before **10:30 ET**. Each entry is still **0DTE ATM + 1DTE**.\n\nCalm hands win. 🧘",
         footer: "QQQ ORB • 0DTE + 1DTE • Trade at your own risk." },
       5:  { color: 0xff8c00, content: "@everyone", title: "⚡ 5 Minutes — QQQ Locked In",
         description: "Almost go time. Dual-leg entries (0DTE + 1DTE), 4% + 4%, never more than 10% open. Stay present. 🔥",
@@ -443,7 +445,7 @@ function createChannel(cfg) {
     }
   }
 
-  async function openLeg(tradeTicker, side, dteTag, orbHigh, orbLow, underlying, moveTargets, optionPriceHint, signalTicker) {
+  async function openLeg(tradeTicker, side, dteTag, orbHigh, orbLow, underlying, moveTargets, optionPriceHint, signalTicker, bwrEm) {
     var sameTicker = !signalTicker || signalTicker === tradeTicker;
     var expiry = expiryUtil.getExpiryForDTE(dteTag);
     var und = await resolveUnderlying(tradeTicker, sameTicker ? underlying : null);
@@ -475,6 +477,16 @@ function createChannel(cfg) {
       moveExitDone: false,
       entryTime: new Date().toISOString()
     };
+    if (bwrEm) {
+      pos.entryUnderlying = bwrEm.entryUnderlying;
+      pos.bwrEm = {
+        armed: !!bwrEm.armed,
+        target: bwrEm.target,
+        upper: bwrEm.upper,
+        lower: bwrEm.lower,
+        extreme: bwrEm.extreme
+      };
+    }
     account.positions[key] = pos;
     savePaperState();
     return { key: key, pos: pos, label: posLabelFromPos(pos), contracts: contracts, price: price };
@@ -487,6 +499,7 @@ function createChannel(cfg) {
     var color = isLong ? 0x57f287 : 0xed4245;
     var display = yahoo.displaySymbol(tradeTicker);
     var stop = (((parseFloat(orbHigh) || 0) + (parseFloat(orbLow) || 0)) / 2).toFixed(2);
+    var qqqPlan = cfg.id === "qqq";
     var fields = opened.map(function(o) {
       var tgt = isLong
         ? (o.pos.targetUpper ? "$" + o.pos.targetUpper.toFixed(2) : "—")
@@ -508,11 +521,15 @@ function createChannel(cfg) {
     await sendRaw("@everyone\n" + pingLine, {
       color: color,
       title: (isLong ? "🟢" : "🔴") + " " + dirLabel + " ENTRY — " + display + " (0DTE + 1DTE)",
-      description: sigNote + "Signal at " + etTimeLabel() + " · 5m bar close · **4% 0DTE + 4% 1DTE** (max " + paperLegs.MAX_EXPOSURE_PCT + "% open)",
+      description: sigNote + "Signal at " + etTimeLabel() + " · " +
+        (cfg.id === "qqq" ? "15m close ×2" : "5m bar close") +
+        " · **4% 0DTE + 4% 1DTE** (max " + paperLegs.MAX_EXPOSURE_PCT + "% open)",
       fields: fields.concat([
         { name: "ORB High", value: "$" + (parseFloat(orbHigh) || 0).toFixed(2), inline: true },
         { name: "ORB Low", value: "$" + (parseFloat(orbLow) || 0).toFixed(2), inline: true },
-        { name: "Stop (Mid)", value: "$" + stop, inline: true }
+        qqqPlan
+          ? { name: "Option stop", value: "−15% (exitlogic)", inline: true }
+          : { name: "Stop (Mid)", value: "$" + stop, inline: true }
       ]),
       footer: { text: footer() }, timestamp: new Date().toISOString()
     }, true);
@@ -551,12 +568,25 @@ function createChannel(cfg) {
     // Original 5-min ORB: no chop filters, range-width limits, or daily trade cap.
     if (gate.block) return false;
     var moveTargets = await paperLegs.getEntryMoveTargets(tradeTicker);
+    var bwrEm = null;
+    if (cfg.id === "qqq") {
+      var seedUnd = await resolveUnderlying(tradeTicker, underlying);
+      var emUpper = null;
+      var emLower = null;
+      try {
+        var daily = await expectedMoveUtil.computeExpectedMove(tradeTicker, expiryUtil.getExpiryForDTE(0));
+        if (daily) { emUpper = daily.upper; emLower = daily.lower; }
+      } catch (e) {
+        console.log("[QQQ_BWR] daily EM unavailable: " + e.message);
+      }
+      bwrEm = qqqBwr.freezeEmAtEntry(side, seedUnd, emUpper, emLower);
+    }
     var opened = [];
     var open1DTE = cfg.dualLeg !== false;
-    var leg0 = await openLeg(tradeTicker, side, 0, orbHigh, orbLow, underlying, moveTargets, optionPrice, signalTicker);
+    var leg0 = await openLeg(tradeTicker, side, 0, orbHigh, orbLow, underlying, moveTargets, optionPrice, signalTicker, bwrEm);
     if (leg0) opened.push(leg0);
     if (open1DTE) {
-      var leg1 = await openLeg(tradeTicker, side, 1, orbHigh, orbLow, underlying, moveTargets, null, signalTicker);
+      var leg1 = await openLeg(tradeTicker, side, 1, orbHigh, orbLow, underlying, moveTargets, null, signalTicker, bwrEm);
       if (leg1) opened.push(leg1);
     }
     if (!opened.length) {
@@ -952,9 +982,11 @@ function createChannel(cfg) {
       fields: [
         { name: "ORB High", value: "$" + h.toFixed(2), inline: true },
         { name: "ORB Low", value: "$" + l.toFixed(2), inline: true },
-        { name: "Mid (Stop)", value: "$" + m.toFixed(2), inline: true },
+        { name: cfg.id === "qqq" ? "Mid" : "Mid (Stop)", value: "$" + m.toFixed(2), inline: true },
         { name: "Source", value: srcLabel, inline: true },
-        { name: "Plan", value: "Watching for **5m bar close** breakout · 0DTE ATM + 1DTE expected-move legs", inline: false }
+        { name: "Plan", value: cfg.id === "qqq"
+          ? "Best Win Rate · **15m close ×2** · 0.05% buffer · new breaks only if the bar ends before 10:30 ET · 0DTE ATM + 1DTE"
+          : "Watching for **5m bar close** breakout · 0DTE ATM + 1DTE expected-move legs", inline: false }
       ],
       footer: { text: footer() + " · Not financial advice" },
       timestamp: new Date().toISOString()
@@ -1091,6 +1123,22 @@ function createChannel(cfg) {
         var key = keys[i];
         var pos = account.positions[key];
         if (!pos || pos.tradeTicker !== tt || pos.moveExitDone) continue;
+        if (cfg.id === "qqq") {
+          if (!pos.bwrEm) continue;
+          var px = snap && snap.price;
+          pos.bwrEm.extreme = qqqBwr.updateExtreme(pos.side, pos.bwrEm.extreme, px);
+          if (!qqqBwr.emTakeProfitHit(pos.side, pos.bwrEm.armed, pos.bwrEm.target, pos.bwrEm.extreme)) {
+            continue;
+          }
+          var rhAvailableEm = !!rh.getToken();
+          var emPx = await fetchLegOptionPrice(pos, rhAvailableEm);
+          if (!emPx || emPx <= 0) emPx = pos.lastKnownPrice || pos.entryPrice || 0;
+          var emLevel = pos.bwrEm.target;
+          await stopLeg(key, emPx, "Expected-move take-profit — frozen daily EM $" +
+            (isFinite(emLevel) ? emLevel.toFixed(2) : "—"));
+          console.log("[PAPER][" + cfg.id + "] BWR EM exit " + key);
+          continue;
+        }
         var hit = paperLegs.checkMoveTouch(pos, snap);
         if (!hit) continue;
         var rhAvailable = !!rh.getToken();
@@ -1108,6 +1156,7 @@ function createChannel(cfg) {
         console.log("[PAPER][" + cfg.id + "] move exit " + key + " " + sideLabel + " qty=" + qty);
       }
     }
+    if (cfg.id === "qqq") savePaperState();
   }
 
   async function pollOptionMarks(rhAvailable) {
@@ -1145,6 +1194,10 @@ function createChannel(cfg) {
       if (decision.stopOut) {
         var reason = pos.breakEvenActivated ? "Trailing Stop " + decision.newStopPct + "%" : "Initial Stop -15%";
         await stopLeg(key, price, reason);
+        continue;
+      }
+      if (cfg.id === "qqq" && qqqBwr.holdExceeded(pos.entryTime, Date.now())) {
+        await stopLeg(key, price, "Max hold 120 min");
         continue;
       }
       if (decision.scaleOut) {

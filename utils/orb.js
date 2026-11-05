@@ -5,6 +5,7 @@
 var yahoo = require("./yahoo");
 var stateModule = require("./state");
 var exitlogic = require("./exitlogic");
+var qqqBwr = require("./qqqBestWinRate");
 
 var discord = null;
 try { discord = require("./discord"); } catch (e) { discord = null; }
@@ -39,7 +40,20 @@ function isValidRange(high, low) {
   return h > l;
 }
 
+// QQQ Best Win Rate: high/low of the 1-minute bars in 9:30–9:35 ET.
+// SPY, IWM, and SPX stay on the 5-minute 9:30 bar.
+function fetchQqqOpeningRange() {
+  if (!exitlogic.isTradingDayET()) return Promise.resolve(null);
+  if (exitlogic.etMinutesOfDay() < qqqBwr.OR_END_MIN) return Promise.resolve(null);
+  return yahoo.getChart("QQQ", "1m", "1d").then(function(parsed) {
+    var range = qqqBwr.openingRange(qqqBwr.parseChartBars(parsed));
+    if (!range) return null;
+    return { high: range.high, low: range.low };
+  });
+}
+
 function fetchOpeningRange(ticker) {
+  if (ticker === "QQQ") return fetchQqqOpeningRange();
   if (!exitlogic.isTradingDayET()) return Promise.resolve(null);
   if (exitlogic.etMinutesOfDay() < ORB_READY_MIN) {
     return Promise.resolve(null);
