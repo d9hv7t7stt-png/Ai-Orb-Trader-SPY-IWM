@@ -95,13 +95,13 @@ test("a fresh 2-close after the streak resets is another break", function() {
   assert.strictEqual(breaks[1].endMin, 625);
 });
 
-test("flat book takes a confirmation inside the grace window and before 10:30", function() {
+test("flat book takes a confirmation with no 10:30 cutoff and no 2-minute grace", function() {
   var blocks = [
     { close: 100.20, endMin: 9 * 60 + 50, endTs: 1000 },
     { close: 100.20, endMin: 10 * 60 + 5, endTs: 1900 }
   ];
   var session = bwr.evaluateSession(ORB, blocks, {
-    nowSec: 1900 + 119,
+    nowSec: 1900 + 30 * 60,
     inPosition: false,
     consumedEndMins: []
   });
@@ -110,35 +110,42 @@ test("flat book takes a confirmation inside the grace window and before 10:30", 
   assert.strictEqual(session.event.event, "breakout_long");
   assert.strictEqual(session.event.side, "call");
   assert.strictEqual(session.event.endMin, 10 * 60 + 5);
+  assert.ok(!session.actions.some(function(a) { return a.reason === "grace" || a.reason === "cutoff"; }));
 });
 
-test("a confirmation seen more than 2 minutes after the bar end is not chased", function() {
-  var blocks = [
-    { close: 100.20, endMin: 9 * 60 + 50, endTs: 1000 },
-    { close: 100.20, endMin: 10 * 60 + 5, endTs: 1900 }
-  ];
-  var session = bwr.evaluateSession(ORB, blocks, {
-    nowSec: 1900 + 121,
-    inPosition: false,
-    consumedEndMins: []
-  });
-  assert.strictEqual(session.event, null);
-  assert.ok(session.actions.some(function(a) { return a.reason === "grace" && a.consume && a.endMin === 10 * 60 + 5; }));
-});
-
-test("bar end at or after 10:30 is not taken", function() {
+test("a break whose bar ends after 10:30 is still taken", function() {
   var blocks = [
     { close: 100.05, endMin: 10 * 60 + 5, endTs: 1000 },
     { close: 100.20, endMin: 10 * 60 + 20, endTs: 1900 },
     { close: 100.20, endMin: 10 * 60 + 35, endTs: 2800 }
   ];
   var session = bwr.evaluateSession(ORB, blocks, {
-    nowSec: 2800 + 10,
+    nowSec: 2800 + 20 * 60,
     inPosition: false,
     consumedEndMins: []
   });
-  assert.strictEqual(session.event, null);
-  assert.ok(session.actions.some(function(a) { return a.endMin === 10 * 60 + 35 && a.reason === "cutoff"; }));
+  assert.ok(session.event);
+  assert.strictEqual(session.event.event, "breakout_long");
+  assert.strictEqual(session.event.endMin, 10 * 60 + 35);
+  assert.ok(!session.actions.some(function(a) { return a.reason === "cutoff" || a.reason === "grace"; }));
+});
+
+test("afternoon 2-close re-entry is taken after an earlier break was consumed", function() {
+  var blocks = [
+    { close: 100.20, endMin: 10 * 60 + 5, endTs: 1000 },
+    { close: 100.20, endMin: 10 * 60 + 20, endTs: 1900 },
+    { close: 100.05, endMin: 12 * 60, endTs: 5000 },
+    { close: 99.90, endMin: 14 * 60, endTs: 8000 },
+    { close: 99.90, endMin: 15 * 60 + 20, endTs: 9000 }
+  ];
+  var session = bwr.evaluateSession(ORB, blocks, {
+    nowSec: 9000 + 45 * 60,
+    inPosition: false,
+    consumedEndMins: [10 * 60 + 20]
+  });
+  assert.ok(session.event);
+  assert.strictEqual(session.event.event, "breakout_short");
+  assert.strictEqual(session.event.endMin, 15 * 60 + 20);
 });
 
 test("10:20 bar end is still allowed", function() {
@@ -277,8 +284,15 @@ test("QQQ paper wiring keeps the -15% option stop and does not use a premium ste
   assert.strictEqual(discord.indexOf("premium-stop"), -1);
   assert.ok(signals.indexOf("channelIds: [\"qqq\"]") > 0);
   assert.strictEqual(signals.indexOf("stop_long"), -1);
+  assert.ok(signals.indexOf("isEndOfDayWindow") > 0);
+  assert.strictEqual(signals.indexOf("10:30"), -1);
+  assert.strictEqual(signals.indexOf("ENTRY_GRACE"), -1);
   assert.ok(alert.indexOf("skipPaper: true") > 0);
   assert.ok(alert.indexOf('ticker !== "QQQ"') > 0);
+  var strategy = fs.readFileSync(path.join(__dirname, "../utils/qqqBestWinRate.js"), "utf8");
+  assert.strictEqual(strategy.indexOf("CUTOFF_MIN"), -1);
+  assert.strictEqual(strategy.indexOf("ENTRY_GRACE"), -1);
+  assert.strictEqual(strategy.indexOf("10:30"), -1);
 });
 
 console.log("qqqBestWinRate");

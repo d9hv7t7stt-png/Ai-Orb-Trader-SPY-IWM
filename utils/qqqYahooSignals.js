@@ -140,11 +140,14 @@ async function evaluateChart(chart, nowSec, opts) {
         session.wouldEnter = action;
         continue;
       }
+      if (exitlogic.isEndOfDayWindow() || exitlogic.isAfterEntryCutoffET()) {
+        stateModule.logEvent("QQQ_BWR", "break at " + action.endMin +
+          " not opened — existing 3:45 ET flatten / no-new-entries");
+        remember(action.endMin);
+        continue;
+      }
       entered = await enterPaper(session);
       if (entered) remember(action.endMin);
-      else if (isFinite(now) && isFinite(action.endTs) && (now - action.endTs) > bwr.ENTRY_GRACE_MINUTES * 60) {
-        remember(action.endMin);
-      }
       continue;
     }
     if (action.consume && !opts.dryRun) remember(action.endMin);
@@ -180,8 +183,8 @@ function startQqqYahooSignals() {
     return;
   }
   console.log("[QQQ_BWR] QQQ paper Best Win Rate via Yahoo 1m (poll " + (POLL_MS / 1000) +
-    "s) — 15m x2, 0.05% buffer, width cap " + bwr.WIDTH_CAP_PCT +
-    "%, entry bar-end before 10:30 ET, grace " + bwr.ENTRY_GRACE_MINUTES + "m");
+    "s) — 15m x2 all session, 0.05% buffer, width cap " + bwr.WIDTH_CAP_PCT +
+    "%, breakouts all session until the existing 3:45 ET flatten");
   setInterval(poll, POLL_MS);
   setTimeout(poll, 20000);
 }

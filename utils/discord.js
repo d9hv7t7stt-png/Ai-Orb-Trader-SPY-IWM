@@ -219,7 +219,7 @@ function morningMessages(theme, name) {
         description: "Reviewing **QQQ 0DTE + 1DTE** legs and expected-move levels before the open. 📋",
         footer: "QQQ ORB • 0DTE + 1DTE • Not financial advice." },
       30: { color: 0xf5c518, content: "@everyone", title: "🌅 30 Minutes — Eyes on QQQ",
-        description: "Thirty out. Best Win Rate: **5-minute opening range**, then **two 15-minute closes** through the 0.05% buffer. New breaks only if that bar ends before **10:30 ET**. Each entry is still **0DTE ATM + 1DTE**.\n\nCalm hands win. 🧘",
+        description: "Thirty out. Best Win Rate: **5-minute opening range**, then **two 15-minute closes** through the 0.05% buffer. Fresh breaks are taken all day until the **3:45 PM ET** flatten. Each entry is still **0DTE ATM + 1DTE**.\n\nCalm hands win. 🧘",
         footer: "QQQ ORB • 0DTE + 1DTE • Trade at your own risk." },
       5:  { color: 0xff8c00, content: "@everyone", title: "⚡ 5 Minutes — QQQ Locked In",
         description: "Almost go time. Dual-leg entries (0DTE + 1DTE), 4% + 4%, never more than 10% open. Stay present. 🔥",
@@ -985,7 +985,7 @@ function createChannel(cfg) {
         { name: cfg.id === "qqq" ? "Mid" : "Mid (Stop)", value: "$" + m.toFixed(2), inline: true },
         { name: "Source", value: srcLabel, inline: true },
         { name: "Plan", value: cfg.id === "qqq"
-          ? "Best Win Rate · **15m close ×2** · 0.05% buffer · new breaks only if the bar ends before 10:30 ET · 0DTE ATM + 1DTE"
+          ? "Best Win Rate · **15m close ×2** all day · 0.05% buffer · new breaks until the 3:45 PM ET flatten · 0DTE ATM + 1DTE"
           : "Watching for **5m bar close** breakout · 0DTE ATM + 1DTE expected-move legs", inline: false }
       ],
       footer: { text: footer() + " · Not financial advice" },

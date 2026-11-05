@@ -844,9 +844,9 @@ test("QQQ Best Win Rate keeps a 5-minute open and 15-minute breakout blocks", fu
   assert.strictEqual(qqqBwr.CONFIRM_CLOSES, 2);
   assert.strictEqual(qqqBwr.BUFFER_PCT, 0.05);
   assert.strictEqual(qqqBwr.WIDTH_CAP_PCT, 0.3);
-  assert.strictEqual(qqqBwr.CUTOFF_MIN, 10 * 60 + 30);
   assert.strictEqual(qqqBwr.MAX_HOLD_MINUTES, 120);
-  assert.strictEqual(qqqBwr.ENTRY_GRACE_MINUTES, 2);
+  assert.strictEqual(qqqBwr.CUTOFF_MIN, undefined);
+  assert.strictEqual(qqqBwr.ENTRY_GRACE_MINUTES, undefined);
 });
 test("QQQ zone uses the 0.05% buffer on the close", function() {
   assert.strictEqual(qqqBwr.zoneOf(100.16, 100.10, 100.00), "up");

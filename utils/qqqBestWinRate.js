@@ -1,34 +1,28 @@
 // QQQ-only Hermes "Best Win Rate" breakout rules (OrbPresetSession / BEST_WIN_RATE).
 //
-// Copied from Joey's preset, with two hard overrides for this Argus PR:
+// Copied from Joey's preset, with these Argus overrides:
 //   • Do NOT use the Hermes premium step-up stop. Argus exitlogic (−15% option) stays.
-//   • Do NOT latch the first break of the day. A new 2-close confirmation can re-enter
-//     after the QQQ paper book is flat. The 10:30 ET bar-end cutoff still applies.
+//   • Do NOT latch the first break of the day. After the QQQ paper book is flat, every
+//     new 2-close confirmation can enter again, all session.
+//   • No morning bar-end cutoff and no 2-minute entry grace. The paper entry path
+//     stops opening once Argus's existing 3:45 PM ET flatten (and the 3:55 no-new-entries
+//     rule) is already in effect. This module does not add its own late-day cutoff.
 //
 // Opening range: high/low of 1-minute bars with start in [9:30, 9:35) ET.
 // Breakout bars: 1-minute bars aggregated into fixed 15-minute blocks starting 9:35 ET
-// (9:35–9:50, 9:50–10:05, …). Zone uses the block close, not the wick.
+// (9:35–9:50, 9:50–10:05, …) through the session. Zone uses the block close, not the wick.
 //   up:   close > OR high * (1 + 0.05/100)
 //   down: close < OR low  * (1 - 0.05/100)
 // Confirmation: 2 consecutive block closes in the same zone (streak hits 2 once).
-// Take the break only when the block END is before 10:30 ET and the poll sees it
-// within ENTRY_GRACE_MINUTES (2) of that end. A wide open skips the day:
-//   ((high - low) / mid) * 100 > 0.3.
-//
-// On the real 15-minute grid only three blocks end before 10:30 (9:50, 10:05, 10:20),
-// so a fresh 2-close can confirm at most once before the cutoff. Re-entry is still
-// armed: a later confirmation (if one exists) is taken after flat.
+// A wide open skips the day: ((high - low) / mid) * 100 > 0.3.
 
 var OR_START_MIN = 9 * 60 + 30;
 var OR_END_MIN = 9 * 60 + 35;
 var BLOCK_MINUTES = 15;
 var BUFFER_PCT = 0.05;
 var CONFIRM_CLOSES = 2;
-var CUTOFF_MIN = 10 * 60 + 30;
 var WIDTH_CAP_PCT = 0.3;
 var MAX_HOLD_MINUTES = 120;
-var ENTRY_GRACE_MINUTES = 2;
-var ENTRY_GRACE_SEC = ENTRY_GRACE_MINUTES * 60;
 
 function roundPct(n) {
   return Math.round(n * 10000) / 10000;
@@ -173,9 +167,10 @@ function consumedHas(consumedEndMins, endMin) {
 }
 
 // Decide which closed confirmations to consume, and at most one to take.
-// `inPosition` consumes a fresh confirmation without entering (no flip).
-// A confirmation whose bar end is >= 10:30 ET is not taken.
-// Seen more than ENTRY_GRACE_MINUTES after the bar end is a late chase and is skipped.
+// No morning cutoff and no grace window: a closed 2-close is eligible whenever it
+// completed. `inPosition` consumes it without entering (no flip). If several
+// unconsumed confirmations are pending while flat, take the latest and consume
+// the earlier ones so a catch-up poll does not replay the morning.
 function evaluateSession(orb, blocks, opts) {
   opts = opts || {};
   var widthPct = orb ? orbWidthPct(orb.high, orb.low) : null;
@@ -184,6 +179,7 @@ function evaluateSession(orb, blocks, opts) {
   if (!orb) return { widthPct: widthPct, skipDay: false, actions: actions, event: null };
   var breaks = scanBreaks(blocks, orb);
   var nowSec = opts.nowSec;
+  var pendingTake = null;
   for (var i = 0; i < breaks.length; i++) {
     var br = breaks[i];
     if (consumedHas(opts.consumedEndMins, br.endMin)) continue;
@@ -196,11 +192,6 @@ function evaluateSession(orb, blocks, opts) {
       take: false,
       reason: "skip"
     };
-    if (!(br.endMin < CUTOFF_MIN)) {
-      action.reason = "cutoff";
-      actions.push(action);
-      continue;
-    }
     if (skipDay) {
       action.reason = "width";
       actions.push(action);
@@ -213,22 +204,23 @@ function evaluateSession(orb, blocks, opts) {
       actions.push(action);
       continue;
     }
-    if (age > ENTRY_GRACE_SEC) {
-      action.reason = "grace";
-      actions.push(action);
-      continue;
-    }
     if (opts.inPosition) {
       action.reason = "in-position";
       actions.push(action);
       continue;
+    }
+    if (pendingTake) {
+      pendingTake.take = false;
+      pendingTake.reason = "superseded";
+      pendingTake.event = null;
+      pendingTake.side = null;
     }
     action.take = true;
     action.reason = "break";
     action.event = br.direction === "down" ? "breakout_short" : "breakout_long";
     action.side = br.direction === "down" ? "put" : "call";
     actions.push(action);
-    break;
+    pendingTake = action;
   }
   var taken = null;
   for (var j = 0; j < actions.length; j++) if (actions[j].take) taken = actions[j];
@@ -282,10 +274,8 @@ module.exports = {
   BLOCK_MINUTES: BLOCK_MINUTES,
   BUFFER_PCT: BUFFER_PCT,
   CONFIRM_CLOSES: CONFIRM_CLOSES,
-  CUTOFF_MIN: CUTOFF_MIN,
   WIDTH_CAP_PCT: WIDTH_CAP_PCT,
   MAX_HOLD_MINUTES: MAX_HOLD_MINUTES,
-  ENTRY_GRACE_MINUTES: ENTRY_GRACE_MINUTES,
   orbWidthPct: orbWidthPct,
   barStartMinutesET: barStartMinutesET,
   parseChartBars: parseChartBars,
