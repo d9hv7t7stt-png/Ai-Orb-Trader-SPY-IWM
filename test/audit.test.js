@@ -835,37 +835,24 @@ test("daily feed includes expected moves when provided", function() {
   } catch (e) { /* cleanup best-effort */ }
 });
 
-console.log("qqqYahooSignals");
-var qqqYahoo = require("../utils/qqqYahooSignals");
-test("QQQ Yahoo picks breakout long above ORB high", function() {
-  assert.strictEqual(qqqYahoo.pickSignalEvent(708.5, 707.69, 706.21, null), "breakout_long");
+console.log("qqq best win rate");
+var qqqBwr = require("../utils/qqqBestWinRate");
+test("QQQ Best Win Rate keeps a 5-minute open and 15-minute breakout blocks", function() {
+  assert.strictEqual(qqqBwr.OR_START_MIN, 9 * 60 + 30);
+  assert.strictEqual(qqqBwr.OR_END_MIN, 9 * 60 + 35);
+  assert.strictEqual(qqqBwr.BLOCK_MINUTES, 15);
+  assert.strictEqual(qqqBwr.CONFIRM_CLOSES, 2);
+  assert.strictEqual(qqqBwr.BUFFER_PCT, 0.05);
+  assert.strictEqual(qqqBwr.WIDTH_CAP_PCT, 0.3);
+  assert.strictEqual(qqqBwr.MAX_HOLD_MINUTES, 120);
+  assert.strictEqual(qqqBwr.CUTOFF_MIN, undefined);
+  assert.strictEqual(qqqBwr.ENTRY_GRACE_MINUTES, undefined);
 });
-test("QQQ Yahoo picks breakout short below ORB low", function() {
-  assert.strictEqual(qqqYahoo.pickSignalEvent(705.5, 707.69, 706.21, null), "breakout_short");
-});
-test("QQQ Yahoo stop long at ORB mid when in call", function() {
-  assert.strictEqual(qqqYahoo.pickSignalEvent(706.5, 707.69, 706.21, "call"), "stop_long");
-});
-test("QQQ Yahoo stop short at ORB mid when in put", function() {
-  assert.strictEqual(qqqYahoo.pickSignalEvent(707.5, 707.69, 706.21, "put"), "stop_short");
-});
-test("QQQ Yahoo no signal inside range when flat", function() {
-  assert.strictEqual(qqqYahoo.pickSignalEvent(707.0, 707.69, 706.21, null), null);
-});
-test("QQQ Yahoo uses last fully closed 5m bar", function() {
-  var now = 1000000;
-  var chart = {
-    chart: {
-      result: [{
-        timestamp: [now - 600, now - 300, now - 60],
-        indicators: { quote: [{ close: [706, 707, 708], high: [706, 707, 708], low: [705, 706, 707] }] },
-        meta: { currentTradingPeriod: { regular: { start: now - 10000 } } }
-      }]
-    }
-  };
-  var bar = qqqYahoo.getLatestClosedBar(chart, now);
-  assert.strictEqual(bar.ts, now - 300);
-  assert.strictEqual(bar.close, 707);
+test("QQQ zone uses the 0.05% buffer on the close", function() {
+  assert.strictEqual(qqqBwr.zoneOf(100.16, 100.10, 100.00), "up");
+  assert.strictEqual(qqqBwr.zoneOf(100.15, 100.10, 100.00), null);
+  assert.strictEqual(qqqBwr.zoneOf(99.94, 100.10, 100.00), "down");
+  assert.strictEqual(qqqBwr.zoneOf(99.96, 100.10, 100.00), null);
 });
 
 console.log("discord");

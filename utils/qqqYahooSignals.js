@@ -1,23 +1,24 @@
-// Yahoo Finance ORB breakout monitor — QQQ paper Discord channel only.
-// Fires the same events TradingView would until QQQ TV alerts are wired.
-// Disable with QQQ_YAHOO_SIGNALS=0 in Railway once TradingView is set up.
+// QQQ paper Discord channel — Hermes Best Win Rate breakouts via Yahoo 1-minute bars.
+// SPY / IWM / SPX are not touched. Disable with QQQ_YAHOO_SIGNALS=0.
+//
+// Does not emit ORB-mid stops. The QQQ paper option stop stays in exitlogic (−15%).
+// Entries go straight to the qqq paper channel (not the shared webhook, which would
+// also flip, retest, and midpoint-stop).
 
 var fs = require("fs");
 var yahoo = require("./yahoo");
-var orbUtil = require("./orb");
 var exitlogic = require("./exitlogic");
 var stateModule = require("./state");
 var persist = require("./persist");
 var paperLegs = require("./paperLegs");
+var bwr = require("./qqqBestWinRate");
 
 var TICKER = "QQQ";
-var BAR_SEC = 5 * 60;
 var POLL_MS = 10000;
-var ORB_READY_MIN = 9 * 60 + 35;
 var STATE_FILE = persist.filePath("qqq-yahoo-signals.json");
 
 var busy = false;
-var _state = { lastBarTs: null, date: null };
+var _state = { date: null, consumedEndMins: [], orbKey: null, widthLogged: false };
 
 function enabled() {
   return process.env.QQQ_YAHOO_SIGNALS !== "0";
@@ -34,61 +35,23 @@ function loadState() {
       if (d && typeof d === "object") _state = d;
     }
   } catch (e) {}
+  if (!_state.consumedEndMins) _state.consumedEndMins = [];
 }
 
 function saveState() {
   try {
     fs.writeFileSync(STATE_FILE, JSON.stringify(_state));
   } catch (e) {
-    console.log("[QQQ_YAHOO] state save failed: " + e.message);
+    console.log("[QQQ_BWR] state save failed: " + e.message);
   }
 }
 
 function resetStateIfNewDay() {
   var today = etDate();
   if (_state.date !== today) {
-    _state = { lastBarTs: null, date: today };
+    _state = { date: today, consumedEndMins: [], orbKey: null, widthLogged: false };
     saveState();
   }
-}
-
-// Pure signal logic — mirrors TV ORB: stop at mid, breakout at range bounds.
-function pickSignalEvent(close, orbHigh, orbLow, paperSide) {
-  var c = parseFloat(close);
-  var h = parseFloat(orbHigh);
-  var l = parseFloat(orbLow);
-  if (!isFinite(c) || !isFinite(h) || !isFinite(l) || h <= l) return null;
-  var mid = (h + l) / 2;
-  if (paperSide === "call" && c < mid) return "stop_long";
-  if (paperSide === "put" && c > mid) return "stop_short";
-  if (c > h) return "breakout_long";
-  if (c < l) return "breakout_short";
-  return null;
-}
-
-function getLatestClosedBar(chartData, nowSec) {
-  if (!chartData || !chartData.chart || !chartData.chart.result || !chartData.chart.result[0]) return null;
-  var result = chartData.chart.result[0];
-  var ts = result.timestamp || [];
-  var q = result.indicators && result.indicators.quote && result.indicators.quote[0];
-  if (!q || !ts.length) return null;
-  var regStart = result.meta && result.meta.currentTradingPeriod &&
-    result.meta.currentTradingPeriod.regular &&
-    result.meta.currentTradingPeriod.regular.start;
-  nowSec = nowSec != null ? nowSec : Date.now() / 1000;
-  var closed = null;
-  for (var i = 0; i < ts.length; i++) {
-    if (regStart && ts[i] < regStart) continue;
-    if (q.close[i] == null || isNaN(parseFloat(q.close[i]))) continue;
-    if (ts[i] + BAR_SEC > nowSec) continue;
-    closed = {
-      ts: ts[i],
-      close: parseFloat(q.close[i]),
-      high: q.high[i] != null ? parseFloat(q.high[i]) : null,
-      low: q.low[i] != null ? parseFloat(q.low[i]) : null
-    };
-  }
-  return closed;
 }
 
 function getQqqPaperSide() {
@@ -107,52 +70,105 @@ function getQqqPaperSide() {
   return null;
 }
 
-async function evaluateBar(bar) {
-  if (!bar || !bar.ts) return null;
-  resetStateIfNewDay();
-  if (_state.lastBarTs === bar.ts) return null;
+function remember(endMin) {
+  if (_state.consumedEndMins.indexOf(endMin) === -1) _state.consumedEndMins.push(endMin);
+}
 
-  var levels = await orbUtil.ensureOrbForTicker(TICKER);
-  if (!levels || !(levels.high > 0) || !(levels.low > 0)) return null;
-
-  var paperSide = getQqqPaperSide();
-  var event = pickSignalEvent(bar.close, levels.high, levels.low, paperSide);
-  if (!event) return null;
-
-  _state.lastBarTs = bar.ts;
-  _state.date = etDate();
+async function publishOrb(range) {
+  var key = range.high.toFixed(4) + "|" + range.low.toFixed(4);
+  if (_state.orbKey === key) return;
+  stateModule.setORB(TICKER, range.high, range.low, "yahoo-1m");
+  _state.orbKey = key;
   saveState();
+  try {
+    var discord = require("./discord");
+    if (typeof discord.onOrbSet === "function") {
+      await discord.onOrbSet(TICKER, range.high, range.low, range.mid, "yahoo-1m");
+    }
+  } catch (e) {
+    console.log("[QQQ_BWR] ORB announce failed: " + e.message);
+  }
+}
 
-  var payload = {
-    ticker: TICKER,
-    event: event,
-    close: bar.close,
-    orb_high: levels.high,
-    orb_low: levels.low
-  };
+async function enterPaper(decision) {
+  var discord = require("./discord");
+  var ev = decision.event;
+  stateModule.logEvent("QQQ_BWR", ev.event + " @ $" + Number(ev.close).toFixed(2) +
+    " (15m close x2, bar end " + ev.endMin + " ET min) OR $" +
+    decision.orb.low.toFixed(2) + "-$" + decision.orb.high.toFixed(2));
+  var opened = false;
+  if (typeof discord.onEntry === "function") {
+    opened = await discord.onEntry(TICKER, ev.side, 0, decision.orb.high, decision.orb.low, ev.close, {
+      channelIds: ["qqq"]
+    });
+  }
+  console.log("[QQQ_BWR]", ev.event, opened ? "paper entry sent" : "paper entry skipped");
+  return !!opened;
+}
 
-  stateModule.logEvent("QQQ_YAHOO", event + " @ $" + bar.close.toFixed(2) +
-    " (Yahoo 5m bar) ORB $" + levels.low.toFixed(2) + "-$" + levels.high.toFixed(2));
+// nowSec is injectable for tests. Returns the session decision (and enters when asked).
+async function evaluateChart(chart, nowSec, opts) {
+  opts = opts || {};
+  resetStateIfNewDay();
+  var now = nowSec != null ? nowSec : Date.now() / 1000;
+  var bars = bwr.parseChartBars(chart);
+  var range = bwr.openingRange(bars);
+  if (!range) return null;
+  var blocks = bwr.aggregateBlocks(bars, now);
+  var inPosition = opts.inPosition != null ? !!opts.inPosition : !!getQqqPaperSide();
+  var session = bwr.evaluateSession(range, blocks, {
+    nowSec: now,
+    inPosition: inPosition,
+    consumedEndMins: _state.consumedEndMins
+  });
+  session.orb = range;
 
-  var handleAlert = require("../routes/alert").handleAlert;
-  var result = await handleAlert(payload);
-  console.log("[QQQ_YAHOO]", event, JSON.stringify(result));
-  return { event: event, result: result, bar: bar };
+  if (!opts.dryRun) await publishOrb(range);
+
+  if (session.skipDay && !_state.widthLogged) {
+    _state.widthLogged = true;
+    stateModule.logEvent("QQQ_BWR", "OR width " + session.widthPct +
+      "% > " + bwr.WIDTH_CAP_PCT + "% — no QQQ paper trade today");
+    console.log("[QQQ_BWR] width skip " + session.widthPct + "%");
+  }
+
+  var entered = false;
+  for (var i = 0; i < session.actions.length; i++) {
+    var action = session.actions[i];
+    if (action.take) {
+      if (opts.dryRun) {
+        session.wouldEnter = action;
+        continue;
+      }
+      if (exitlogic.isEndOfDayWindow() || exitlogic.isAfterEntryCutoffET()) {
+        stateModule.logEvent("QQQ_BWR", "break at " + action.endMin +
+          " not opened — existing 3:45 ET flatten / no-new-entries");
+        remember(action.endMin);
+        continue;
+      }
+      entered = await enterPaper(session);
+      if (entered) remember(action.endMin);
+      continue;
+    }
+    if (action.consume && !opts.dryRun) remember(action.endMin);
+  }
+  if (!opts.dryRun) saveState();
+  session.entered = entered;
+  return session;
 }
 
 async function poll() {
   if (!enabled()) return null;
+  if (!exitlogic.isTradingDayET()) return null;
   if (!exitlogic.isRegularMarketHours()) return null;
-  if (exitlogic.etMinutesOfDay() < ORB_READY_MIN) return null;
+  if (exitlogic.etMinutesOfDay() < bwr.OR_END_MIN) return null;
   if (busy) return null;
   busy = true;
   try {
-    var chart = await yahoo.getChart(TICKER, "5m", "1d");
-    var bar = getLatestClosedBar(chart);
-    if (!bar) return null;
-    return await evaluateBar(bar);
+    var chart = await yahoo.getChart(TICKER, "1m", "1d");
+    return await evaluateChart(chart, Date.now() / 1000);
   } catch (e) {
-    console.log("[QQQ_YAHOO_ERROR]", e.message);
+    console.log("[QQQ_BWR_ERROR]", e.message);
     return null;
   } finally {
     busy = false;
@@ -163,10 +179,12 @@ function startQqqYahooSignals() {
   loadState();
   resetStateIfNewDay();
   if (!enabled()) {
-    console.log("[QQQ_YAHOO] disabled — set QQQ_YAHOO_SIGNALS=0 only after TradingView QQQ alerts are live");
+    console.log("[QQQ_BWR] disabled (QQQ_YAHOO_SIGNALS=0)");
     return;
   }
-  console.log("[QQQ_YAHOO] QQQ paper signals via Yahoo 5m ORB (poll " + (POLL_MS / 1000) + "s) — disable with QQQ_YAHOO_SIGNALS=0 when TV is wired");
+  console.log("[QQQ_BWR] QQQ paper Best Win Rate via Yahoo 1m (poll " + (POLL_MS / 1000) +
+    "s) — 15m x2 all session, 0.05% buffer, width cap " + bwr.WIDTH_CAP_PCT +
+    "%, breakouts all session until the existing 3:45 ET flatten");
   setInterval(poll, POLL_MS);
   setTimeout(poll, 20000);
 }
@@ -175,7 +193,7 @@ module.exports = {
   enabled: enabled,
   startQqqYahooSignals: startQqqYahooSignals,
   poll: poll,
-  pickSignalEvent: pickSignalEvent,
-  getLatestClosedBar: getLatestClosedBar,
-  evaluateBar: evaluateBar
+  evaluateChart: evaluateChart,
+  getQqqPaperSide: getQqqPaperSide,
+  resetStateIfNewDay: resetStateIfNewDay
 };

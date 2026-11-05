@@ -37,6 +37,10 @@ async function placeAndFill(ticker, side, contracts) {
 }
 
 async function notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close, opts) {
+  if (opts && opts.skipPaper) {
+    stateModule.logEvent("QQQ_BWR", ticker + " webhook paper entry skipped — Best Win Rate owns QQQ paper");
+    return null;
+  }
   var und = await underlyingForNotify(ticker, close);
   var useWebhookPrice = !(opts && opts.ignoreWebhookPrice);
   var paperPrice = useWebhookPrice ? (optPrice || 0) : 0;
@@ -332,10 +336,10 @@ async function tryIwmCrossEntry(side, spyOrbHigh, spyOrbLow, s, lockedTickers) {
   return null;
 }
 
-async function notifyPaperAndMaybeLiveEntry(ticker, side, half, total, optPrice, orbHigh, orbLow, close, s, lockedTickers) {
-  await notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close);
+async function notifyPaperAndMaybeLiveEntry(ticker, side, half, total, optPrice, orbHigh, orbLow, close, s, lockedTickers, opts) {
+  await notifyPaperEntry(ticker, side, optPrice, orbHigh, orbLow, close, opts);
   if (!isLiveTicker(ticker)) {
-    return { order: null, cross: null, paper: true, live: false, retryable: false };
+    return { order: null, cross: null, paper: !(opts && opts.skipPaper), live: false, retryable: false };
   }
   var livePos = stateModule.getPosition(ticker);
   var liveFlat = !livePos || livePos.stopped;
@@ -356,7 +360,7 @@ async function notifyPaperAndMaybeLiveEntry(ticker, side, half, total, optPrice,
     order: entryResult.order,
     cross: cross && cross.order,
     spx: spxMirror && (spxMirror.order || spxMirror),
-    paper: true,
+    paper: !(opts && opts.skipPaper),
     live: !!entryResult.order,
     retryable: retryable,
     error: entryResult.error || (cross && cross.error) || (spxMirror && spxMirror.error)
@@ -425,7 +429,9 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     var slPaper = "ORB Midpoint";
     var slLive = pos ? stopLabel(pos) : slPaper;
     stateModule.logEvent("STOP_LOSS", ticker + " " + slLive + " stop hit");
-    await notify("onStop", [ticker, optPrice || 0, slPaper]);
+    // QQQ paper exits on the option −15% stop, EM, and 120-min hold — not an ORB-mid webhook.
+    if (ticker !== "QQQ") await notify("onStop", [ticker, optPrice || 0, slPaper]);
+    else stateModule.logEvent("QQQ_BWR", "webhook " + event + " ignored for QQQ paper");
     if (!pos || pos.stopped || pos.side !== wantSide || !stateModule.isManagedPosition(pos)) {
       return { ok: true, message: ticker + " paper stop sent (no matching bot-managed live position)" };
     }
@@ -439,7 +445,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
     }
     return {
       ok: true,
-      message: ticker + (wantSide === "call" ? " long" : " short") + " paper stopped" +
+      message: ticker + (wantSide === "call" ? " long" : " short") +
+        (ticker === "QQQ" ? " paper webhook stop ignored" : " paper stopped") +
         (liveClosed ? " · live closed" : " · live RH close failed (paper unaffected)")
     };
   }
@@ -451,7 +458,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
     if (pos && !pos.stopped && pos.side === "put" && stateModule.isManagedPosition(pos)) {
       stateModule.logEvent("FLIP", ticker + " breakout long — paper close + live close if possible");
-      await notify("onFullClose", [ticker, optPrice || 0]);
+      if (ticker !== "QQQ") await notify("onFullClose", [ticker, optPrice || 0]);
       if (await closeLiveOrLog(ticker, pos.contracts, "ORB breakout flip to long", optPrice)) {
         stateModule.closePosition(ticker, "flip to long");
         pos = null;
@@ -463,7 +470,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
     pos = stateModule.getPosition(ticker);
     if (pos && !pos.stopped && pos.side === "call" && stateModule.isManagedPosition(pos)) {
-      await notify("onAdd", [ticker, optPrice || 0]);
+      if (ticker !== "QQQ") await notify("onAdd", [ticker, optPrice || 0]);
       if (pos.halfIn) {
         stateModule.logEvent("RETEST", ticker + " retest add " + pos.totalContracts + "c");
         if (!liveEntryBlocked(ticker, "retest")) {
@@ -482,11 +489,12 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       return { ok: true, message: ticker + " paper signal sent · live already in long" };
     }
 
-    var opened = await notifyPaperAndMaybeLiveEntry(ticker, "call", half, total, optPrice, orbHigh, orbLow, close, s, lockedTickers);
+    var opened = await notifyPaperAndMaybeLiveEntry(ticker, "call", half, total, optPrice, orbHigh, orbLow, close, s, lockedTickers,
+      ticker === "QQQ" ? { skipPaper: true } : null);
     if (opened.retryable) {
       return { ok: false, retryable: true, message: ticker + " live entry failed: " + (opened.error || "RH error") };
     }
-    return { ok: true, entry: opened.order, cross: opened.cross, paper: true, live: opened.live };
+    return { ok: true, entry: opened.order, cross: opened.cross, paper: opened.paper, live: opened.live };
   }
 
   if (event === "breakout_short") {
@@ -496,7 +504,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
     if (pos && !pos.stopped && pos.side === "call" && stateModule.isManagedPosition(pos)) {
       stateModule.logEvent("FLIP", ticker + " breakout short — paper close + live close if possible");
-      await notify("onFullClose", [ticker, optPrice || 0]);
+      if (ticker !== "QQQ") await notify("onFullClose", [ticker, optPrice || 0]);
       if (await closeLiveOrLog(ticker, pos.contracts, "ORB breakout flip to short", optPrice)) {
         stateModule.closePosition(ticker, "flip to short");
         pos = null;
@@ -508,7 +516,7 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
     pos = stateModule.getPosition(ticker);
     if (pos && !pos.stopped && pos.side === "put" && stateModule.isManagedPosition(pos)) {
-      await notify("onAdd", [ticker, optPrice || 0]);
+      if (ticker !== "QQQ") await notify("onAdd", [ticker, optPrice || 0]);
       if (pos.halfIn) {
         stateModule.logEvent("RETEST", ticker + " retest add " + pos.totalContracts + "c");
         if (!liveEntryBlocked(ticker, "retest")) {
@@ -527,11 +535,12 @@ async function processEvent(payload, ticker, event, lockedTickers) {
       return { ok: true, message: ticker + " paper signal sent · live already in short" };
     }
 
-    var opened2 = await notifyPaperAndMaybeLiveEntry(ticker, "put", half2, total2, optPrice, orbHigh, orbLow, close, s, lockedTickers);
+    var opened2 = await notifyPaperAndMaybeLiveEntry(ticker, "put", half2, total2, optPrice, orbHigh, orbLow, close, s, lockedTickers,
+      ticker === "QQQ" ? { skipPaper: true } : null);
     if (opened2.retryable) {
       return { ok: false, retryable: true, message: ticker + " live entry failed: " + (opened2.error || "RH error") };
     }
-    return { ok: true, entry: opened2.order, cross: opened2.cross, paper: true, live: opened2.live };
+    return { ok: true, entry: opened2.order, cross: opened2.cross, paper: opened2.paper, live: opened2.live };
   }
 
   if (event === "bar_close") {
@@ -540,7 +549,8 @@ async function processEvent(payload, ticker, event, lockedTickers) {
 
   if (event === "expected_move_hit") {
     var timeframe = payload.timeframe || "daily";
-    await notify("onExpectedMoveExit", [ticker, optPrice || 0, timeframe]);
+    if (ticker !== "QQQ") await notify("onExpectedMoveExit", [ticker, optPrice || 0, timeframe]);
+    else stateModule.logEvent("QQQ_BWR", "webhook expected_move_hit ignored for QQQ paper");
     if (!pos || pos.stopped || !stateModule.isManagedPosition(pos)) {
       return { ok: true, message: ticker + " paper expected-move sent (no bot-managed live position)" };
     }
